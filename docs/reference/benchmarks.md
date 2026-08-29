@@ -1,0 +1,111 @@
+# Measurements
+
+Everything below was measured on the home machine — M5 Max, 128 GB,
+macOS 26.6.2 — on 2026-08-29. Any table measured differently says so.
+
+## End to end: decode, realtime and peak RSS
+
+v3-int8, synthesised speech via `say`.
+
+| Audio | Decode | Realtime | Peak RSS |
+| ---: | ---: | ---: | ---: |
+| 5 s | 0.12 s | 42× | — |
+| 16.5 s | 0.32 s | 52× | — |
+| 127.5 s (chunked) | 2.38 s | 54× | **2317 MB** |
+
+Peak memory on the 127 s file is flat at the 30 s-chunk level rather than the
+~3.7 GB an unchunked 120 s run needed, which is the chunking working.
+
+## Phase 0: provider comparison, CPU against CoreML
+
+Parakeet TDT 0.6b encoder, 60 s of audio, via
+`cargo run --release --bin bench -- <encoder.onnx> <coreml|cpu> [seconds]`.
+Input is a zeroed tensor of the correct shape — wall clock for a fixed-shape
+graph is content-independent, so the comparison holds, but these are not
+accuracy numbers.
+
+| Model | Provider | Steady run | Realtime | Peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| v2 fp16 | CPU | 1013 ms | 59× | 3745 MB |
+| v2 fp16 | CoreML (ANE requested) | 1012 ms | 59× | 3767 MB |
+| v3 int8 | CPU | 1029 ms | 58× | 2594 MB |
+| v3 int8 | CoreML (ANE requested) | 1670 ms | 36× | 16482 MB |
+
+On fp16 CoreML is identical to CPU to within a millisecond. On int8 it is
+actively harmful — 1.6× slower and 16.5 GB peak, which would OOM a 16 GB machine
+outright.
+
+## Memory scales with audio length
+
+v3 int8 on CPU.
+
+| Audio | Steady run | Realtime | Peak RSS |
+| ---: | ---: | ---: | ---: |
+| 30 s | 488 ms | 62× | 2158 MB |
+| 60 s | 1029 ms | 58× | 2594 MB |
+| 120 s | 2252 ms | 53× | 3721 MB |
+| 300 s | 7539 ms | 40× | 6291 MB |
+
+Roughly linear in memory and worse than linear in time. Extrapolated, a
+30-minute session fed whole would want ~35 GB and would fail on the base M5;
+chunked at 30 s it is ~60 chunks ≈ 30 s of compute at a flat ~2.2 GB.
+
+## VAD chunking: speech, chunks, realtime and RSS
+
+| File | Speech / total | Chunks | Realtime | Peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| 127 s continuous | 127.5 / 127.5 s | 6 | 39x | 2255 MB |
+| mic track | 3.6 / 9.7 s | 1 | 14x | — |
+
+The VAD pass costs throughput — 39x against 54x without — because it runs one
+inference per 32 ms frame. The same 127 s file yields 375 words with zero
+adjacent duplicates once cut on VAD boundaries rather than on local energy.
+
+## Embedding front-end: confusion matrix
+
+`bin/embtest.rs`, on two clips each of two `say` voices.
+
+```
+           A1     A2     B1     B2
+    A1  1.000  0.880  0.192  0.138
+    A2  0.880  1.000  0.145  0.132
+    B1  0.192  0.145  1.000  0.823
+    B2  0.138  0.132  0.823  1.000
+
+same voice 0.851   cross voice 0.152   separation 0.700
+```
+
+A wrong filterbank does not error — it collapses that matrix toward uniform and
+the damage arrives as confidently mislabelled speakers.
+
+## Diarization cost on a 10.2-minute track
+
+Peak RSS **249 MB**, 5.9 s wall. The sliding window does not accumulate.
+
+## Three signals, none of which separates quiet speech from an empty room
+
+| Signal | Real quiet speech | Hallucination from silence |
+| --- | --- | --- |
+| level (p90) | −42 dB | −44 dB |
+| Silero probability | 0.6–0.9 | 0.6–0.9 |
+| decoder confidence | 0.959 | 0.917 |
+
+Two decibels apart, so any absolute level threshold that rejects the empty room
+also rejects real speech. Decoder confidence does catch the *derailment* case —
+0.992 for the trimmed utterance against 0.613 for the same one with noise in
+front.
+
+## What noise in front of an utterance does to the decode
+
+| Fed to the recogniser | Out |
+| --- | --- |
+| 2.6 s of room noise + the utterance | "The gap had not closed. If anything, it had wide." |
+| the utterance alone | "The migration is scheduled for Thursday morning." |
+
+A noise prefix does not merely add junk; it derails the decode into a different
+sentence outright.
+
+---
+
+Every number on this page is from the 128 GB machine; the 16 GB target is still
+unmeasured — see [porting to the work M5](../operations/porting.md).

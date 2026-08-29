@@ -14,3 +14,9 @@ updates:
     directory: /ui
     schedule:
       interval: weekly
+  # The docs workflow's Mermaid parse check. Pinned exactly, so it needs the
+  # same nudging as everything else here.
+  - package-ecosystem: npm
+    directory: /.github/scripts
+    schedule:
+      interval: weekly

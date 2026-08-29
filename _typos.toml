@@ -1,7 +1,14 @@
 [files]
 # The Vite bundle is minified, so its mangled identifiers read as thousands of
 # typos. It is checked by building it, not by spelling.
-extend-exclude = ["assets/settings.html", "*.lock", "ui/pnpm-lock.yaml"]
+extend-exclude = [
+  "assets/settings.html",
+  "*.lock",
+  "ui/pnpm-lock.yaml",
+  "docs/mermaid.min.js",
+  "docs/mermaid-init.js",
+  "book/",
+]
 
 [default.extend-words]
 ANE = "ANE"    # Apple Neural Engine

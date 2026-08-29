@@ -1,0 +1,10 @@
+{
+  "name": "ambient-docs-checks",
+  "private": true,
+  "type": "module",
+  "description": "Pinned deps for the docs workflow's Mermaid parse check. Deliberately not part of ui/ — it is a CI tool, not a dependency of anything that ships.",
+  "dependencies": {
+    "jsdom": "30.0.1",
+    "mermaid": "11.17.2"
+  }
+}
