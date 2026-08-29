@@ -125,15 +125,13 @@ impl Config {
                 self.input_device =
                     (!value.is_empty() && value != "default").then(|| value.to_string())
             }
-            "diarize" => self.diarize = matches!(value, "true" | "yes" | "on" | "1"),
+            "diarize" => self.diarize = flag(value)?,
             "threshold" => self.threshold = value.parse()?,
             "sessions_dir" => {
                 self.sessions_dir =
                     (!value.is_empty() && value != "default").then(|| PathBuf::from(value))
             }
-            "ask_before_recording" => {
-                self.ask_before_recording = matches!(value, "true" | "yes" | "on" | "1")
-            }
+            "ask_before_recording" => self.ask_before_recording = flag(value)?,
             // "forever" is spelled out rather than expressed as a large number,
             // so that keeping audio indefinitely is a deliberate word.
             "audio_retention_days" => {
@@ -148,6 +146,20 @@ impl Config {
             ),
         }
         Ok(())
+    }
+}
+
+/// Parse a boolean setting, refusing anything it does not recognise.
+///
+/// Treating every unrecognised word as `false` would mean `config diarize maybe`
+/// silently turns diarization off and reports success — the silent fallback this
+/// project keeps having to remove, reintroduced in the one layer that must not
+/// have it.
+fn flag(value: &str) -> Result<bool> {
+    match value {
+        "true" | "yes" | "on" | "1" => Ok(true),
+        "false" | "no" | "off" | "0" => Ok(false),
+        other => anyhow::bail!("{other:?} is not a yes or no. Use true or false."),
     }
 }
 
@@ -166,6 +178,18 @@ mod tests {
     fn a_missing_file_is_an_ordinary_first_run() {
         let p = temp("missing");
         assert_eq!(Config::load_from(&p), Config::default());
+    }
+
+    #[test]
+    fn an_unrecognised_boolean_is_refused_rather_than_read_as_no() {
+        let mut c = Config {
+            diarize: true,
+            ..Config::default()
+        };
+        assert!(c.set("diarize", "maybe").is_err());
+        assert!(c.diarize, "a rejected value must leave the setting alone");
+        c.set("diarize", "off").unwrap();
+        assert!(!c.diarize);
     }
 
     #[test]
