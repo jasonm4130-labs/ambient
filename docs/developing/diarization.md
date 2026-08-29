@@ -84,6 +84,6 @@ does not accumulate.
 already swept. The refusal is a guard, not a convenience: a re-run appends
 reverts for the previous run's labels *before* it discovers there is nothing to
 read, so without it every speaker nobody had named by hand would be silently
-unlabelled. See [privacy](privacy.md) for the retention policy itself.
+unlabelled. See [what is kept](../using/what-is-kept.md) for the retention policy itself.
 
 See [ADR-0006](../adr/0006-separate-frontends.md) and [ADR-0007](../adr/0007-diarize-separate-verb.md).

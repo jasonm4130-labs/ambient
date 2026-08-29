@@ -1,4 +1,4 @@
-# Consent, retention and names
+# What is kept
 
 Consent, retention and the roster are three answers to one question: what this
 tool is allowed to keep, and for how long. Consent decides whether a recording

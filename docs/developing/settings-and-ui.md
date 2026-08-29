@@ -6,7 +6,7 @@ file lives, how it is resolved, how the page is built, and why three separate
 binaries exist purely to check that the assembled app is what it claims to be.
 
 Every setting has code behind it, and nothing is stored that nothing reads. The
-full key-by-key list is in [the config reference](../reference/config.md).
+full key-by-key list is in [the config reference](../using/settings.md).
 
 They live in `~/Library/Application Support/Ambient/config.json` — deliberately
 not under the sessions folder, since that folder is itself a setting and a

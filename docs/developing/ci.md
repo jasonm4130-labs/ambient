@@ -63,7 +63,7 @@ actually does rather than on what the code says:
   server.
 
 See [ADR-0012](../adr/0012-ci-verifies-assembly.md) for the reasoning, and
-[settings and the UI](../architecture/settings-and-ui.md) for what each checking
+[settings and the UI](settings-and-ui.md) for what each checking
 binary has actually caught.
 
 ## Keeping the pins fresh

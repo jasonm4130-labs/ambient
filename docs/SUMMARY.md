@@ -1,19 +1,30 @@
 # Summary
 
 [ambient](index.md)
-[Getting started](getting-started.md)
 
-# Architecture
+# Using
 
-- [How it fits together](architecture/index.md)
-  - [Capture](architecture/capture.md)
-  - [Two tracks, two clocks](architecture/two-tracks.md)
-  - [Voice activity detection](architecture/vad-and-chunking.md)
-  - [Speech recognition](architecture/asr.md)
-  - [Diarization](architecture/diarization.md)
-  - [Sessions and the edit layer](architecture/sessions.md)
-  - [Settings and the UI](architecture/settings-and-ui.md)
-  - [Consent, retention and names](architecture/privacy.md)
+- [Using ambient](using/index.md)
+  - [Getting started](using/getting-started.md)
+  - [Commands](using/commands.md)
+  - [Settings](using/settings.md)
+  - [What is kept](using/what-is-kept.md)
+  - [When it does not work](using/troubleshooting.md)
+
+# Developing
+
+- [How it fits together](developing/index.md)
+  - [Capture](developing/capture.md)
+  - [Two tracks, two clocks](developing/two-tracks.md)
+  - [Voice activity detection](developing/vad-and-chunking.md)
+  - [Speech recognition](developing/asr.md)
+  - [Diarization](developing/diarization.md)
+  - [Sessions and the edit layer](developing/sessions.md)
+  - [Settings and the UI](developing/settings-and-ui.md)
+- [Measurements](developing/measurements.md)
+- [Porting to the work M5](developing/porting.md)
+- [What CI checks](developing/ci.md)
+- [Building these docs](developing/docs.md)
 
 # Decisions
 
@@ -30,16 +41,3 @@
   - [ADR-0010 Store names, never voiceprints](adr/0010-names-not-voiceprints.md)
   - [ADR-0011 Sweep audio on a schedule](adr/0011-audio-retention-sweep.md)
   - [ADR-0012 CI verifies assembly, binaries verify behaviour](adr/0012-ci-verifies-assembly.md)
-
-# Reference
-
-- [Commands](reference/cli.md)
-- [Settings](reference/config.md)
-- [Measurements](reference/benchmarks.md)
-
-# Operations
-
-- [Porting to the work M5](operations/porting.md)
-- [What CI checks](operations/ci.md)
-- [Building these docs](operations/docs.md)
-

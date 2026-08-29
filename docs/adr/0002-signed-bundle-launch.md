@@ -60,5 +60,5 @@ exists — so an unsigned or malformed bundle fails the `rust` job. It cannot
 check that the grant survived: no runner can answer a TCC prompt. A person
 confirms that half by rebuilding and re-running the tap through `open -a`,
 checking the call peak is non-zero rather than `0.000`; the truth tables in
-[capture](../architecture/capture.md) are the evidence for which failure a
-given symptom is.
+[when it does not work](../using/troubleshooting.md) are the evidence for which
+failure a given symptom is.

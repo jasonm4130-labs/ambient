@@ -11,9 +11,9 @@ Most of what looks like a decision is not one. The `STOP` sentinel file, the
 against `Vad::chunks`, using rustfmt's defaults, the pnpm version pin in CI,
 and CDLA-Permissive-2.0 sitting in the licence allowlist are all reasoned
 choices with no serious rival. Each is a good paragraph in the chapter that
-owns it — [capture](../architecture/capture.md),
-[sessions](../architecture/sessions.md),
-[what CI checks](../operations/ci.md) — and none is an ADR. A record whose
+owns it — [capture](../developing/capture.md),
+[sessions](../developing/sessions.md),
+[what CI checks](../developing/ci.md) — and none is an ADR. A record whose
 alternatives were never seriously live is a paragraph with a number on it, and
 a directory of those is how the practice dies: nobody reads records that
 mostly say nothing.

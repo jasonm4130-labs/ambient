@@ -1,6 +1,6 @@
 # Porting to the work M5 (16 GB)
 
-The point of the exercise. Every number in [Measurements](../reference/benchmarks.md)
+The point of the exercise. Every number in [Measurements](measurements.md)
 came from the home machine — M5 Max, 128 GB — and the target is a base M5 with
 16 GB. Chunked at 30 s this should fit, but *should* is not measured, and that
 is one of the two things still open.
@@ -18,7 +18,7 @@ is one of the two things still open.
 ## What to expect at step 4
 
 If the tap returns silence, that is TCC and not a bug. See
-[capture](../architecture/capture.md) for the two independent failures and the
+[capture](capture.md) for the two independent failures and the
 truth table that separates them — the first thing to check is the launch method,
 because a terminal launch fails identically no matter how the app is signed.
 

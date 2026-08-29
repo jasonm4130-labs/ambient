@@ -35,8 +35,8 @@ open -a "$PWD/build/Ambient.app"  # menu bar app
 created successfully, delivers buffers at the correct rate, and contains
 silence, with no error and no permission prompt — because macOS attributes the
 request to the terminal, which has no audio grant. `./setup-signing.sh` and
-`open -a` are both required, and [capture](architecture/capture.md) explains
-why in detail. If you skip this section you will spend an afternoon debugging a
+`open -a` are both required, and [when it does not
+work](troubleshooting.md) explains why in detail. If you skip this section you will spend an afternoon debugging a
 working program.
 
 For the CLI verbs through the bundle, append `--args`:
@@ -53,11 +53,11 @@ cargo run --release -- config     # resolved settings, and the input devices it 
 ```
 
 Every setting is readable and settable from the CLI, so nothing depends on the
-GUI being open. The full list is in [Settings](reference/config.md).
+GUI being open. The full list is in [Settings](settings.md).
 
 ## What to read next
 
-If it recorded and transcribed, [architecture](architecture/index.md) explains
-what just happened. If it recorded silence, [capture](architecture/capture.md)
-has the three-row truth table that says which of the two independent failures
-you hit.
+If it recorded and transcribed, [architecture](../developing/index.md) explains
+what just happened. If it recorded silence, [when it does not
+work](troubleshooting.md) has the three-row truth table that says which of the
+two independent failures you hit.

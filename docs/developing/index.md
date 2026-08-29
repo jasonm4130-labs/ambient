@@ -79,8 +79,8 @@ flowchart TB
 
 Diarization is a separate run rather than a stage of `record`, and the dotted
 arrow is why it can fail: it needs the wav files, which the
-[retention sweep](privacy.md) may have deleted. It refuses rather than reverting
-labels it then cannot replace.
+[retention sweep](../using/what-is-kept.md) may have deleted. It refuses rather
+than reverting labels it then cannot replace.
 
 `record` writes `raw.jsonl` and never touches it again. Everything after that —
 diarization's labels, a name you type, a revert — is a line appended to
@@ -98,4 +98,4 @@ diarization's labels, a name you type, a revert — is a line appended to
 | [Diarization](diarization.md) | A near-miss filterbank does not error, it mislabels people |
 | [Sessions](sessions.md) | The microphone transcribes the far side badly, so a naive merge reads as broken |
 | [Settings and the UI](settings-and-ui.md) | Compiling proves the page says the right thing, not that it does anything |
-| [Consent, retention and names](privacy.md) | A transcript file exists even when nothing was recognised, so it cannot gate a deletion |
+| [What is kept](../using/what-is-kept.md) | A transcript file exists even when nothing was recognised, so it cannot gate a deletion |

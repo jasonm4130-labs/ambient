@@ -81,14 +81,24 @@ jobs:
       - name: Every ADR is in the nav
         run: |
           set -euo pipefail
-          for f in docs/adr/[0-9]*.md; do
-            grep -q "$(basename "$f")" docs/SUMMARY.md \
+          shopt -s nullglob
+          records=(docs/adr/[0-9]*.md)
+          # Without nullglob an unmatched glob expands to the literal, and
+          # `grep -q "[0-9]*.md"` then matches "index.md" as a regex — so the
+          # guard passed on an empty directory. Assert the count, and match the
+          # filename as a fixed string rather than a pattern.
+          if [ "${#records[@]}" -lt 12 ]; then
+            echo "::error::found ${#records[@]} ADRs under docs/adr/, expected at least 12 — did the directory move?"
+            exit 1
+          fi
+          for f in "${records[@]}"; do
+            grep -qF "$(basename "$f")" docs/SUMMARY.md \
               || { echo "::error::$f missing from docs/SUMMARY.md"; exit 1; }
           done
 
       # Nothing is deployed yet: workers.dev URLs are public by default and this
       # repo is private, so Cloudflare Access has to be attached first.
-      # See docs/operations/docs.md.
+      # See docs/developing/docs.md.
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: book

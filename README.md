@@ -31,7 +31,7 @@ open -a "$PWD/build/Ambient.app"  # menu bar app
 ```
 
 That failure is the single most confusing thing in this project and
-[docs/architecture/capture.md](docs/architecture/capture.md) is the page that
+[docs/using/troubleshooting.md](docs/using/troubleshooting.md) is the page that
 explains it.
 
 ## End-to-end result
@@ -61,12 +61,13 @@ Everything that used to be in this file now lives in `docs/`, built as an
 mdBook site. `mdbook serve --open` renders it; every page also reads correctly
 on GitHub, diagrams included.
 
+The split is by what you are doing, not by what the pages are about.
+
 | | |
 | --- | --- |
-| [docs/architecture/](docs/architecture/index.md) | What the pieces are and why each is shaped that way. Two diagrams at the top carry most of it. |
+| [docs/using/](docs/using/index.md) | Build it, run it, read the transcript, know what is kept on disk. Start here. |
+| [docs/developing/](docs/developing/index.md) | What the pieces are and why each is shaped that way, plus porting, CI and the docs build. |
 | [docs/adr/](docs/adr/README.md) | Twelve decision records — the alternatives that were live, and the check that fails if the decision drifts. |
-| [docs/reference/](docs/reference/cli.md) | Commands, settings, and every measurement in one place. |
-| [docs/operations/](docs/operations/porting.md) | Porting to the work M5, what CI checks, how these docs are built. |
 
 ## Still open
 

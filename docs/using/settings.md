@@ -51,7 +51,7 @@ sorted case-insensitively.
 It stores no voiceprints. An embedding kept to recognise someone later is
 biometric data under Article 9, a different compliance regime from a text file
 of names, so the roster removes the retyping and not the choosing — see
-[privacy](../architecture/privacy.md).
+[what is kept](what-is-kept.md).
 
 ## Behaviour on bad input
 

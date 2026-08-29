@@ -18,7 +18,8 @@ open -a "$PWD/build/Ambient.app" --args tap /tmp/out.wav 14
 ```
 
 Why this is the only launch that works, and why a stale signing identity fails
-differently from a shell launch, is in [capture](../architecture/capture.md).
+differently from a shell launch, is in [when it does not
+work](troubleshooting.md).
 
 ## probe
 
@@ -47,7 +48,7 @@ in the log. `<secs>` defaults to 10 if the argument is missing or unparsable.
 Each track is reported with its peak, its total length and its *real* device
 seconds, so a stalled tap prints `20.1s, 17.4s real, 2.7s padded` rather than
 passing for a healthy one — see [two tracks, two
-clocks](../architecture/two-tracks.md). If the call track is flat while
+clocks](../developing/two-tracks.md). If the call track is flat while
 something was demonstrably rendering output, it names the likely cause instead
 of exiting quietly.
 
@@ -71,8 +72,8 @@ captured. `--seconds` bounds an unattended run.
 
 Turn segmentation here is `Vad::turns`, not the chunking `transcribe` uses —
 one record per turn, because a record spanning two people cannot carry a
-speaker. See [sessions](../architecture/sessions.md) and [voice activity
-detection](../architecture/vad-and-chunking.md).
+speaker. See [sessions](../developing/sessions.md) and [voice activity
+detection](../developing/vad-and-chunking.md).
 
 ## stop
 
@@ -85,7 +86,7 @@ It writes a `STOP` file that the capture loop notices on its next 200 ms tick,
 echoes the session's `status` line to stderr, and prints the directory. A file
 rather than a signal because the launch that gets system audio has no terminal
 to Ctrl-C and no pid a user can see; Ctrl-C still works when there is a
-terminal. See [capture](../architecture/capture.md).
+terminal. See [capture](../developing/capture.md).
 
 ## show
 
@@ -95,7 +96,7 @@ ambient show <session-dir> [--verbatim]
 
 Prints the session with `edits.jsonl` folded over `raw.jsonl`. `--verbatim`
 skips the fold and shows what the recogniser actually produced. Nothing is
-mutated. See [sessions](../architecture/sessions.md).
+mutated. See [sessions](../developing/sessions.md).
 
 ## name
 
@@ -106,7 +107,7 @@ ambient name <session-dir> <label> <name>
 Renames every line currently carrying `<label>`, e.g. `call-1 Priya`, reports
 how many lines moved, then prints the session. It appends a `speaker` edit like
 anything else, so it is undoable, and a later `diarize` leaves a human-assigned
-name alone. See [diarization](../architecture/diarization.md).
+name alone. See [diarization](../developing/diarization.md).
 
 ## diarize
 
@@ -121,7 +122,7 @@ the automatic diarization at the end of `record`. Re-running appends
 `revert` records for the previous run's labels first, so a bad threshold costs a
 revert rather than a recording. It **refuses** on a session whose audio has been
 swept by retention, and on one with no records in `raw.jsonl`. See
-[diarization](../architecture/diarization.md).
+[diarization](../developing/diarization.md).
 
 ## export
 
@@ -132,7 +133,7 @@ ambient export <session-dir> [--out <path>]
 Writes `transcript.md` — into the session directory unless `--out` says
 otherwise — and prints the path. The file is derived; `raw.jsonl` plus
 `edits.jsonl` remain the only source of truth, and `record`, `diarize` and
-`name` each regenerate it. See [sessions](../architecture/sessions.md).
+`name` each regenerate it. See [sessions](../developing/sessions.md).
 
 ## transcribe
 
@@ -145,7 +146,7 @@ rate and resamples to 16 kHz rather than insisting on 16 kHz input. If
 `models/silero_vad.onnx` loads it chunks on VAD boundaries in 30 s windows and
 reports the speech-to-total split; if that model is missing it silently falls
 back to unchunked long-form decoding, which costs memory linear in length. See
-[speech recognition](../architecture/asr.md).
+[speech recognition](../developing/asr.md).
 
 ## vad
 
@@ -157,7 +158,7 @@ Prints each detected speech segment with its start, end and duration, then the
 segment count, total speech and the percentage skipped. Unlike `transcribe` it
 requires a 16 kHz wav — it does not resample — and it loads the VAD model from
 the relative path `models/silero_vad.onnx`. See [voice activity
-detection](../architecture/vad-and-chunking.md).
+detection](../developing/vad-and-chunking.md).
 
 ## config
 
@@ -170,7 +171,7 @@ go, the config file path, and the input devices it can currently see — and say
 so explicitly when `AMBIENT_HOME` is set and overriding `sessions_dir`. With a
 key and a value it sets one setting and writes the file. A key with no value is
 an error rather than a read. Keys and defaults are in
-[settings](config.md).
+[settings](settings.md).
 
 ## roster
 
@@ -182,7 +183,7 @@ With no arguments it lists the people you record with, one per line. `add` is a
 no-op on a name already present (case-insensitively) and keeps the list sorted;
 `rm` errors if the name is not there. Removing someone does not unname them in
 past recordings — those names live in each session's `edits.jsonl`. The roster
-holds names and nothing else; see [privacy](../architecture/privacy.md).
+holds names and nothing else; see [what is kept](what-is-kept.md).
 
 ## Environment
 

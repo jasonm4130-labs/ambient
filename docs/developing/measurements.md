@@ -108,4 +108,4 @@ sentence outright.
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
-unmeasured — see [porting to the work M5](../operations/porting.md).
+unmeasured — see [porting to the work M5](porting.md).
