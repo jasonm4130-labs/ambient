@@ -295,7 +295,10 @@ mod tests {
         let rms = track(&db);
         let floor = Vad::speech_floor(&rms);
         let segs = Vad::trim_quiet(
-            vec![Segment { start: 0, end: 200 * FRAME }],
+            vec![Segment {
+                start: 0,
+                end: 200 * FRAME,
+            }],
             &rms,
             floor,
         );
@@ -310,7 +313,10 @@ mod tests {
         let rms = track(&vec![-25.0; 200]);
         let floor = Vad::speech_floor(&rms);
         let segs = Vad::trim_quiet(
-            vec![Segment { start: 0, end: 200 * FRAME }],
+            vec![Segment {
+                start: 0,
+                end: 200 * FRAME,
+            }],
             &rms,
             floor,
         );
@@ -327,7 +333,14 @@ mod tests {
         db.extend(std::iter::repeat_n(-47.0, 120));
         let rms = track(&db);
         let floor = Vad::speech_floor(&rms);
-        let segs = Vad::trim_quiet(vec![Segment { start: 0, end: 200 * FRAME }], &rms, floor);
+        let segs = Vad::trim_quiet(
+            vec![Segment {
+                start: 0,
+                end: 200 * FRAME,
+            }],
+            &rms,
+            floor,
+        );
         assert_eq!(segs.len(), 1, "the speech was thrown away");
         assert!(segs[0].start > 70 * FRAME, "start was {}", segs[0].start);
     }
@@ -340,7 +353,14 @@ mod tests {
         // threshold that would also drop real speech.
         let rms = track(&vec![-45.0; 200]);
         let floor = Vad::speech_floor(&rms);
-        let segs = Vad::trim_quiet(vec![Segment { start: 0, end: 200 * FRAME }], &rms, floor);
+        let segs = Vad::trim_quiet(
+            vec![Segment {
+                start: 0,
+                end: 200 * FRAME,
+            }],
+            &rms,
+            floor,
+        );
         assert_eq!(segs.len(), 1);
     }
 }

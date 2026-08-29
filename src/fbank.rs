@@ -121,7 +121,14 @@ pub fn fbank(samples: &[f32]) -> (Vec<f32>, usize) {
         frame[0] -= PREEMPH * frame[0];
 
         for (i, b) in buf.iter_mut().enumerate() {
-            *b = Complex32::new(if i < FRAME_LENGTH { frame[i] * window[i] } else { 0.0 }, 0.0);
+            *b = Complex32::new(
+                if i < FRAME_LENGTH {
+                    frame[i] * window[i]
+                } else {
+                    0.0
+                },
+                0.0,
+            );
         }
         fft.process(&mut buf);
 

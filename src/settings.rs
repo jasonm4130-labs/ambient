@@ -18,8 +18,7 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSModalResponseOK, NSOpenPanel, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSModalResponseOK, NSOpenPanel, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -141,7 +140,9 @@ impl Bridge {
             panel.setCanChooseFiles(true);
             panel.setCanChooseDirectories(false);
             panel.setAllowsMultipleSelection(false);
-            panel.setMessage(Some(&NSString::from_str("Choose an app to capture audio from")));
+            panel.setMessage(Some(&NSString::from_str(
+                "Choose an app to capture audio from",
+            )));
             panel.setDirectoryURL(Some(&objc2_foundation::NSURL::fileURLWithPath(
                 &NSString::from_str("/Applications"),
             )));
@@ -162,7 +163,9 @@ impl Bridge {
             panel.setCanChooseFiles(false);
             panel.setCanChooseDirectories(true);
             panel.setCanCreateDirectories(true);
-            panel.setMessage(Some(&NSString::from_str("Where should sessions be written?")));
+            panel.setMessage(Some(&NSString::from_str(
+                "Where should sessions be written?",
+            )));
             if panel.runModal() != NSModalResponseOK {
                 return None;
             }
@@ -242,7 +245,10 @@ impl SettingsWindow {
         window.setContentView(Some(&web));
         window.center();
 
-        Self { window, _bridge: bridge }
+        Self {
+            window,
+            _bridge: bridge,
+        }
     }
 
     /// Bring it forward. An Accessory-policy app has no menu bar of its own, so

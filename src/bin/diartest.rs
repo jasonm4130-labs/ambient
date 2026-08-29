@@ -28,7 +28,12 @@ fn main() -> Result<()> {
     let mut d = ambient::diarize::Diarizer::load(&args[0], &args[1])?;
     let spans = d.diarize(&samples, threshold)?;
 
-    let n = spans.iter().map(|s| s.speaker).max().map(|m| m + 1).unwrap_or(0);
+    let n = spans
+        .iter()
+        .map(|s| s.speaker)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
     println!("{} span(s), {n} speaker(s)", spans.len());
     for s in &spans {
         println!(

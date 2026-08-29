@@ -67,7 +67,10 @@ impl Config {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Self::default(),
             Err(e) => {
-                eprintln!("  WARNING: {} could not be read ({e}) — using defaults", p.display());
+                eprintln!(
+                    "  WARNING: {} could not be read ({e}) — using defaults",
+                    p.display()
+                );
                 return Self::default();
             }
         };
@@ -110,8 +113,8 @@ impl Config {
                     .collect()
             }
             "input_device" => {
-                self.input_device = (!value.is_empty() && value != "default")
-                    .then(|| value.to_string())
+                self.input_device =
+                    (!value.is_empty() && value != "default").then(|| value.to_string())
             }
             "diarize" => self.diarize = matches!(value, "true" | "yes" | "on" | "1"),
             "threshold" => self.threshold = value.parse()?,
@@ -133,7 +136,8 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("ambient-cfg-{name}-{}.json", std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("ambient-cfg-{name}-{}.json", std::process::id()));
         std::fs::remove_file(&p).ok();
         p
     }

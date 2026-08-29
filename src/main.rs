@@ -57,16 +57,14 @@ fn main() -> Result<()> {
                     other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
                 }
             }
-            let dir =
-                ambient::session::record(name.as_deref(), &apps, model.as_deref(), seconds)?;
+            let dir = ambient::session::record(name.as_deref(), &apps, model.as_deref(), seconds)?;
             println!("{}", dir.display());
             Ok(())
         }
         Some("stop") => {
             let dir = args.next();
-            let stopped = ambient::session::stop_recording(
-                dir.as_deref().map(std::path::Path::new),
-            )?;
+            let stopped =
+                ambient::session::stop_recording(dir.as_deref().map(std::path::Path::new))?;
             println!("{}", stopped.display());
             Ok(())
         }
@@ -223,7 +221,11 @@ fn main() -> Result<()> {
             // Same precedence as `record`: an argument beats the setting.
             let cfg = ambient::config::Config::load();
             let from_config = bundles.is_empty() && !cfg.apps.is_empty();
-            let bundles = if from_config { cfg.apps.clone() } else { bundles };
+            let bundles = if from_config {
+                cfg.apps.clone()
+            } else {
+                bundles
+            };
             if bundles.is_empty() {
                 eprintln!("tapping ALL system audio for {secs}s");
             } else {
@@ -254,8 +256,7 @@ fn main() -> Result<()> {
                 let (r, c) = tap.drain(&mut drain);
                 room.extend_from_slice(&r);
                 call.extend_from_slice(&c);
-                max_rendering =
-                    max_rendering.max(ambient::probe::processes_rendering_output());
+                max_rendering = max_rendering.max(ambient::probe::processes_rendering_output());
             }
 
             // Two clocks now, so two files rather than one interleaved wav.
@@ -263,8 +264,20 @@ fn main() -> Result<()> {
             let (mic_real, _, call_real, _) = tap.real_seconds(&drain);
             let base = out.strip_suffix(".wav").unwrap_or(&out).to_string();
             for (label, samples, hz, real, path) in [
-                ("room", &room, tap.mic_rate, mic_real, format!("{base}.room.wav")),
-                ("call", &call, tap.call_rate, call_real, format!("{base}.call.wav")),
+                (
+                    "room",
+                    &room,
+                    tap.mic_rate,
+                    mic_real,
+                    format!("{base}.room.wav"),
+                ),
+                (
+                    "call",
+                    &call,
+                    tap.call_rate,
+                    call_real,
+                    format!("{base}.call.wav"),
+                ),
             ] {
                 if samples.is_empty() {
                     eprintln!("  {label}: no audio");
@@ -312,21 +325,37 @@ fn main() -> Result<()> {
                 }
                 (Some(k), None) => bail!("`ambient config {k}` needs a value"),
                 (None, _) => {
-                    println!("{:<14} {}", "apps", if cfg.apps.is_empty() {
-                        "(all system audio)".to_string()
-                    } else {
-                        cfg.apps.join(", ")
-                    });
-                    println!("{:<14} {}", "input_device",
-                        cfg.input_device.clone().unwrap_or_else(|| "(system default)".into()));
+                    println!(
+                        "{:<14} {}",
+                        "apps",
+                        if cfg.apps.is_empty() {
+                            "(all system audio)".to_string()
+                        } else {
+                            cfg.apps.join(", ")
+                        }
+                    );
+                    println!(
+                        "{:<14} {}",
+                        "input_device",
+                        cfg.input_device
+                            .clone()
+                            .unwrap_or_else(|| "(system default)".into())
+                    );
                     println!("{:<14} {}", "diarize", cfg.diarize);
                     println!("{:<14} {}", "threshold", cfg.threshold);
-                    println!("{:<14} {}", "sessions_dir",
-                        cfg.sessions_dir.clone()
+                    println!(
+                        "{:<14} {}",
+                        "sessions_dir",
+                        cfg.sessions_dir
+                            .clone()
                             .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "(~/Documents/Ambient)".into()));
+                            .unwrap_or_else(|| "(~/Documents/Ambient)".into())
+                    );
                     println!();
-                    println!("in effect: sessions go to {}", ambient::session::home().display());
+                    println!(
+                        "in effect: sessions go to {}",
+                        ambient::session::home().display()
+                    );
                     if std::env::var_os("AMBIENT_HOME").is_some() {
                         println!("           (AMBIENT_HOME is set and overrides sessions_dir)");
                     }

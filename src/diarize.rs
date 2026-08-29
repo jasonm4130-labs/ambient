@@ -172,7 +172,10 @@ impl Diarizer {
         if cands.is_empty() {
             return Ok(Vec::new());
         }
-        let labels = cluster(&cands.iter().map(|c| c.emb.clone()).collect::<Vec<_>>(), threshold);
+        let labels = cluster(
+            &cands.iter().map(|c| c.emb.clone()).collect::<Vec<_>>(),
+            threshold,
+        );
         let n_clusters = labels.iter().copied().max().unwrap_or(0) + 1;
         if debug {
             eprintln!("  {} candidate(s) -> {n_clusters} speaker(s)", cands.len());

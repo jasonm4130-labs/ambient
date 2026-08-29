@@ -18,22 +18,20 @@ use std::sync::Arc;
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_core_audio::{
-    kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeInput,
-    AudioObjectGetPropertyDataSize,
     kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceMainSubDeviceKey,
     kAudioAggregateDeviceNameKey, kAudioAggregateDeviceSubDeviceListKey,
-    kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultInputDevice,
-    kAudioHardwarePropertyDefaultOutputDevice,
-    kAudioObjectSystemObject, kAudioSubDeviceDriftCompensationKey, kAudioSubDeviceUIDKey,
     kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey,
-    kAudioAggregateDeviceUIDKey, kAudioObjectPropertyElementMain,
-    kAudioHardwarePropertyDevices, kAudioObjectPropertyName,
-    kAudioObjectPropertyScopeGlobal, kAudioSubTapUIDKey, kAudioTapPropertyFormat,
-    kAudioDevicePropertyNominalSampleRate, kAudioTapPropertyUID,
-    AudioDeviceCreateIOProcIDWithBlock, AudioDeviceDestroyIOProcID,
-    AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop, AudioHardwareCreateAggregateDevice,
-    AudioHardwareCreateProcessTap, AudioHardwareDestroyAggregateDevice,
-    AudioHardwareDestroyProcessTap, AudioObjectGetPropertyData, AudioObjectID,
+    kAudioAggregateDeviceUIDKey, kAudioDevicePropertyDeviceUID,
+    kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyStreamConfiguration,
+    kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMain, kAudioObjectPropertyName,
+    kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput, kAudioObjectSystemObject,
+    kAudioSubDeviceDriftCompensationKey, kAudioSubDeviceUIDKey, kAudioSubTapUIDKey,
+    kAudioTapPropertyFormat, kAudioTapPropertyUID, AudioDeviceCreateIOProcIDWithBlock,
+    AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop,
+    AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap,
+    AudioHardwareDestroyAggregateDevice, AudioHardwareDestroyProcessTap,
+    AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
     AudioObjectPropertyAddress, CATapDescription,
 };
 use objc2_core_audio_types::AudioStreamBasicDescription;
@@ -50,7 +48,9 @@ unsafe impl Send for Ring {}
 impl Ring {
     fn new(capacity: usize) -> Self {
         Self {
-            buf: (0..capacity).map(|_| std::cell::UnsafeCell::new(0.0)).collect(),
+            buf: (0..capacity)
+                .map(|_| std::cell::UnsafeCell::new(0.0))
+                .collect(),
             write: AtomicUsize::new(0),
         }
     }
@@ -384,7 +384,6 @@ pub fn silent_tap_advice(
     ))
 }
 
-
 pub struct ProcessTap {
     tap: AudioObjectID,
     agg: AudioObjectID,
@@ -559,7 +558,6 @@ impl ProcessTap {
             // moment the tap is removed. Alignment is rebuilt from elapsed time
             // in `drain` instead.
 
-
             // The output device must be in the aggregate for the tap to have
             // anything to observe. It must NOT be the clock master: an output
             // device only clocks while something is playing, and the aggregate
@@ -597,18 +595,25 @@ impl ProcessTap {
             let k_name = NSString::from_str(kAudioAggregateDeviceNameKey.to_str().unwrap());
             let k_uid = NSString::from_str(kAudioAggregateDeviceUIDKey.to_str().unwrap());
             let k_priv = NSString::from_str(kAudioAggregateDeviceIsPrivateKey.to_str().unwrap());
-            let k_auto =
-                NSString::from_str(kAudioAggregateDeviceTapAutoStartKey.to_str().unwrap());
+            let k_auto = NSString::from_str(kAudioAggregateDeviceTapAutoStartKey.to_str().unwrap());
             let k_taps = NSString::from_str(kAudioAggregateDeviceTapListKey.to_str().unwrap());
-            let k_subs = NSString::from_str(kAudioAggregateDeviceSubDeviceListKey.to_str().unwrap());
-            let k_main = NSString::from_str(kAudioAggregateDeviceMainSubDeviceKey.to_str().unwrap());
+            let k_subs =
+                NSString::from_str(kAudioAggregateDeviceSubDeviceListKey.to_str().unwrap());
+            let k_main =
+                NSString::from_str(kAudioAggregateDeviceMainSubDeviceKey.to_str().unwrap());
 
-            keys.push(&k_name); vals.push(&*name);
-            keys.push(&k_uid);  vals.push(&*agg_uid);
-            keys.push(&k_priv); vals.push(&*one);
-            keys.push(&k_auto); vals.push(&*one);
-            keys.push(&k_taps); vals.push(&*tap_list);
-            keys.push(&k_subs); vals.push(&*sub_list);
+            keys.push(&k_name);
+            vals.push(&*name);
+            keys.push(&k_uid);
+            vals.push(&*agg_uid);
+            keys.push(&k_priv);
+            vals.push(&*one);
+            keys.push(&k_auto);
+            vals.push(&*one);
+            keys.push(&k_taps);
+            vals.push(&*tap_list);
+            keys.push(&k_subs);
+            vals.push(&*sub_list);
             keys.push(&k_main);
             vals.push(&*out_uid);
 
@@ -683,11 +688,11 @@ impl ProcessTap {
         let elapsed = self.started.elapsed().as_secs_f64();
 
         let take = |ring: Option<&Arc<Ring>>,
-                        cursor: &mut usize,
-                        emitted: &mut u64,
-                        real: &mut u64,
-                        channels: usize,
-                        rate: f64|
+                    cursor: &mut usize,
+                    emitted: &mut u64,
+                    real: &mut u64,
+                    channels: usize,
+                    rate: f64|
          -> Vec<f32> {
             let Some(ring) = ring else {
                 return Vec::new();

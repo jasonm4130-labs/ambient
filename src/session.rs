@@ -213,7 +213,10 @@ pub fn record(
     };
     let vad_path = models.join("silero_vad.onnx");
     if !asr_dir.is_dir() {
-        bail!("no ASR model at {} — run ./fetch-models.sh", asr_dir.display());
+        bail!(
+            "no ASR model at {} — run ./fetch-models.sh",
+            asr_dir.display()
+        );
     }
     if !vad_path.is_file() {
         bail!("no VAD model at {}", vad_path.display());
@@ -222,7 +225,11 @@ pub fn record(
     // A `--app` on the command line beats the stored setting; with no flag the
     // settings window decides.
     let cfg = crate::config::Config::load();
-    let bundles: &[String] = if bundles.is_empty() { &cfg.apps } else { bundles };
+    let bundles: &[String] = if bundles.is_empty() {
+        &cfg.apps
+    } else {
+        bundles
+    };
     if !bundles.is_empty() {
         eprintln!("  capturing only: {}", bundles.join(", "));
     }
@@ -235,8 +242,7 @@ pub fn record(
     };
     let dir = home().join(&id);
     let audio = dir.join("audio");
-    std::fs::create_dir_all(&audio)
-        .with_context(|| format!("creating {}", audio.display()))?;
+    std::fs::create_dir_all(&audio).with_context(|| format!("creating {}", audio.display()))?;
 
     let tap = ProcessTap::start(bundles, 60, true, cfg.input_device.as_deref())?;
     // Two devices, two clocks: the mic is on the input device and the call on
@@ -333,7 +339,6 @@ pub fn record(
             call_peak = call_peak.max(s.abs());
             call_w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
         }
-
     }
 
     room_w.finalize()?;
@@ -448,7 +453,10 @@ pub fn record(
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default(),
     };
-    std::fs::write(dir.join("session.json"), serde_json::to_string_pretty(&meta)?)?;
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&meta)?,
+    )?;
 
     if cfg.diarize && lines > 0 {
         std::fs::write(dir.join(STATUS_FILE), "separating voices\n").ok();
@@ -456,8 +464,10 @@ pub fn record(
         // losing the recording to a model that failed to load.
         match diarize_session(&dir, cfg.threshold) {
             Ok(n) => eprintln!("  {n} speaker label(s)"),
-            Err(e) => eprintln!("  WARNING: could not separate voices ({e}) — \
-                                 the transcript is complete but unlabelled"),
+            Err(e) => eprintln!(
+                "  WARNING: could not separate voices ({e}) — \
+                                 the transcript is complete but unlabelled"
+            ),
         }
     }
 
@@ -665,7 +675,12 @@ pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
             continue;
         }
         let spans = diar.diarize(&samples, threshold)?;
-        let speakers = spans.iter().map(|s| s.speaker).max().map(|m| m + 1).unwrap_or(0);
+        let speakers = spans
+            .iter()
+            .map(|s| s.speaker)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
         eprintln!("  {} — {speakers} speaker(s)", track.as_str());
         if spans.is_empty() {
             continue;
@@ -819,7 +834,11 @@ fn containment(a: &str, b: &str) -> f32 {
             .collect()
     };
     let (x, y) = (tok(a), tok(b));
-    let (short, long) = if x.len() <= y.len() { (&x, &y) } else { (&y, &x) };
+    let (short, long) = if x.len() <= y.len() {
+        (&x, &y)
+    } else {
+        (&y, &x)
+    };
     if short.is_empty() {
         return 0.0;
     }
@@ -934,7 +953,11 @@ pub fn markdown(dir: &Path) -> Result<String> {
                 name,
                 l.track.as_str()
             )),
-            None => out.push_str(&format!("**[{}] {}**\n", mmss(l.start_ms), l.track.as_str())),
+            None => out.push_str(&format!(
+                "**[{}] {}**\n",
+                mmss(l.start_ms),
+                l.track.as_str()
+            )),
         }
         out.push_str(&format!("{}\n\n", l.text.trim()));
     }
@@ -990,7 +1013,12 @@ mod tests {
     #[test]
     fn genuine_cross_talk_is_kept() {
         let lines = vec![
-            line(Track::Room, 1000, 5000, "Sorry, could you repeat the last part?"),
+            line(
+                Track::Room,
+                1000,
+                5000,
+                "Sorry, could you repeat the last part?",
+            ),
             line(
                 Track::Call,
                 900,

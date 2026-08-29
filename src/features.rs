@@ -82,8 +82,7 @@ fn padded_window() -> Vec<f32> {
     let mut w = vec![0.0f32; N_FFT];
     let off = (N_FFT - WIN_LENGTH) / 2;
     for n in 0..WIN_LENGTH {
-        w[off + n] =
-            0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / WIN_LENGTH as f32).cos();
+        w[off + n] = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / WIN_LENGTH as f32).cos();
     }
     w
 }
@@ -139,8 +138,8 @@ pub fn log_mel(samples: &[f32]) -> (Vec<f32>, usize) {
     for m in 0..N_MELS {
         let row = &mut out[m * frames..(m + 1) * frames];
         let mean = row.iter().sum::<f32>() / frames as f32;
-        let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>()
-            / (frames as f32 - 1.0).max(1.0); // unbiased, as torch .std()
+        let var =
+            row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / (frames as f32 - 1.0).max(1.0); // unbiased, as torch .std()
         let std = var.sqrt();
         for v in row.iter_mut() {
             *v = (*v - mean) / (std + NORM_EPS);

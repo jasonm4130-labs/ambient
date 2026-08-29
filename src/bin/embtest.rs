@@ -70,9 +70,8 @@ fn main() -> Result<()> {
         println!();
     }
 
-    let same = |i: usize, j: usize| -> f32 {
-        embs[i].iter().zip(&embs[j]).map(|(a, b)| a * b).sum()
-    };
+    let same =
+        |i: usize, j: usize| -> f32 { embs[i].iter().zip(&embs[j]).map(|(a, b)| a * b).sum() };
     let within = (same(0, 1) + same(2, 3)) / 2.0;
     let across = (same(0, 2) + same(0, 3) + same(1, 2) + same(1, 3)) / 4.0;
     println!("\nsame voice   {within:.3}");

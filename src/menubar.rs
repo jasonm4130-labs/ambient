@@ -22,9 +22,7 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSImage, NSMenu,
     NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWorkspace,
 };
-use objc2_foundation::{
-    MainThreadMarker, NSObject, NSObjectProtocol, NSString, NSTimer, NSURL,
-};
+use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString, NSTimer, NSURL};
 
 /// What the status item is doing, which is also what its icon says.
 #[derive(Clone, Copy, PartialEq)]

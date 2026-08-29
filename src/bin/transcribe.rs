@@ -20,7 +20,11 @@ fn main() -> Result<()> {
 
     println!("audio    {secs:.1}s");
     println!("load     {:.2}s", load.as_secs_f64());
-    println!("decode   {:.2}s ({:.0}x realtime)", run.as_secs_f64(), secs / run.as_secs_f64());
+    println!(
+        "decode   {:.2}s ({:.0}x realtime)",
+        run.as_secs_f64(),
+        secs / run.as_secs_f64()
+    );
     println!("\n{text}\n");
     Ok(())
 }

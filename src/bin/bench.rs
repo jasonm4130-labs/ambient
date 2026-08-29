@@ -23,7 +23,9 @@ fn peak_rss_mb() -> f64 {
 
 fn main() -> ort::Result<()> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: bench <encoder.onnx> <coreml|cpu> [seconds]");
+    let path = args
+        .next()
+        .expect("usage: bench <encoder.onnx> <coreml|cpu> [seconds]");
     let ep = args.next().unwrap_or_else(|| "coreml".into());
     let seconds: usize = args.next().unwrap_or_else(|| "60".into()).parse().unwrap();
 
@@ -41,7 +43,8 @@ fn main() -> ort::Result<()> {
     let mut session = builder.commit_from_file(&path)?;
     let load_ms = load.elapsed().as_millis();
 
-    let signal = Tensor::from_array((vec![1_i64, 128, frames as i64], vec![0.0_f32; 128 * frames]))?;
+    let signal =
+        Tensor::from_array((vec![1_i64, 128, frames as i64], vec![0.0_f32; 128 * frames]))?;
     let length = Tensor::from_array((vec![1_i64], vec![frames as i64]))?;
 
     // Warm-up: the first CoreML run pays model compilation.

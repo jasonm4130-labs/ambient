@@ -59,9 +59,8 @@ impl Recognizer {
             Ok(format!("{dir}/{name}"))
         };
 
-        let build = |p: String| -> Result<Session> {
-            Session::builder().a()?.commit_from_file(p).a()
-        };
+        let build =
+            |p: String| -> Result<Session> { Session::builder().a()?.commit_from_file(p).a() };
 
         let encoder = build(find("encoder")?)?;
         let decoder = build(find("decoder")?)?;
@@ -77,7 +76,14 @@ impl Recognizer {
         }
         let blank = tokens.len() - 1;
 
-        Ok(Self { encoder, decoder, joiner, tokens, blank, last_confidence: 0.0 })
+        Ok(Self {
+            encoder,
+            decoder,
+            joiner,
+            tokens,
+            blank,
+            last_confidence: 0.0,
+        })
     }
 
     /// One decoder step. `token == None` means the initial blank priming step.
@@ -93,12 +99,15 @@ impl Recognizer {
         let h = Tensor::from_array((vec![PRED_LAYERS as i64, 1, PRED_HIDDEN as i64], h_in)).a()?;
         let c = Tensor::from_array((vec![PRED_LAYERS as i64, 1, PRED_HIDDEN as i64], c_in)).a()?;
 
-        let out = self.decoder.run(ort::inputs![
-            "targets" => &targets,
-            "target_length" => &target_len,
-            "states.1" => &h,
-            "onnx::Slice_3" => &c,
-        ]).a()?;
+        let out = self
+            .decoder
+            .run(ort::inputs![
+                "targets" => &targets,
+                "target_length" => &target_len,
+                "states.1" => &h,
+                "onnx::Slice_3" => &c,
+            ])
+            .a()?;
 
         let (_, o) = out["outputs"].try_extract_tensor::<f32>().a()?;
         let (_, h_new) = out["states"].try_extract_tensor::<f32>().a()?;
@@ -217,7 +226,8 @@ impl Recognizer {
         let signal = Tensor::from_array((
             vec![1_i64, crate::features::N_MELS as i64, frames as i64],
             feats,
-        )).a()?;
+        ))
+        .a()?;
         let length = Tensor::from_array((vec![1_i64], vec![frames as i64])).a()?;
 
         let enc = self
@@ -242,15 +252,17 @@ impl Recognizer {
                 // Encoder frame t as [1, 1024, 1].
                 let frame: Vec<f32> = (0..dim).map(|d| enc_data[d * t_max + t]).collect();
                 let ef = Tensor::from_array((vec![1_i64, dim as i64, 1], frame)).a()?;
-                let df = Tensor::from_array((
-                    vec![1_i64, PRED_HIDDEN as i64, 1],
-                    state.out.clone(),
-                )).a()?;
+                let df =
+                    Tensor::from_array((vec![1_i64, PRED_HIDDEN as i64, 1], state.out.clone()))
+                        .a()?;
 
-                let j = self.joiner.run(ort::inputs![
-                    "encoder_outputs" => &ef,
-                    "decoder_outputs" => &df,
-                ]).a()?;
+                let j = self
+                    .joiner
+                    .run(ort::inputs![
+                        "encoder_outputs" => &ef,
+                        "decoder_outputs" => &df,
+                    ])
+                    .a()?;
                 let (_, logits) = j["outputs"].try_extract_tensor::<f32>().a()?;
 
                 let n_tok = self.tokens.len(); // 8193 incl. blank
@@ -291,7 +303,11 @@ impl Recognizer {
             }
         }
 
-        self.last_confidence = if conf_n > 0 { conf_sum / conf_n as f32 } else { 0.0 };
+        self.last_confidence = if conf_n > 0 {
+            conf_sum / conf_n as f32
+        } else {
+            0.0
+        };
 
         // SentencePiece: U+2581 marks a word boundary.
         let text: String = emitted

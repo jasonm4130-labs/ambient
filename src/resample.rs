@@ -66,17 +66,15 @@ pub fn to_16k(samples: &[f32], from_hz: u32) -> Result<Vec<f32>> {
 /// mono. The companion to [`to_16k`]: together they let anything on disk reach
 /// the recogniser, which accepts 16 kHz mono and nothing else.
 pub fn read_wav_any(path: &std::path::Path) -> Result<(Vec<f32>, u32)> {
-    let mut r = hound::WavReader::open(path)
-        .map_err(|e| anyhow!("opening {}: {e}", path.display()))?;
+    let mut r =
+        hound::WavReader::open(path).map_err(|e| anyhow!("opening {}: {e}", path.display()))?;
     let spec = r.spec();
     let raw: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => r
             .samples::<i16>()
             .map(|s| s.map(|v| v as f32 / 32768.0))
             .collect::<std::result::Result<_, _>>()?,
-        hound::SampleFormat::Float => {
-            r.samples::<f32>().collect::<std::result::Result<_, _>>()?
-        }
+        hound::SampleFormat::Float => r.samples::<f32>().collect::<std::result::Result<_, _>>()?,
     };
     let mono = if spec.channels > 1 {
         raw.chunks(spec.channels as usize)

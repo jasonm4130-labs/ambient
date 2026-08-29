@@ -71,7 +71,9 @@ fn main() {
         )
     };
 
-    let probe = Probe::alloc(mtm).set_ivars(Ivars { seen: RefCell::new(Vec::new()) });
+    let probe = Probe::alloc(mtm).set_ivars(Ivars {
+        seen: RefCell::new(Vec::new()),
+    });
     let probe: Retained<Probe> = unsafe { msg_send![super(probe), init] };
 
     let cfg = unsafe { WKWebViewConfiguration::new(mtm) };
@@ -151,7 +153,9 @@ fn main() {
                 js(&w, r#"document.querySelector(".add").click();"#);
             }
             8 => {
-                let out = std::env::args().nth(1).unwrap_or_else(|| "uicheck.png".into());
+                let out = std::env::args()
+                    .nth(1)
+                    .unwrap_or_else(|| "uicheck.png".into());
                 let handler = RcBlock::new(move |img: *mut NSImage, _e: *mut NSError| unsafe {
                     if let Some(img) = img.as_ref() {
                         if let Some(tiff) = img.TIFFRepresentation() {
@@ -170,7 +174,10 @@ fn main() {
                 std::mem::forget(handler);
             }
             9 => {
-                println!("\n{} message(s) reached the bridge", p.ivars().seen.borrow().len());
+                println!(
+                    "\n{} message(s) reached the bridge",
+                    p.ivars().seen.borrow().len()
+                );
                 std::process::exit(0);
             }
             _ => {}
