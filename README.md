@@ -6,8 +6,9 @@ Claude as clean speaker-labelled text.
 
 Design doc: <https://claude.ai/code/artifact/6ff48ff8-7978-46fc-ae1b-387fd69974e3>
 
-**Status: transcription works end to end on the home machine.** Nothing
-captures audio yet — that is the next phase.
+**Status: capture and transcription both work on the home machine.** A Core
+Audio process tap records system audio with nothing joining the call, and that
+audio transcribes correctly.
 
 ## Quick start
 
@@ -43,6 +44,30 @@ glossary before anything is summarised.
 Known artefact: chunk seams can duplicate a word ("flat. flat regardless…").
 Fixable with overlap-and-dedupe; the repair pass also absorbs it.
 
+## Capture: the launch method is load-bearing
+
+`ambient tap <out.wav> <secs> [bundle-id...]` records system audio through a
+Core Audio process tap — no virtual device, no bot in the meeting, and only the
+System Audio Recording permission rather than ScreenCaptureKit's Screen
+Recording.
+
+**It must be launched as a bundled app through LaunchServices.** Run the bare
+binary from a terminal and the tap is created successfully, delivers buffers at
+the correct rate, and every sample is zero. TCC attributes the request to the
+*responsible process* — the terminal — which has no audio permission and does
+not prompt, so the failure is silent in the most literal sense.
+
+```sh
+./make-app.sh                                        # bundle + ad-hoc sign
+open -a "$PWD/build/Ambient.app" --args tap /tmp/out.wav 14   # works
+./build/Ambient.app/Contents/MacOS/ambient tap ...            # silence
+```
+
+Verified end to end: tapped system audio, resampled to 16 kHz, transcribed as
+"Right, the process tab is capturing system audio with nothing joining the
+meeting." (`tap` -> "tab" and `Priya` -> "CRO" are the usual proper-noun and
+homophone errors.)
+
 ## Porting to the work M5 (16 GB)
 
 The point of the exercise. In order:
@@ -52,8 +77,10 @@ The point of the exercise. In order:
 3. `ambient transcribe` on a real recording, run under `/usr/bin/time -l`, and
    check `maximum resident set size` stays near 2.3 GB. If it does, the 16 GB
    machine is fine for batch transcription.
-4. Only then worry about capture: creating a tap needs the System Audio
-   Recording TCC permission, which is the thing an MDM policy can refuse.
+4. Then `./make-app.sh` and run the tap **via `open -a`**. If it returns
+   silence, that is TCC, not a bug — and on a managed Mac it is exactly what a
+   PPPC profile from Jamf/Intune exists to grant. Ask for System Audio
+   Recording; you do not need Screen Recording.
 
 ## What Phase 0 has established
 

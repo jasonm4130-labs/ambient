@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
+block2 = "0.6.2"
 hound = "3.5.1"
 libc = "0.2.189"
 objc2-core-foundation = "0.3.2"
