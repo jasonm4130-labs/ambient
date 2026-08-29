@@ -9,6 +9,7 @@ USAGE
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record system audio, no bot
+  ambient vad <a.wav>                  show detected speech segments
 ";
 
 fn main() -> Result<()> {
@@ -29,10 +30,48 @@ fn main() -> Result<()> {
             let secs = samples.len() as f64 / 16_000.0;
             let t = std::time::Instant::now();
             let mut rec = ambient::asr::Recognizer::load(&model)?;
-            let text = rec.transcribe_long(&samples)?;
+            // Prefer VAD chunking when the model is present; it cuts in silence
+            // and skips it entirely.
+            let text = match ambient::vad::Vad::load("models/silero_vad.onnx") {
+                Ok(mut vad) => {
+                    let chunks = vad.chunks(&samples, 30)?;
+                    let speech: f64 = chunks.iter().map(|c| c.seconds()).sum();
+                    eprintln!(
+                        "vad: {} chunk(s), {speech:.1}s speech of {secs:.1}s",
+                        chunks.len()
+                    );
+                    rec.transcribe_chunked(&samples, &chunks)?
+                }
+                Err(_) => rec.transcribe_long(&samples)?,
+            };
             let el = t.elapsed().as_secs_f64();
             eprintln!("{secs:.1}s audio in {el:.2}s ({:.0}x realtime)", secs / el);
             println!("{text}");
+            Ok(())
+        }
+        Some("vad") => {
+            let wav = args.next().unwrap_or_default();
+            if wav.is_empty() {
+                bail!("{USAGE}");
+            }
+            let samples = ambient::features::read_wav(&wav)?;
+            let mut vad = ambient::vad::Vad::load("models/silero_vad.onnx")?;
+            let segs = vad.segments(&samples)?;
+            let total: f64 = segs.iter().map(|s| s.seconds()).sum();
+            let dur = samples.len() as f64 / 16_000.0;
+            for (i, s) in segs.iter().enumerate() {
+                println!(
+                    "{i:3}  {:7.2}s -> {:7.2}s  ({:.2}s)",
+                    s.start as f64 / 16_000.0,
+                    s.end as f64 / 16_000.0,
+                    s.seconds()
+                );
+            }
+            println!(
+                "\n{} segments, {total:.1}s speech of {dur:.1}s ({:.0}% skipped)",
+                segs.len(),
+                100.0 * (1.0 - total / dur)
+            );
             Ok(())
         }
         Some("tap") => {

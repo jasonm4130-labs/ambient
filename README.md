@@ -95,6 +95,31 @@ Verified end to end: tapped system audio, resampled to 16 kHz, transcribed as
 meeting." (`tap` -> "tab" and `Priya` -> "CRO" are the usual proper-noun and
 homophone errors.)
 
+## Voice activity detection
+
+Silero VAD (`models/silero_vad.onnx`, 629 KB) runs before transcription and
+does two jobs. It skips silence, and — more valuably — it decides where to cut.
+
+Chunk boundaries were previously chosen by local energy, which sliced through
+words: a 127 s file came back containing "Chunking keeps the memory flat. flat
+regardless of how long the meeting actually runs." Cutting on VAD boundaries
+instead, the same file yields 375 words with **zero adjacent duplicates**.
+
+| File | Speech / total | Chunks | Realtime | Peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| 127 s continuous | 127.5 / 127.5 s | 6 | 39x | 2255 MB |
+| mic track | 3.6 / 9.7 s | 1 | 14x | — |
+
+The VAD pass costs throughput (39x against 54x without) because it runs one
+inference per 32 ms frame. Worth it: memory stays flat, silence is never sent
+to the encoder, and the seams stop mangling words.
+
+**One behaviour to know.** VAD also discarded the television audible in the
+background of the mic recording — it fell below the speech threshold. Good for
+noise, but quiet speech that genuinely matters would go the same way, so the
+thresholds in `vad.rs` are a knob to revisit against real room recordings
+rather than settled.
+
 ## Porting to the work M5 (16 GB)
 
 The point of the exercise. In order:

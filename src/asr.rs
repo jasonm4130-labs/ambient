@@ -138,6 +138,27 @@ impl Recognizer {
         cuts
     }
 
+    /// Transcribe using caller-supplied chunk boundaries — VAD segments, so
+    /// cuts land in silence and silence itself is never sent to the encoder.
+    pub fn transcribe_chunked(
+        &mut self,
+        samples: &[f32],
+        chunks: &[crate::vad::Segment],
+    ) -> Result<String> {
+        let mut parts = Vec::new();
+        for c in chunks {
+            let seg = &samples[c.start.min(samples.len())..c.end.min(samples.len())];
+            if seg.len() < 1600 {
+                continue;
+            }
+            let text = self.transcribe(seg)?;
+            if !text.is_empty() {
+                parts.push(text);
+            }
+        }
+        Ok(parts.join(" "))
+    }
+
     /// Transcribe audio of any length, chunked so peak memory stays flat.
     pub fn transcribe_long(&mut self, samples: &[f32]) -> Result<String> {
         const CHUNK: usize = 30 * 16_000;
