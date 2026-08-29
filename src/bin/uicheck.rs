@@ -108,7 +108,12 @@ fn main() {
                     r#"applyConfig({"apps":["us.zoom.xos"],"input_device":"MacBook Pro Microphone",
                        "diarize":true,"threshold":0.5,"sessions_dir":null,
                        "devices":["MacBook Pro Microphone","Iriun Webcam Audio"],
-                       "default_dir":"/Users/x/Documents/Ambient"});"#,
+                       "default_dir":"/Users/x/Documents/Ambient",
+                       "ask_before_recording":true,"audio_retention":"7",
+                       "roster":["Marcus","Priya"],
+                       "unnamed":[{"label":"call-1","sample":"shall we start with the export spec"},
+                                  {"label":"room-1","sample":"yes, go ahead"}],
+                       "latest_session":"2026-08-29T1517"});"#,
                 );
             }
             3 => {
@@ -123,11 +128,19 @@ fn main() {
                           + " micoptions=" + t("mic").options.length
                           + " diarize=" + t("diarize").classList.contains("on")
                           + " sens=" + t("sens").value
-                          + " dir=" + t("dir").textContent);
+                          + " dir=" + t("dir").textContent
+                          + " ask=" + t("ask").classList.contains("on")
+                          + " keep=" + t("keep").value
+                          + " people=" + [...document.querySelectorAll('#people .chip b')].map(e=>e.textContent).join("/")
+                          + " naming=" + [...document.querySelectorAll('#naming .row')].length
+                          + " namehint=" + t("namehint").textContent);
                         window.webkit.messageHandlers.ambient.postMessage(JSON.stringify({
                           probe_render: t("scope").value + "|" + t("mic").value + "|"
                             + t("sens").value + "|" + t("dir").textContent + "|"
-                            + t("diarize").classList.contains("on")
+                            + t("diarize").classList.contains("on") + "|"
+                            + t("ask").classList.contains("on") + "|" + t("keep").value + "|"
+                            + document.querySelectorAll('#people .chip').length + "|"
+                            + document.querySelectorAll('#naming .row').length
                         }));
                     })();"#,
                 );
@@ -149,10 +162,29 @@ fn main() {
                 js(&w, r#"document.querySelector(".chip .x").click();"#);
             }
             7 => {
-                println!("\n[6] clicking + Add");
-                js(&w, r#"document.querySelector(".add").click();"#);
+                println!("\n[6] toggling ask-before-recording and picking a retention");
+                js(
+                    &w,
+                    r#"(() => { document.getElementById("ask").click();
+                       const k = document.getElementById("keep");
+                       k.value = "forever"; k.dispatchEvent(new Event("change")); })();"#,
+                );
             }
             8 => {
+                println!("\n[7] adding a person and naming a speaker");
+                js(
+                    &w,
+                    r#"(() => {
+                        const n = document.getElementById("personname");
+                        n.value = "Dana";
+                        document.getElementById("addperson").click();
+                        const s = document.querySelector('#naming select');
+                        s.value = "Priya"; s.dispatchEvent(new Event("change"));
+                        document.querySelector('#people .chip .x').click();
+                     })();"#,
+                );
+            }
+            9 => {
                 let out = std::env::args()
                     .nth(1)
                     .unwrap_or_else(|| "uicheck.png".into());
@@ -173,7 +205,7 @@ fn main() {
                 unsafe { w.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
                 std::mem::forget(handler);
             }
-            9 => {
+            10 => {
                 println!(
                     "\n{} message(s) reached the bridge",
                     p.ivars().seen.borrow().len()

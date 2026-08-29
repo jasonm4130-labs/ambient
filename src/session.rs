@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 
 use crate::capture::ProcessTap;
 use crate::resample;
@@ -475,8 +476,102 @@ pub fn record(
     std::fs::write(&md, markdown(&dir)?)?;
     std::fs::write(dir.join(STATUS_FILE), "done\n").ok();
 
+    // Only now that the text exists is the audio safe to age out. This covers
+    // the session just recorded as well as every older one, which is why there
+    // is no launchd agent: the app runs whenever a recording happens.
+    match sweep_audio(&home(), cfg.audio_retention_days) {
+        0 => {}
+        n => eprintln!("  {n} track(s) of aged-out audio removed"),
+    }
+
     eprintln!("  {lines} line(s) written\n  {}", md.display());
     Ok(dir)
+}
+
+/// The most recently written session, by directory name. Session ids are
+/// timestamps, so sorting by name sorts by time without stat-ing anything.
+pub fn latest(root: &Path) -> Option<PathBuf> {
+    let mut all: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    all.sort();
+    all.pop()
+}
+
+/// Delete track audio older than the retention window, leaving every transcript
+/// untouched. `None` keeps audio forever; `Some(0)` deletes it as soon as the
+/// transcript exists.
+///
+/// Age is taken from the audio file itself rather than its session directory,
+/// so renaming a speaker months later does not resurrect the recording.
+/// Whether a session directory holds at least one transcribed line. Also the
+/// test for "is this a session at all" — anything else in the folder has no
+/// `raw.jsonl` and is left alone.
+fn has_transcribed_words(session: &Path) -> bool {
+    std::fs::read_to_string(session.join("raw.jsonl"))
+        .is_ok_and(|t| t.lines().any(|l| !l.trim().is_empty()))
+}
+
+pub fn sweep_audio(root: &Path, keep_days: Option<u32>) -> usize {
+    sweep_audio_at(root, keep_days, SystemTime::now())
+}
+
+pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> usize {
+    let Some(days) = keep_days else {
+        return 0;
+    };
+    let window = Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        // Never follow a symlink out of the sessions folder: this deletes
+        // files, and a link placed here must not make it delete somebody
+        // else's.
+        if entry
+            .path()
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            continue;
+        }
+        let session = entry.path();
+        let audio = session.join("audio");
+        // Both halves are needed, and each guards a different way of losing
+        // the only copy of a conversation:
+        //
+        // - no `transcript.md` means the recording is still being written, and
+        //   `raw.jsonl` is already growing by then;
+        // - a `transcript.md` with no words behind it means ASR found nothing,
+        //   which is exactly when the audio is still the only record. `markdown`
+        //   writes a transcript saying so, so the file alone proves nothing.
+        if !session.join("transcript.md").is_file() || !has_transcribed_words(&session) {
+            continue;
+        }
+        let Ok(tracks) = std::fs::read_dir(&audio) else {
+            continue;
+        };
+        for track in tracks.filter_map(|e| e.ok()).map(|e| e.path()) {
+            let old = track
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| now.duration_since(t).unwrap_or_default() >= window)
+                .unwrap_or(false);
+            if old && std::fs::remove_file(&track).is_ok() {
+                removed += 1;
+            }
+        }
+        // Tidy the empty directory, but only if it is genuinely empty — a file
+        // this code did not put there is not its business to delete.
+        if std::fs::read_dir(&audio).is_ok_and(|mut d| d.next().is_none()) {
+            std::fs::remove_dir(&audio).ok();
+        }
+    }
+    removed
 }
 
 /// A raw record with whatever the edit layer has said about it.
@@ -607,6 +702,19 @@ pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
         bail!("{} has no transcript to attribute", dir.display());
     }
 
+    // Checked before anything is reverted below. Once retention has swept the
+    // audio, a re-run would undo the labels it wrote last time and then find
+    // nothing to replace them with — silently unlabelling every speaker that
+    // nobody had named by hand.
+    let audio = dir.join("audio");
+    if !audio.join("room.wav").exists() && !audio.join("call.wav").exists() {
+        bail!(
+            "{} has no audio left to attribute — the retention setting removed it, \
+             and the labels it already carries are all there will be",
+            dir.display()
+        );
+    }
+
     let root = models_root()?;
     let seg = root.join("pyannote-segmentation-3.0").join("model.onnx");
     let emb = root.join("wespeaker_en_voxceleb_resnet34_LM.onnx");
@@ -661,7 +769,6 @@ pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
         }
     }
 
-    let audio = dir.join("audio");
     for (track, wav) in [
         (Track::Room, audio.join("room.wav")),
         (Track::Call, audio.join("call.wav")),
@@ -736,6 +843,33 @@ pub const USER_BY: &str = "user";
 
 /// Give every line currently labelled `label` a human name. Appends one
 /// `Speaker` edit per line, so it is undoable like anything else.
+/// Speaker labels nobody has named yet, each with the first thing that voice
+/// said. The sample line is what makes the roster picker usable: `call-2` means
+/// nothing, but `call-2` next to "right, shall we start with the export spec"
+/// is recognisable.
+///
+/// A label counts as unnamed while it still has diarization's shape,
+/// `<track>-<n>`. Once a person types a name it stops matching and drops out.
+pub fn unnamed_labels(dir: &Path) -> Result<Vec<(String, String)>> {
+    let lines = transcript(dir, false)?;
+    let mut out: Vec<(String, String)> = Vec::new();
+    for l in &lines {
+        let Some(label) = l.speaker.as_deref() else {
+            continue;
+        };
+        let looks_generated = label.rsplit_once('-').is_some_and(|(track, n)| {
+            matches!(track, "room" | "call")
+                && !n.is_empty()
+                && n.chars().all(|c| c.is_ascii_digit())
+        });
+        if !looks_generated || out.iter().any(|(seen, _)| seen == label) {
+            continue;
+        }
+        out.push((label.to_string(), l.text.trim().to_string()));
+    }
+    Ok(out)
+}
+
 pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
     let lines = transcript(dir, false)?;
     let targets: Vec<&Line> = lines
@@ -973,6 +1107,241 @@ pub fn markdown(dir: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session directory as `record()` leaves one: a transcript, some raw
+    /// lines, and the two track wavs. Built in a temp dir — the sweep deletes
+    /// files, so it must never be pointed at the real sessions folder.
+    fn fake_session(root: &Path, id: &str, with_transcript: bool) -> PathBuf {
+        let dir = root.join(id);
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        std::fs::write(dir.join("audio").join("room.wav"), b"RIFF....").unwrap();
+        std::fs::write(dir.join("audio").join("call.wav"), b"RIFF....").unwrap();
+        let line = RawRecord {
+            track: Track::Room,
+            start_ms: 0,
+            end_ms: 1000,
+            text: "some words were said".into(),
+            confidence: 0.9,
+        };
+        std::fs::write(
+            dir.join("raw.jsonl"),
+            format!("{}\n", serde_json::to_string(&line).unwrap()),
+        )
+        .unwrap();
+        if with_transcript {
+            std::fs::write(dir.join("transcript.md"), "# transcript\n").unwrap();
+        }
+        dir
+    }
+
+    fn sweep_root(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("ambient-sweep-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&p).ok();
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn keeping_audio_forever_deletes_nothing() {
+        let root = sweep_root("forever");
+        let dir = fake_session(&root, "2026-01-01T0900", true);
+        assert_eq!(sweep_audio(&root, None), 0);
+        assert!(dir.join("audio").join("room.wav").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn zero_days_removes_the_audio_and_keeps_the_words() {
+        let root = sweep_root("zero");
+        let dir = fake_session(&root, "2026-01-01T0900", true);
+        assert_eq!(sweep_audio(&root, Some(0)), 2);
+        assert!(!dir.join("audio").exists());
+        assert!(dir.join("transcript.md").exists());
+        assert!(dir.join("raw.jsonl").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn audio_within_the_window_is_left_alone() {
+        let root = sweep_root("window");
+        let dir = fake_session(&root, "2026-01-01T0900", true);
+        // Seven days of retention, judged one day after the file was written.
+        let a_day_later = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
+        assert_eq!(sweep_audio_at(&root, Some(7), a_day_later), 0);
+        assert!(dir.join("audio").join("room.wav").exists());
+
+        // ...and eight days after, it goes.
+        let later = SystemTime::now() + Duration::from_secs(8 * 24 * 60 * 60);
+        assert_eq!(sweep_audio_at(&root, Some(7), later), 2);
+        assert!(!dir.join("audio").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The one that would hurt most. `markdown` writes a transcript saying
+    /// "no speech was transcribed" when ASR finds nothing, so a file-exists
+    /// check would delete the audio of a recording that produced no text —
+    /// destroying the only copy precisely when transcription failed.
+    #[test]
+    fn a_transcript_with_no_words_in_it_does_not_authorise_deleting_the_audio() {
+        let root = sweep_root("nowords");
+        let dir = fake_session(&root, "2026-01-01T0900", true);
+        std::fs::write(dir.join("raw.jsonl"), "").unwrap();
+        assert_eq!(sweep_audio(&root, Some(0)), 0);
+        assert!(dir.join("audio").join("room.wav").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The sweep deletes files, so anything in the folder that is not a session
+    /// is none of its business.
+    #[test]
+    fn a_directory_that_is_not_a_session_is_left_alone() {
+        let root = sweep_root("notasession");
+        let other = root.join("my-notes");
+        std::fs::create_dir_all(other.join("audio")).unwrap();
+        std::fs::write(other.join("audio").join("room.wav"), b"mine").unwrap();
+        std::fs::write(other.join("transcript.md"), "not ambient's").unwrap();
+        assert_eq!(sweep_audio(&root, Some(0)), 0);
+        assert!(other.join("audio").join("room.wav").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The one that would hurt: a recording still being transcribed has no
+    /// transcript yet, and its audio is the only copy of what was said.
+    #[test]
+    fn a_session_without_a_transcript_is_never_swept() {
+        let root = sweep_root("inflight");
+        let dir = fake_session(&root, "2026-01-01T0900", false);
+        assert_eq!(sweep_audio(&root, Some(0)), 0);
+        assert!(dir.join("audio").join("room.wav").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_latest_session_is_the_last_by_name() {
+        let root = sweep_root("latest");
+        fake_session(&root, "2026-01-01T0900", true);
+        fake_session(&root, "2026-03-04T1130", true);
+        fake_session(&root, "2026-02-01T0900", true);
+        assert_eq!(
+            latest(&root).unwrap().file_name().unwrap(),
+            "2026-03-04T1130"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A session with two raw lines and whatever edits are handed in, written
+    /// the way `record` and `diarize_session` write them.
+    fn session_with(root: &Path, edits: &[Edit]) -> PathBuf {
+        let dir = root.join("2026-01-01T0900");
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = [
+            RawRecord {
+                track: Track::Call,
+                start_ms: 0,
+                end_ms: 2000,
+                text: "shall we start with the export spec".into(),
+                confidence: 0.9,
+            },
+            RawRecord {
+                track: Track::Room,
+                start_ms: 2100,
+                end_ms: 4000,
+                text: "yes, go ahead".into(),
+                confidence: 0.9,
+            },
+        ];
+        let body: String = raw
+            .iter()
+            .map(|r| format!("{}\n", serde_json::to_string(r).unwrap()))
+            .collect();
+        std::fs::write(dir.join("raw.jsonl"), body).unwrap();
+        let body: String = edits
+            .iter()
+            .map(|e| format!("{}\n", serde_json::to_string(e).unwrap()))
+            .collect();
+        std::fs::write(dir.join("edits.jsonl"), body).unwrap();
+        dir
+    }
+
+    fn spoken_by(track: Track, start_ms: u64, name: &str, by: &str) -> Edit {
+        Edit::Speaker {
+            target: Target { track, start_ms },
+            name: name.into(),
+            by: by.into(),
+            at: "2026-01-01T09:00:00+00:00".into(),
+        }
+    }
+
+    #[test]
+    fn diarizations_own_labels_are_the_ones_offered_for_naming() {
+        let root = sweep_root("unnamed");
+        let dir = session_with(
+            &root,
+            &[
+                spoken_by(Track::Call, 0, "call-1", DIARIZE_BY),
+                spoken_by(Track::Room, 2100, "room-1", DIARIZE_BY),
+            ],
+        );
+        let unnamed = unnamed_labels(&dir).unwrap();
+        assert_eq!(unnamed.len(), 2);
+        assert_eq!(unnamed[0].0, "call-1");
+        // The sample line is the point: `call-1` alone is unrecognisable.
+        assert_eq!(unnamed[0].1, "shall we start with the export spec");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_person_with_a_name_is_no_longer_offered() {
+        let root = sweep_root("named");
+        let dir = session_with(
+            &root,
+            &[
+                spoken_by(Track::Call, 0, "call-1", DIARIZE_BY),
+                spoken_by(Track::Room, 2100, "room-1", DIARIZE_BY),
+                spoken_by(Track::Call, 0, "Priya", USER_BY),
+            ],
+        );
+        let unnamed = unnamed_labels(&dir).unwrap();
+        assert_eq!(unnamed.len(), 1);
+        assert_eq!(unnamed[0].0, "room-1");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Someone genuinely called "call-1" is not a case worth handling, but a
+    /// person named "Room-2" would be — the shape test must not eat a real name.
+    #[test]
+    fn a_name_that_merely_resembles_a_label_is_left_named() {
+        let root = sweep_root("resembles");
+        let dir = session_with(
+            &root,
+            &[
+                spoken_by(Track::Call, 0, "call-one", USER_BY),
+                spoken_by(Track::Room, 2100, "roomba", USER_BY),
+            ],
+        );
+        assert!(unnamed_labels(&dir).unwrap().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Retention and diarization interact badly if this is not guarded: the
+    /// re-run reverts last time's labels before it discovers there is nothing
+    /// left to read, which would unlabel everyone nobody had named by hand.
+    #[test]
+    fn diarizing_a_session_whose_audio_was_swept_refuses_rather_than_unlabelling() {
+        let root = sweep_root("swept");
+        let dir = session_with(&root, &[spoken_by(Track::Call, 0, "call-1", DIARIZE_BY)]);
+        std::fs::write(dir.join("transcript.md"), "# t\n").unwrap();
+        let before = std::fs::read_to_string(dir.join("edits.jsonl")).unwrap();
+
+        let e = diarize_session(&dir, 0.5).unwrap_err();
+        assert!(e.to_string().contains("no audio left"), "{e}");
+        // The important half: it must not have appended a revert on its way out.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("edits.jsonl")).unwrap(),
+            before
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     fn line(track: Track, start_ms: u64, end_ms: u64, text: &str) -> Line {
         Line {

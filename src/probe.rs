@@ -126,6 +126,33 @@ pub fn probe_ort() {
 /// because nothing was playing, and a tap that is silent because it was denied.
 /// The second is the dangerous one — Core Audio reports success, delivers
 /// correctly-shaped buffers, and fills them with zeros.
+/// Bundle IDs of the processes currently producing audio.
+///
+/// `processes_rendering_output` counts them for the capture warning; this names
+/// them, which is what lets the menu bar notice that a watched call app has
+/// started talking. Processes without a bundle ID (daemons, the system itself)
+/// are dropped rather than reported as anonymous.
+pub fn bundles_rendering_output() -> Vec<String> {
+    let processes: Vec<AudioObjectID> = match unsafe {
+        get_array(
+            kAudioObjectSystemObject as AudioObjectID,
+            kAudioHardwarePropertyProcessObjectList,
+        )
+    } {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    processes
+        .into_iter()
+        .filter(|&p| {
+            let on: u32 =
+                unsafe { get_scalar(p, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) };
+            on != 0
+        })
+        .filter_map(|p| unsafe { get_bundle_id(p) })
+        .collect()
+}
+
 pub fn processes_rendering_output() -> usize {
     let processes: Vec<AudioObjectID> = match unsafe {
         get_array(

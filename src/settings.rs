@@ -45,6 +45,24 @@ struct Patch {
     remove_app: Option<String>,
     /// "add_app" or "choose_dir": needs a native panel.
     action: Option<String>,
+    ask_before_recording: Option<bool>,
+    /// A number of days, or "forever". A string rather than an integer so that
+    /// keeping audio indefinitely stays a deliberate word on both sides.
+    audio_retention: Option<String>,
+    add_person: Option<String>,
+    remove_person: Option<String>,
+    /// Put a roster name on one of the recording's speaker labels.
+    assign: Option<Assign>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Assign {
+    label: String,
+    name: String,
+    /// The session the page was showing when the name was chosen. A recording
+    /// can finish while the window is open, and without this the name would
+    /// land on whichever session is newest by then — a different conversation.
+    session: String,
 }
 
 struct Ivars {
@@ -107,6 +125,47 @@ impl Bridge {
         }
         if let Some(id) = &patch.remove_app {
             cfg.apps.retain(|a| a != id);
+        }
+        if let Some(a) = patch.ask_before_recording {
+            cfg.ask_before_recording = a;
+        }
+        if let Some(d) = &patch.audio_retention {
+            if let Err(e) = cfg.set("audio_retention_days", d) {
+                eprintln!("settings: {e}");
+            }
+        }
+        if let Some(who) = &patch.add_person {
+            let mut names = crate::roster::load();
+            if crate::roster::add(&mut names, who) {
+                if let Err(e) = crate::roster::save(&names) {
+                    eprintln!("settings: could not save the roster ({e})");
+                }
+            }
+        }
+        if let Some(who) = &patch.remove_person {
+            let mut names = crate::roster::load();
+            if crate::roster::remove(&mut names, who) {
+                if let Err(e) = crate::roster::save(&names) {
+                    eprintln!("settings: could not save the roster ({e})");
+                }
+            }
+        }
+        if let Some(a) = &patch.assign {
+            // Naming goes through the same path the CLI uses, so the edit is
+            // recorded as the user's and survives a re-diarize.
+            let dir = crate::session::home().join(&a.session);
+            let still_there =
+                dir.file_name().is_some_and(|n| n == a.session.as_str()) && dir.is_dir();
+            if !still_there {
+                // Refuses rather than guessing: putting a name on the wrong
+                // recording is worse than putting none on this one.
+                eprintln!("settings: {:?} is not a session here", a.session);
+            } else {
+                match crate::session::name_speaker(&dir, &a.label, &a.name) {
+                    Ok(n) => eprintln!("settings: {n} line(s) now attributed to {}", a.name),
+                    Err(e) => eprintln!("settings: could not name {}: {e}", a.label),
+                }
+            }
         }
         match patch.action.as_deref() {
             Some("add_app") => {
@@ -181,6 +240,26 @@ impl Bridge {
             .map(|(_, n)| n)
             .collect();
         let home = std::env::var("HOME").unwrap_or_default();
+        // The naming section is about one recording — the most recent — so it
+        // is empty until there is a session with speakers nobody has named.
+        let latest = crate::session::latest(&crate::session::home());
+        // `null` when the session could not be read at all, which the page
+        // reports as such rather than claiming everyone already has a name.
+        let unnamed: Option<Vec<serde_json::Value>> = latest.as_deref().and_then(|d| {
+            match crate::session::unnamed_labels(d) {
+                Ok(v) => Some(
+                    v.into_iter()
+                        .map(|(label, sample)| {
+                            serde_json::json!({ "label": label, "sample": sample })
+                        })
+                        .collect(),
+                ),
+                Err(e) => {
+                    eprintln!("settings: could not read {}: {e}", d.display());
+                    None
+                }
+            }
+        });
         let payload = serde_json::json!({
             "apps": cfg.apps,
             "input_device": cfg.input_device,
@@ -189,6 +268,17 @@ impl Bridge {
             "sessions_dir": cfg.sessions_dir,
             "devices": devices,
             "default_dir": format!("{home}/Documents/Ambient"),
+            "ask_before_recording": cfg.ask_before_recording,
+            "audio_retention": match cfg.audio_retention_days {
+                None => "forever".to_string(),
+                Some(n) => n.to_string(),
+            },
+            "roster": crate::roster::load(),
+            "unnamed": unnamed,
+            "latest_session": latest
+                .as_deref()
+                .and_then(|d| d.file_name())
+                .map(|n| n.to_string_lossy().to_string()),
         });
         let js = format!("applyConfig({payload});");
         if let Some(web) = self.ivars().web.borrow().as_ref() {
@@ -206,10 +296,14 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     pub fn open(mtm: MainThreadMarker) -> Self {
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(600.0, 520.0));
+        // Taller than the four-row original, and resizable: the who's-who
+        // section grows with the roster and with however many speakers the last
+        // recording found, so no fixed height is right for long.
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 720.0));
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Miniaturizable;
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Resizable;
         let window: Retained<NSWindow> = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
@@ -223,6 +317,7 @@ impl SettingsWindow {
             window.setTitle(&NSString::from_str("Ambient Settings"));
             // Closing must not deallocate the window; the menu reopens this one.
             window.setReleasedWhenClosed(false);
+            window.setContentMinSize(NSSize::new(520.0, 360.0));
         }
 
         let bridge = Bridge::alloc(mtm).set_ivars(Ivars {

@@ -7,6 +7,7 @@ pub mod features;
 pub mod menubar;
 pub mod probe;
 pub mod resample;
+pub mod roster;
 pub mod session;
 pub mod settings;
 pub mod vad;

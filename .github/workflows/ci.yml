@@ -73,6 +73,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+      # A menu bar icon that does not resolve leaves the previous one showing,
+      # so the app would claim to be recording while merely armed. Silent, and
+      # only catchable by asking the OS.
+      - run: cargo run --bin symbolcheck
       # Assembles the .app. Capture, transcription and diarization cannot be
       # exercised on any hosted runner — no audio device, no way to grant TCC —
       # so CI verifies that the bundle builds, not that it records.

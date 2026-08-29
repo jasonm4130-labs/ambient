@@ -11,6 +11,17 @@ export const SettingsSchema = Schema.Struct({
   sessions_dir: Schema.NullOr(Schema.String),
   devices: Schema.Array(Schema.String),
   default_dir: Schema.String,
+  ask_before_recording: Schema.Boolean,
+  /// Days as a string, or "forever" — the same spelling the config uses, so
+  /// keeping audio indefinitely is a word rather than a magic number.
+  audio_retention: Schema.String,
+  roster: Schema.Array(Schema.String),
+  /// Null when the session could not be read — which is not the same as
+  /// everyone already having a name, and must not be reported as if it were.
+  unnamed: Schema.NullOr(
+    Schema.Array(Schema.Struct({ label: Schema.String, sample: Schema.String })),
+  ),
+  latest_session: Schema.NullOr(Schema.String),
 });
 
 export type Settings = Schema.Schema.Type<typeof SettingsSchema>;
@@ -26,6 +37,13 @@ export const PatchSchema = Schema.Struct({
   threshold: Schema.optional(Schema.Number),
   remove_app: Schema.optional(Schema.String),
   action: Schema.optional(Schema.Literal("add_app", "choose_dir")),
+  ask_before_recording: Schema.optional(Schema.Boolean),
+  audio_retention: Schema.optional(Schema.String),
+  add_person: Schema.optional(Schema.String),
+  remove_person: Schema.optional(Schema.String),
+  assign: Schema.optional(
+    Schema.Struct({ label: Schema.String, name: Schema.String, session: Schema.String }),
+  ),
 });
 
 export type Patch = Schema.Schema.Type<typeof PatchSchema>;
@@ -38,6 +56,11 @@ export const empty: Settings = {
   sessions_dir: null,
   devices: [],
   default_dir: "",
+  ask_before_recording: true,
+  audio_retention: "7",
+  roster: [],
+  unnamed: [],
+  latest_session: null,
 };
 
 /// The threshold merges clusters, so a HIGHER value yields FEWER speakers.

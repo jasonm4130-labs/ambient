@@ -18,6 +18,7 @@ USAGE
   ambient export <session-dir> [--out <path>]
                                        write transcript.md
   ambient config [<key> <value>]       show or change settings
+  ambient roster [add|rm <name>]       the people you record with
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
@@ -78,6 +79,41 @@ fn main() -> Result<()> {
             let n = ambient::session::name_speaker(std::path::Path::new(&dir), &label, &who)?;
             eprintln!("  {n} line(s) now attributed to {who}");
             ambient::session::show(std::path::Path::new(&dir), false)
+        }
+        Some("roster") => {
+            let mut names = ambient::roster::load();
+            match (args.next().as_deref(), args.next()) {
+                (Some("add"), Some(who)) => {
+                    if ambient::roster::add(&mut names, &who) {
+                        ambient::roster::save(&names)?;
+                        eprintln!("  added {who}");
+                    } else {
+                        eprintln!("  {who} was already on the roster");
+                    }
+                }
+                (Some("rm"), Some(who)) => {
+                    if ambient::roster::remove(&mut names, &who) {
+                        ambient::roster::save(&names)?;
+                        eprintln!("  removed {who}");
+                    } else {
+                        bail!("{who:?} is not on the roster");
+                    }
+                }
+                (Some(verb @ ("add" | "rm")), None) => {
+                    bail!("`ambient roster {verb}` needs a name")
+                }
+                (Some(other), _) => bail!("unknown roster command {other:?}. Try add or rm"),
+                (None, _) => {
+                    if names.is_empty() {
+                        println!("(nobody yet — ambient roster add <name>)");
+                    } else {
+                        for n in &names {
+                            println!("{n}");
+                        }
+                    }
+                }
+            }
+            Ok(())
         }
         Some("export") => {
             let dir = args.next().unwrap_or_default();
@@ -342,6 +378,19 @@ fn main() -> Result<()> {
                             .unwrap_or_else(|| "(system default)".into())
                     );
                     println!("{:<14} {}", "diarize", cfg.diarize);
+                    println!(
+                        "{:<14} {}",
+                        "ask_before_recording", cfg.ask_before_recording
+                    );
+                    println!(
+                        "{:<14} {}",
+                        "audio_retention_days",
+                        match cfg.audio_retention_days {
+                            None => "forever".to_string(),
+                            Some(0) => "0 (deleted once transcribed)".to_string(),
+                            Some(n) => format!("{n}"),
+                        }
+                    );
                     println!("{:<14} {}", "threshold", cfg.threshold);
                     println!(
                         "{:<14} {}",

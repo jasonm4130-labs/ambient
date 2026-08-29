@@ -62,6 +62,15 @@
   .switch.on { background: var(--on); }
   .switch.on i { left: 16px; }
 
+  input[type=text] {
+    height: 25px; border-radius: 6px; background: var(--control);
+    border: 1px solid var(--edge); color: var(--ink);
+    font: inherit; font-size: 12px; padding: 0 8px; flex: 1; min-width: 0;
+    -webkit-user-select: text; user-select: text;
+  }
+  input[type=text]::placeholder { color: var(--faint); }
+  .say { font-size: 11px; color: var(--dim); font-style: italic; }
+  .empty { font-size: 11.5px; color: var(--faint); padding: 0 14px 12px; }
   select, button.pick {
     height: 25px; border-radius: 6px; background: var(--control);
     border: 1px solid var(--edge); color: var(--ink);
@@ -119,6 +128,41 @@
           </div>
           <select class="right" id="mic"></select>
         </div>
+        <div class="rule"></div>
+        <div class="row">
+          <div class="text">
+            <span class="name">Ask before recording a call</span>
+            <span class="hint" id="askhint">Wait to be told when one of these apps starts audio.</span>
+          </div>
+          <div class="switch right" id="ask"><i></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">Who's who</div>
+      <div class="card">
+        <div class="row">
+          <div class="text">
+            <span class="name">People</span>
+            <span class="hint">Named once here, then offered whenever a recording
+              needs its speakers named. No voice is stored.</span>
+          </div>
+        </div>
+        <div class="chips" id="people"></div>
+        <div class="row">
+          <input type="text" id="personname" placeholder="Add someone&hellip;"
+                 autocomplete="off" spellcheck="false">
+          <button class="pick" id="addperson">Add</button>
+        </div>
+        <div class="rule"></div>
+        <div class="row">
+          <div class="text">
+            <span class="name">Speakers in the last recording</span>
+            <span class="hint" id="namehint">Nothing recorded yet.</span>
+          </div>
+        </div>
+        <div id="naming"></div>
       </div>
     </div>
 
@@ -156,6 +200,20 @@
             <span class="hint" id="dir">~/Documents/Ambient</span>
           </div>
           <button class="pick right" id="choosedir">Change&hellip;</button>
+        </div>
+        <div class="rule"></div>
+        <div class="row">
+          <div class="text">
+            <span class="name">Keep the audio</span>
+            <span class="hint">Transcripts are always kept. The recording itself is
+              the sensitive part, and the least useful once it is written down.</span>
+          </div>
+          <select class="right" id="keep">
+            <option value="0">Until transcribed</option>
+            <option value="7">7 days</option>
+            <option value="30">30 days</option>
+            <option value="forever">Forever</option>
+          </select>
         </div>
       </div>
     </div>

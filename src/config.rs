@@ -26,6 +26,13 @@ pub struct Config {
     pub threshold: f32,
     /// Where sessions are written. `None` means `~/Documents/Ambient`.
     pub sessions_dir: Option<PathBuf>,
+    /// Wait to be told before recording a call this app noticed. Defaults on:
+    /// a recording nobody sanctioned is the behaviour that gets a tool banned.
+    pub ask_before_recording: bool,
+    /// Days to keep the track audio. `Some(0)` deletes it as soon as the
+    /// transcript exists; `None` keeps it forever. The audio is the most
+    /// sensitive artefact here and the least useful once the text exists.
+    pub audio_retention_days: Option<u32>,
 }
 
 impl Default for Config {
@@ -36,6 +43,8 @@ impl Default for Config {
             diarize: true,
             threshold: crate::diarize::DEFAULT_THRESHOLD,
             sessions_dir: None,
+            ask_before_recording: true,
+            audio_retention_days: Some(7),
         }
     }
 }
@@ -122,9 +131,20 @@ impl Config {
                 self.sessions_dir =
                     (!value.is_empty() && value != "default").then(|| PathBuf::from(value))
             }
+            "ask_before_recording" => {
+                self.ask_before_recording = matches!(value, "true" | "yes" | "on" | "1")
+            }
+            // "forever" is spelled out rather than expressed as a large number,
+            // so that keeping audio indefinitely is a deliberate word.
+            "audio_retention_days" => {
+                self.audio_retention_days = match value {
+                    "forever" | "never" => None,
+                    v => Some(v.parse()?),
+                }
+            }
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
-                 threshold, sessions_dir"
+                 threshold, sessions_dir, ask_before_recording, audio_retention_days"
             ),
         }
         Ok(())
@@ -195,6 +215,15 @@ mod tests {
         assert!(c.input_device.is_some());
         c.set("input_device", "default").unwrap();
         assert_eq!(c.input_device, None);
+    }
+
+    #[test]
+    fn keeping_audio_forever_is_a_word_not_a_big_number() {
+        let mut c = Config::default();
+        c.set("audio_retention_days", "forever").unwrap();
+        assert_eq!(c.audio_retention_days, None);
+        c.set("audio_retention_days", "0").unwrap();
+        assert_eq!(c.audio_retention_days, Some(0));
     }
 
     #[test]
