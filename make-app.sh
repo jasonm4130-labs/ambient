@@ -18,8 +18,24 @@ BIN=$(cargo metadata --format-version 1 --no-deps \
 
 APP=build/Ambient.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ambient"
+
+# Regenerate the icon from assets/icon.svg when Inkscape is around; otherwise
+# use the committed .icns, so a machine without it still builds a bundle that
+# has an icon.
+if command -v inkscape >/dev/null 2>&1; then
+  ICONSET=$(mktemp -d)/Ambient.iconset
+  mkdir -p "$ICONSET"
+  for pair in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x" \
+              "128 icon_128x128" "256 icon_128x128@2x" "256 icon_256x256" \
+              "512 icon_256x256@2x" "512 icon_512x512" "1024 icon_512x512@2x"; do
+    sz="${pair%% *}"; nm="${pair#* }"
+    inkscape assets/icon.svg -o "$ICONSET/$nm.png" -w "$sz" -h "$sz" 2>/dev/null
+  done
+  iconutil -c icns "$ICONSET" -o assets/Ambient.icns && echo "rebuilt assets/Ambient.icns"
+fi
+cp assets/Ambient.icns "$APP/Contents/Resources/Ambient.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,6 +43,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key><string>ambient</string>
+  <key>CFBundleIconFile</key><string>Ambient</string>
   <key>CFBundleIdentifier</key><string>uk.ambient.cli</string>
   <key>CFBundleName</key><string>Ambient</string>
   <key>CFBundlePackageType</key><string>APPL</string>
