@@ -22,7 +22,10 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSImage, NSMenu,
     NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWorkspace,
 };
-use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString, NSTimer, NSURL};
+use objc2_foundation::{
+    MainThreadMarker, NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString,
+    NSTimer, NSURL,
+};
 
 /// What the status item is doing, which is also what its icon says.
 #[derive(Clone, Copy, PartialEq)]
@@ -327,7 +330,15 @@ pub fn run() -> anyhow::Result<()> {
     // ignore. `record` rewrites its status line once a second.
     let d = delegate.clone();
     let block = RcBlock::new(move |_t: core::ptr::NonNull<NSTimer>| d.refresh());
-    unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.5, true, &block) };
+    // Added in the common modes rather than scheduled: `scheduledTimer…`
+    // registers only for NSDefaultRunLoopMode, and AppKit runs the loop in
+    // event-tracking mode for as long as a menu is open. The elapsed time
+    // therefore froze exactly while you were looking at it, and only moved
+    // when the menu was closed and reopened.
+    unsafe {
+        let timer = NSTimer::timerWithTimeInterval_repeats_block(0.5, true, &block);
+        NSRunLoop::currentRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
     std::mem::forget(block);
 
     let object = ProtocolObject::from_ref(&*delegate);
