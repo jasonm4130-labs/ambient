@@ -54,7 +54,7 @@ about that call, so Stop is not undone by the watcher four seconds later.
 
 ## Confirmation
 
-`decide` is covered by twelve unit tests in `src/menubar.rs` that run in CI
+`decide` is covered by eleven unit tests in `src/menubar.rs` that run in CI
 under `cargo test --all-targets`, including
 `an_empty_watch_list_never_arms` (the asymmetry above),
 `a_declined_call_is_not_asked_about_again`,

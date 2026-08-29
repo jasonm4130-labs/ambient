@@ -36,8 +36,10 @@ Peak memory on the 127 s file is *flat* at the 30 s-chunk level rather than the
 Accuracy is good on ordinary speech and technical vocabulary — GDPR, DPO, ONNX,
 "Q3", "the 14th of October" all correct. It fails on **proper nouns**: "Priya"
 became "Crea", "Cloudflare" became "Cloudflow". That is the expected failure
-class and the reason the pipeline has a Claude repair pass with a roster and
-glossary before anything is summarised.
+class. The mitigation inside ambient is the roster — `ambient roster add Priya`,
+then `ambient name` rewrites every line of a label at once. Repair and
+summarisation are done outside ambient on the exported `transcript.md`; nothing
+in this repo performs them.
 
 Known artefact: chunk seams can duplicate a word ("flat. flat regardless…").
 Fixable with overlap-and-dedupe; the repair pass also absorbs it.
@@ -75,7 +77,10 @@ reports available, and contributes no acceleration. On int8 it is actively
 harmful — 1.6× slower and 16.5 GB peak, which would OOM a 16 GB machine outright.
 
 `is_available() == true` means the provider loaded, not that any node was placed
-on it. **Do not enable the `coreml` feature.** The Neural Engine is still
+on it. The `coreml` Cargo feature stays on — `probe` and `bench` need it to report
+provider state at all — but **the recognizer's session must never register the
+CoreML provider**: `src/asr.rs` builds its `Session` with no execution provider,
+and that is the thing to preserve. The Neural Engine is still
 reachable on this hardware, just not through ORT's graph-partitioning shim —
 natively compiled CoreML models (what FluidAudio ships) are a different path and
 would likely behave differently.

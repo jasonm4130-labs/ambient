@@ -50,8 +50,10 @@ Peak memory on the 127 s file is *flat* at the 30 s-chunk level rather than the
 Accuracy is good on ordinary speech and technical vocabulary — GDPR, DPO, ONNX,
 "Q3", "the 14th of October" all correct. It fails on **proper nouns**: "Priya"
 became "Crea", "Cloudflare" became "Cloudflow". That is the expected failure
-class and the reason the pipeline has a Claude repair pass with a roster and
-glossary before anything is summarised.
+class. Inside ambient the mitigation is the roster: `ambient roster add Priya`
+then `ambient name`, which rewrites every line of a label. Repair and
+summarisation happen outside ambient, on the exported `transcript.md` — no part
+of that is in this repo.
 
 ## Where the docs are
 
@@ -75,9 +77,11 @@ on GitHub, diagrams included.
 
 ## Dependency notes
 
-- The `coreml` feature is enabled in `Cargo.toml` for the probe only. Per
-  [ADR-0005](docs/adr/0005-cpu-not-coreml.md) it should be removed once the
-  probe is retired.
+- The `coreml` feature is enabled in `Cargo.toml` for the diagnostic binaries
+  `probe` and `bench`, which do not compile without it. The recognizer itself
+  registers no execution provider. Per
+  [ADR-0005](docs/adr/0005-cpu-not-coreml.md) the feature should be removed once
+  both are retired.
 - `ort` has **no stable release** — pinned to `=2.0.0-rc.13`. It has been in
   release-candidate for a long time; treat API churn as a live risk and do not
   let it leak past the ASR module.

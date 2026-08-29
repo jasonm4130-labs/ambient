@@ -40,8 +40,9 @@ window, which names speakers through the same `session::name_speaker` the CLI
 uses so the edit is recorded as the user's.
 
 Because the markdown is disposable, it is also the one artefact safe to treat
-as an export: it carries YAML front matter for the downstream Confluence stage
-and can be regenerated whenever that format changes.
+as an export: it carries YAML front matter for a downstream Confluence pipeline,
+which lives outside this repo, and can be regenerated whenever that format
+changes.
 
 ## Confirmation
 

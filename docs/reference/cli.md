@@ -115,7 +115,9 @@ ambient diarize <session-dir> [--threshold <f>]
 ```
 
 Assigns speakers to a session that already has a transcript, appends the edits
-and prints the result. `--threshold` defaults to `0.5`. Re-running appends
+and prints the result. `--threshold` defaults to `0.5` — this path never reads
+the config file, so the `threshold` setting does not apply here; it governs only
+the automatic diarization at the end of `record`. Re-running appends
 `revert` records for the previous run's labels first, so a bad threshold costs a
 revert rather than a recording. It **refuses** on a session whose audio has been
 swept by retention, and on one with no records in `raw.jsonl`. See

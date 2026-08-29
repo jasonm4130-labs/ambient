@@ -15,10 +15,12 @@ stateDiagram-v2
     Armed --> Recording: Record this call
     Armed --> Idle: it goes quiet
     Armed --> Idle: Not this one, remembered until quiet
-    Idle --> Recording: Start recording, from the menu
+    Armed --> Recording: Start Recording, from the menu
+    Idle --> Recording: Start Recording, from the menu
     Idle --> Recording: a watched app starts audio<br/>and ask_before_recording is off
     Recording --> Transcribing: Stop
-    Transcribing --> Idle: transcript written
+    Recording --> Idle: capture failed, no transcript
+    Transcribing --> Idle: finished, transcript written or not
 
     note right of Armed
         An empty apps list arms on nothing.
@@ -59,7 +61,11 @@ agent is needed — and it never touches `raw.jsonl`, `edits.jsonl`,
 `session.json` or `transcript.md`.
 
 Two guards matter. A session with no `transcript.md` is never swept: it is
-still being written, and its audio is the only copy of what was said. And
+still being written, and its audio is the only copy of what was said. That guard
+has a consequence worth stating plainly — a recording that *failed* also has no
+`transcript.md`, so its audio is kept indefinitely rather than ageing out. Those
+directories are the ones to check by hand if you care about the retention
+window holding. And
 `ambient diarize` **refuses** on a session whose audio has been swept, because
 a re-run reverts the previous labels before it discovers there is nothing to
 read — which would silently unlabel every speaker nobody had named by hand.

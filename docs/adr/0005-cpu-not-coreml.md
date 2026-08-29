@@ -45,9 +45,10 @@ The Neural Engine remains reachable on this hardware — natively compiled
 CoreML models are a different path and would likely behave differently. The
 rejection is of ORT's graph-partitioning shim, not of the ANE.
 
-The `coreml` feature is still enabled in `Cargo.toml` for `ambient probe`
-alone, so the probe can report the EP state; it should be removed once the
-probe is retired.
+The `coreml` feature is still enabled in `Cargo.toml` for the two diagnostic
+binaries — `ambient probe` and `bench`, both of which use `ort::ep::CoreML` and
+do not compile without it — so they can report the EP state. It should be removed
+once both are retired.
 
 ## Confirmation
 

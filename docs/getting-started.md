@@ -43,7 +43,7 @@ For the CLI verbs through the bundle, append `--args`:
 
 ```sh
 open -a "$PWD/build/Ambient.app" --args record --name standup
-ambient stop                      # or: the menu bar item
+cargo run --release -- stop       # or: the menu bar item
 ```
 
 ## Check the settings

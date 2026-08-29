@@ -94,7 +94,8 @@ the later edit would win the fold and quietly turn Priya back into `call-1`.
 `diarize` and `name` each regenerate it, so the file on disk is never stale.
 It is derived — `raw.jsonl` plus `edits.jsonl` stay the only source of truth,
 and deleting the markdown loses nothing. YAML front matter carries the session
-metadata, which is what the downstream Confluence stage reads:
+metadata, which is what a downstream Confluence pipeline would read — that
+pipeline lives outside this repo:
 
 ```markdown
 ---

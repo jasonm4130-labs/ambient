@@ -26,7 +26,7 @@ flowchart LR
     end
 
     disk[("Session directory<br/>~/Documents/Ambient")]
-    downstream["Claude repair pass<br/>then Confluence"]
+    downstream["Repair, then Confluence<br/>(outside ambient)"]
 
     meeting -->|"process tap:<br/>exactly what this Mac plays"| capture
     room -->|"input device:<br/>the whole room"| capture
