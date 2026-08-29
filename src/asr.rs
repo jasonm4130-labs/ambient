@@ -32,6 +32,7 @@ pub struct Recognizer {
     encoder: Session,
     decoder: Session,
     joiner: Session,
+    last_confidence: f32,
     tokens: Vec<String>,
     blank: usize,
 }
@@ -76,7 +77,7 @@ impl Recognizer {
         }
         let blank = tokens.len() - 1;
 
-        Ok(Self { encoder, decoder, joiner, tokens, blank })
+        Ok(Self { encoder, decoder, joiner, tokens, blank, last_confidence: 0.0 })
     }
 
     /// One decoder step. `token == None` means the initial blank priming step.
@@ -148,7 +149,7 @@ impl Recognizer {
         let parts = self.transcribe_segments(samples, chunks)?;
         Ok(parts
             .into_iter()
-            .map(|(_, text)| text)
+            .map(|(_, text, _)| text)
             .collect::<Vec<_>>()
             .join(" "))
     }
@@ -162,7 +163,7 @@ impl Recognizer {
         &mut self,
         samples: &[f32],
         chunks: &[crate::vad::Segment],
-    ) -> Result<Vec<(crate::vad::Segment, String)>> {
+    ) -> Result<Vec<(crate::vad::Segment, String, f32)>> {
         let mut out = Vec::new();
         for c in chunks {
             let seg = &samples[c.start.min(samples.len())..c.end.min(samples.len())];
@@ -171,7 +172,7 @@ impl Recognizer {
             }
             let text = self.transcribe(seg)?;
             if !text.is_empty() {
-                out.push((*c, text));
+                out.push((*c, text, self.last_confidence()));
             }
         }
         Ok(out)
@@ -201,6 +202,15 @@ impl Recognizer {
         Ok(parts.join(" "))
     }
 
+    /// Mean probability of the tokens emitted by the last `transcribe` call.
+    /// Parakeet will invent fluent sentences from room noise, and no level or
+    /// VAD threshold separates that from genuinely quiet speech — measured 2 dB
+    /// apart on real recordings. How sure the decoder was is the signal that
+    /// does discriminate.
+    pub fn last_confidence(&self) -> f32 {
+        self.last_confidence
+    }
+
     pub fn transcribe(&mut self, samples: &[f32]) -> Result<String> {
         let (feats, frames) = crate::features::log_mel(samples);
 
@@ -223,6 +233,7 @@ impl Recognizer {
         // Prime the prediction network with a blank.
         let mut state = self.decode_step(self.blank, None)?;
         let mut emitted: Vec<usize> = Vec::new();
+        let (mut conf_sum, mut conf_n) = (0.0f32, 0usize);
 
         let mut t = 0usize;
         while t < t_max {
@@ -243,11 +254,15 @@ impl Recognizer {
                 let (_, logits) = j["outputs"].try_extract_tensor::<f32>().a()?;
 
                 let n_tok = self.tokens.len(); // 8193 incl. blank
-                let (tok, _) = logits[..n_tok]
+                let (tok, best) = logits[..n_tok]
                     .iter()
                     .enumerate()
                     .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                     .unwrap();
+                // Softmax only where it is needed: the winning token's share.
+                let max = *best;
+                let denom: f32 = logits[..n_tok].iter().map(|l| (l - max).exp()).sum();
+                let prob = 1.0 / denom;
                 let (dur_idx, _) = logits[n_tok..n_tok + DURATIONS.len()]
                     .iter()
                     .enumerate()
@@ -257,6 +272,8 @@ impl Recognizer {
                 drop(j);
 
                 if tok != self.blank {
+                    conf_sum += prob;
+                    conf_n += 1;
                     emitted.push(tok);
                     state = self.decode_step(tok, Some(&state))?;
                     symbols += 1;
@@ -273,6 +290,8 @@ impl Recognizer {
                 }
             }
         }
+
+        self.last_confidence = if conf_n > 0 { conf_sum / conf_n as f32 } else { 0.0 };
 
         // SentencePiece: U+2581 marks a word boundary.
         let text: String = emitted

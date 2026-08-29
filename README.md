@@ -485,21 +485,34 @@ outright. The same audio, measured:
 | 2.6 s of room noise + the utterance | "The gap had not closed. If anything, it had wide." |
 | the utterance alone | "The migration is scheduled for Thursday morning." |
 
-Level separates what probability cannot: on this mic the noise floor sits at
-−52 dB p10 / −44 dB p90 and speech at −25 dB. So each turn's quiet edges are
-trimmed on level before the recogniser sees them, and a turn with nothing left
-is dropped — which also empties a room track recorded alone at a desk, where
-every "turn" is noise.
+Level separates a turn's quiet EDGES from its speech, and trimming them matters
+because a noise prefix does not merely add junk — it derails the decode. So each
+turn is trimmed on level before the recogniser sees it.
 
-The floor has two terms because either alone fails. The relative one (15 dB
-below the track's own p90) adapts to a loud or quiet recording. The absolute one
-(−38 dB) is what rejects a track that is *entirely* noise, where the track's own
-p90 is the noise and nothing looks quiet by comparison.
+The floor is **relative to the track's own loudest content, and only that**. An
+absolute floor was tried and removed after it threw away a real recording whole:
+quiet speech captured across a room measured −42 dB p90 while a genuinely silent
+room measured −44 dB. **Two decibels apart.** Any absolute threshold that rejects
+the empty room also rejects real speech.
 
-A level *spread* test was tried first and rejected: 8 dB across a silent room
-against 25 dB across one with speech looks like clean separation, until you
-measure a stretch of continuous speech and get 14.7 dB. It would have discarded
-real speech.
+Three signals were measured and none of them separates quiet speech from an
+empty room:
+
+| Signal | Real quiet speech | Hallucination from silence |
+| --- | --- | --- |
+| level (p90) | −42 dB | −44 dB |
+| Silero probability | 0.6–0.9 | 0.6–0.9 |
+| decoder confidence | 0.959 | 0.917 |
+
+Decoder confidence does catch the *derailment* case — 0.992 for the trimmed
+utterance against 0.613 for the same one with noise in front — which is why the
+trim is worth having. But Parakeet is confidently wrong on pure noise, so a
+room track that is nothing but noise still reaches the recogniser and can still
+produce an invented line.
+
+That is a semantic problem, not a threshold problem: it needs something that can
+read the words. `confidence` is recorded per line in `raw.jsonl` to give a
+downstream cleanup pass something to weigh.
 
 ## Settings
 

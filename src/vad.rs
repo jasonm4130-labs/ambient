@@ -25,20 +25,30 @@ const PAD_MS: usize = 200;
 
 /// Silero reports 0.6–0.9 on quiet room noise — confidently enough that no
 /// probability threshold separates it from real speech at 0.92–1.00. Level
-/// does: measured on this mic, the noise floor sits at −52 dB p10 / −44 dB p90
-/// and speech at −25 dB. So a turn's quiet edges are trimmed on level before
-/// the recogniser sees them, which matters because a noise prefix does not
-/// merely add junk — it derails the whole decode. Measured: the same utterance
-/// came out "The migration is scheduled for Thursday morning" trimmed, and
-/// "The gap had not closed. If anything, it had wide." with 2.6 s of room
+/// does separate a turn's quiet EDGES from its speech, and trimming them
+/// matters because a noise prefix does not merely add junk, it derails the
+/// whole decode. Measured on one utterance: "The migration is scheduled for
+/// Thursday morning" trimmed at decoder confidence 0.992, against "The gap is
+/// not closed. If anything, yeah, why don't you..." at 0.613 with 2.6 s of room
 /// noise in front of it.
 ///
-/// Two terms, because either alone fails. The relative one adapts to a loud or
-/// quiet recording; the absolute one is what empties a turn that is *entirely*
-/// noise, where the track's own p90 is the noise and nothing looks quiet by
-/// comparison. That is the ordinary case of recording a call alone at a desk.
+/// The floor is RELATIVE to the track's own loudest content, and only that.
+/// An absolute floor was tried and removed: it threw away a real recording
+/// whole. Quiet speech captured across a room measured −42 dB p90 while a
+/// genuinely silent room measured −44 dB — **2 dB apart** — so any absolute
+/// threshold that rejects the empty room also rejects real speech. Level
+/// cannot tell them apart, Silero cannot, and neither can decoder confidence
+/// (0.959 on the real speech, 0.917 on a hallucination invented from silence).
+///
+/// So a room track that is nothing but noise still reaches the recogniser and
+/// can still produce an invented line. That is a semantic problem and belongs
+/// to a downstream cleanup pass that can read the words, not to a threshold
+/// here. `asr::Recognizer::last_confidence` is recorded per line to give that
+/// pass something to weigh.
 const RELATIVE_FLOOR_DB: f32 = 15.0;
-const ABSOLUTE_FLOOR_DB: f32 = -38.0;
+/// Digital silence only — a guard against dividing attention by zero, not a
+/// judgement about what is speech.
+const ABSOLUTE_FLOOR_DB: f32 = -70.0;
 
 trait OrtExt<T> {
     fn a(self) -> Result<T>;
@@ -296,20 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_that_is_only_room_noise_is_dropped() {
-        // The desk-alone case: nothing here is speech, so the track's own p90
-        // is noise and only the absolute floor can reject it.
-        let rms = track(&vec![-45.0; 200]);
-        let floor = Vad::speech_floor(&rms);
-        let segs = Vad::trim_quiet(
-            vec![Segment { start: 0, end: 200 * FRAME }],
-            &rms,
-            floor,
-        );
-        assert!(segs.is_empty(), "kept {segs:?}");
-    }
-
-    #[test]
     fn speech_throughout_is_left_alone() {
         let rms = track(&vec![-25.0; 200]);
         let floor = Vad::speech_floor(&rms);
@@ -323,22 +319,28 @@ mod tests {
     }
 
     #[test]
-    fn the_absolute_floor_wins_on_a_very_quiet_recording() {
-        // Everything 20 dB down from the measurements in the constants above.
-        // The relative term would find the speech here, but the absolute floor
-        // sits above the whole track and bins it. That is the cost of being
-        // able to reject a noise-only track, and it is the limitation to
-        // revisit first if a real recording ever comes back empty.
+    fn a_quiet_recording_is_judged_against_itself() {
+        // Everything 20 dB down. This is the case an absolute floor destroyed:
+        // a real recording whose speech sat at −47 dB came back empty. The
+        // relative floor finds the speech wherever the track happens to sit.
         let mut db = vec![-70.0; 80];
         db.extend(std::iter::repeat_n(-47.0, 120));
         let rms = track(&db);
         let floor = Vad::speech_floor(&rms);
-        assert_eq!(floor, 10f32.powf(ABSOLUTE_FLOOR_DB / 20.0));
-        assert!(Vad::trim_quiet(
-            vec![Segment { start: 0, end: 200 * FRAME }],
-            &rms,
-            floor,
-        )
-        .is_empty());
+        let segs = Vad::trim_quiet(vec![Segment { start: 0, end: 200 * FRAME }], &rms, floor);
+        assert_eq!(segs.len(), 1, "the speech was thrown away");
+        assert!(segs[0].start > 70 * FRAME, "start was {}", segs[0].start);
+    }
+
+    #[test]
+    fn a_noise_only_track_is_no_longer_rejected_here() {
+        // Deliberate, and the honest cost of the test above: level cannot tell
+        // quiet speech from room noise — measured 2 dB apart — so this passes
+        // through to be judged on its words downstream rather than dropped on a
+        // threshold that would also drop real speech.
+        let rms = track(&vec![-45.0; 200]);
+        let floor = Vad::speech_floor(&rms);
+        let segs = Vad::trim_quiet(vec![Segment { start: 0, end: 200 * FRAME }], &rms, floor);
+        assert_eq!(segs.len(), 1);
     }
 }

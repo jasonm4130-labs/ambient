@@ -42,6 +42,13 @@ pub struct RawRecord {
     pub start_ms: u64,
     pub end_ms: u64,
     pub text: String,
+    /// Mean probability of the tokens the decoder emitted for this line.
+    /// Parakeet invents fluent sentences from an empty room and no threshold
+    /// upstream can catch that, so the number is carried here for a cleanup
+    /// pass that can read the words. `default` keeps sessions recorded before
+    /// this field loadable.
+    #[serde(default)]
+    pub confidence: f32,
 }
 
 /// What an edit points at. VAD segments never overlap within a track, so the
@@ -404,12 +411,13 @@ pub fn record(
         // cannot carry a speaker, and `diarize` can only label whole records.
         let chunks = vad.turns(&samples, 30)?;
         let segs = rec.transcribe_segments(&samples, &chunks)?;
-        for (seg, text) in segs {
+        for (seg, text, confidence) in segs {
             let r = RawRecord {
                 track,
                 start_ms: (seg.start as u64 * 1000) / resample::TARGET_HZ as u64,
                 end_ms: (seg.end as u64 * 1000) / resample::TARGET_HZ as u64,
                 text,
+                confidence,
             };
             writeln!(raw, "{}", serde_json::to_string(&r)?)?;
             lines += 1;
