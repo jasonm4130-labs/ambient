@@ -9,12 +9,14 @@ cd "$(dirname "$0")"
 # which src/settings.rs embeds. The built file is committed so `cargo build`
 # never needs node; this only refreshes it when the toolchain is present.
 if [ -d ui/node_modules ]; then
-  (cd ui && npm run --silent build >/dev/null) && echo "rebuilt assets/settings.html"
+  (cd ui && pnpm run --silent build >/dev/null) && echo "rebuilt assets/settings.html"
 fi
 
 cargo build --release
+# Read from cargo rather than assuming ./target: a global cargo config may
+# redirect build.target-dir, and this must not depend on python3 being present.
 BIN=$(cargo metadata --format-version 1 --no-deps \
-      | python3 -c 'import sys,json;print(json.load(sys.stdin)["target_directory"])')/release/ambient
+      | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/ambient
 
 APP=build/Ambient.app
 rm -rf "$APP"

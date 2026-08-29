@@ -1,0 +1,16 @@
+# The workflow pins every action to an exact tag, which only stays safe if
+# something proposes the bumps.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly

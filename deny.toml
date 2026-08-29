@@ -1,0 +1,34 @@
+# Targeted at the only triple this crate builds for. Without this the graph
+# pulls in Linux and Windows dependencies that are never compiled, and the
+# licence check then fails on crates the binary does not contain.
+[graph]
+targets = [{ triple = "aarch64-apple-darwin" }]
+all-features = true
+
+[advisories]
+ignore = []
+
+# Enumerated from `cargo metadata`, not from a template: every entry below is a
+# licence some crate in the current lock actually declares. CDLA-Permissive-2.0
+# is the non-obvious one — it reaches the graph through
+# ort-sys -> ureq -> webpki-root-certs.
+[licenses]
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

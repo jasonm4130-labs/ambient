@@ -13,7 +13,7 @@ audio transcribes correctly.
 ## Quick start
 
 ```sh
-./fetch-models.sh                 # ~500 MB: recogniser, diarization, VAD
+./fetch-models.sh                 # ~3.3 GB: recogniser, diarization, VAD
 cargo build --release
 cargo run --release -- probe      # is this machine viable?
 cargo run --release -- transcribe models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 audio.wav

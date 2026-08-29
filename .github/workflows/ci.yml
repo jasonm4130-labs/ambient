@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Neither of these compiles the crate, so they run on Linux at $0.004/min.
+  # cargo-deny resolves the dependency graph from Cargo.lock without invoking
+  # rustc, so the macOS-only dependencies are read rather than built.
+  hygiene:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: crate-ci/typos@v1.50.0
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check
+
+  ui:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # `version` is not optional here: it may only be omitted when a
+      # `packageManager` field is present, and the repo root has no package.json.
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          version: 11
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: ui
+      - run: pnpm run check
+        working-directory: ui
+      - run: pnpm run lint
+        working-directory: ui
+      - run: pnpm run build
+        working-directory: ui
+      # assets/settings.html is committed but generated. This catches a bundle
+      # that no longer matches the TypeScript it was built from.
+      - run: git diff --exit-code assets/settings.html
+
+  # The crate does not compile anywhere but macOS: process taps, objc2-app-kit
+  # and objc2-web-kit have no other target.
+  rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # The pin lives in rust-toolchain.toml so local builds and the work-M5
+      # port use it too; the action requires the version as an input, so read it
+      # from the file rather than repeating it here.
+      - id: pin
+        run: |
+          echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.pin.outputs.channel }}
+          components: rustfmt, clippy
+      # ort-sys downloads ONNX Runtime to its own cache directory, NOT to
+      # $OUT_DIR under target/. Without this line every run re-downloads 80 MB
+      # from cdn.pyke.io, warm cache included.
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-directories: ~/Library/Caches/ort.pyke.io
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+      # Assembles the .app. Capture, transcription and diarization cannot be
+      # exercised on any hosted runner — no audio device, no way to grant TCC —
+      # so CI verifies that the bundle builds, not that it records.
+      - run: ./make-app.sh
+      - run: |
+          codesign -v --verbose=2 build/Ambient.app
+          plutil -lint build/Ambient.app/Contents/Info.plist
+          test -x build/Ambient.app/Contents/MacOS/ambient

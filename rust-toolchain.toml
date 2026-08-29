@@ -1,0 +1,5 @@
+# Pinned so CI, the work M5 and this machine all compile with the same rustc.
+# `dtolnay/rust-toolchain` reads this file, so the workflow names no version.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download every ONNX model ambient needs. ~500 MB in total, dominated by the
+# Download every ONNX model ambient needs. ~3.3 GB in total, dominated by the
 # recogniser; diarization adds 32 MB and VAD under a megabyte.
 set -euo pipefail
 cd "$(dirname "$0")"
