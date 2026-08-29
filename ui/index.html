@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+<script type="module" src="/src/main.ts"></script>
+<style>
+  :root {
+    --bg: #f2f2f4;
+    --card: rgba(0,0,0,.03);
+    --edge: rgba(0,0,0,.10);
+    --rule: rgba(0,0,0,.07);
+    --ink: rgba(0,0,0,.88);
+    --dim: rgba(0,0,0,.50);
+    --faint: rgba(0,0,0,.38);
+    --control: rgba(0,0,0,.05);
+    --track: rgba(0,0,0,.15);
+    --on: #32D74B;
+    --knob: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1f;
+      --card: rgba(255,255,255,.04);
+      --edge: rgba(255,255,255,.08);
+      --rule: rgba(255,255,255,.07);
+      --ink: rgba(255,255,255,.92);
+      --dim: rgba(255,255,255,.46);
+      --faint: rgba(255,255,255,.38);
+      --control: rgba(255,255,255,.09);
+      --track: rgba(255,255,255,.16);
+      --knob: #fff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 13px -apple-system, "SF Pro Text", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none; cursor: default;
+  }
+  .page { display: flex; flex-direction: column; min-height: 100vh; }
+  .body { flex: 1; display: flex; flex-direction: column; gap: 20px; padding: 20px 22px; }
+  .label {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 9px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--edge);
+    border-radius: 11px; display: flex; flex-direction: column;
+  }
+  .row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; }
+  .rule { height: 1px; background: var(--rule); margin: 0 14px; }
+  .text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .name { font-size: 12.5px; }
+  .hint { font-size: 11px; line-height: 1.4; color: var(--dim); }
+  .right { margin-left: auto; flex-shrink: 0; }
+
+  .switch { width: 34px; height: 20px; border-radius: 10px; background: var(--track);
+            position: relative; flex-shrink: 0; transition: background .15s; }
+  .switch i { position: absolute; left: 2px; top: 2px; width: 16px; height: 16px;
+              border-radius: 50%; background: var(--knob); transition: left .15s; }
+  .switch.on { background: var(--on); }
+  .switch.on i { left: 16px; }
+
+  select, button.pick {
+    height: 25px; border-radius: 6px; background: var(--control);
+    border: 1px solid var(--edge); color: var(--ink);
+    font: inherit; font-size: 12px; padding: 0 8px; flex-shrink: 0;
+  }
+  button.pick:active { background: var(--track); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 12px 14px; }
+  .chip {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+    background: var(--control); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 4px 9px;
+  }
+  .chip b { font-weight: 400; }
+  .chip .x { color: var(--faint); padding-left: 2px; }
+  .chip .x:hover { color: var(--ink); }
+  .add { color: var(--dim); border: 1px dashed var(--edge); background: none;
+         border-radius: 6px; padding: 4px 9px; font: inherit; font-size: 12px; }
+
+  .slider { display: flex; align-items: center; gap: 9px; width: 190px; }
+  .slider span { font-size: 10.5px; color: var(--faint); }
+  input[type=range] { flex: 1; accent-color: var(--ink); }
+
+  .foot {
+    border-top: 1px solid var(--edge); background: var(--card);
+    display: flex; align-items: center; gap: 9px; padding: 13px 22px;
+    font-size: 11.5px; line-height: 1.45; color: var(--dim);
+  }
+  .foot svg { flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="body">
+
+    <div>
+      <div class="label">Recording</div>
+      <div class="card">
+        <div class="row">
+          <div class="text">
+            <span class="name">Capture</span>
+            <span class="hint">Everything the Mac plays, or only these apps.</span>
+          </div>
+          <select class="right" id="scope">
+            <option value="all">Everything</option>
+            <option value="some">Selected apps</option>
+          </select>
+        </div>
+        <div class="chips" id="chips"></div>
+        <div class="rule"></div>
+        <div class="row">
+          <div class="text">
+            <span class="name">Microphone</span>
+            <span class="hint">Your side of the room. Held separately from the call audio.</span>
+          </div>
+          <select class="right" id="mic"></select>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">Speakers</div>
+      <div class="card">
+        <div class="row">
+          <div class="text">
+            <span class="name">Separate voices after recording</span>
+            <span class="hint">Adds about a minute for every ten recorded.</span>
+          </div>
+          <div class="switch right" id="diarize"><i></i></div>
+        </div>
+        <div class="rule"></div>
+        <div class="row" id="sensrow">
+          <div class="text">
+            <span class="name">Sensitivity</span>
+            <span class="hint">How readily two voices are called different people.</span>
+          </div>
+          <div class="slider right">
+            <span>Fewer</span>
+            <input type="range" id="sens" min="30" max="80" step="1">
+            <span>More</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">Export</div>
+      <div class="card">
+        <div class="row">
+          <div class="text">
+            <span class="name">Sessions folder</span>
+            <span class="hint" id="dir">~/Documents/Ambient</span>
+          </div>
+          <button class="pick right" id="choosedir">Change&hellip;</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="foot">
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+         stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 1.8 3 4v3.6c0 3 2.1 5.5 5 6.6 2.9-1.1 5-3.6 5-6.6V4z"/>
+    </svg>
+    <span>Recording, transcription and speaker separation all happen on this Mac.
+          Audio never leaves it.</span>
+  </div>
+</div>
+</body>
+</html>

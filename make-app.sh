@@ -5,6 +5,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The settings page is TypeScript built by Vite into assets/settings.html,
+# which src/settings.rs embeds. The built file is committed so `cargo build`
+# never needs node; this only refreshes it when the toolchain is present.
+if [ -d ui/node_modules ]; then
+  (cd ui && npm run --silent build >/dev/null) && echo "rebuilt assets/settings.html"
+fi
+
 cargo build --release
 BIN=$(cargo metadata --format-version 1 --no-deps \
       | python3 -c 'import sys,json;print(json.load(sys.stdin)["target_directory"])')/release/ambient
@@ -25,6 +32,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.0.1</string>
   <key>LSMinimumSystemVersion</key><string>14.4</string>
+  <key>LSUIElement</key><true/>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Ambient records meeting audio locally so it can be transcribed on this Mac.</string>
   <key>NSMicrophoneUsageDescription</key>
@@ -33,6 +41,21 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - --identifier uk.ambient.cli "$APP" >/dev/null 2>&1
-echo "built $APP"
-echo "run: $APP/Contents/MacOS/ambient tap /tmp/tap.wav 10"
+# Signing identity is load-bearing, not cosmetic. An ad-hoc signature's
+# designated requirement IS the binary's cdhash, so every rebuild produces a new
+# identity and orphans the TCC grant — leaving the row in place still reading
+# "allowed" while the system-audio tap silently returns zeros. A stable identity
+# keeps the requirement as identifier + certificate leaf, which survives rebuilds.
+SIGN_ID="${AMBIENT_SIGN_ID:-Ambient Dev}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+  codesign --force --sign "$SIGN_ID" --identifier uk.ambient.cli "$APP" >/dev/null 2>&1
+  echo "built $APP (signed: $SIGN_ID)"
+else
+  codesign --force --sign - --identifier uk.ambient.cli "$APP" >/dev/null 2>&1
+  echo "built $APP (AD-HOC signed)"
+  echo
+  echo "  WARNING: no '$SIGN_ID' code-signing identity found, so this is ad-hoc signed."
+  echo "  System-audio capture will silently break on every rebuild. Run ./setup-signing.sh"
+  echo "  once to fix that permanently."
+fi
+echo "run: open -a \"$PWD/$APP\"   (menu bar; add --args for the CLI)"

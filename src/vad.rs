@@ -23,6 +23,23 @@ const MIN_SILENCE_MS: usize = 400;
 /// Keep a little audio either side; consonants at a boundary are quiet.
 const PAD_MS: usize = 200;
 
+/// Silero reports 0.6–0.9 on quiet room noise — confidently enough that no
+/// probability threshold separates it from real speech at 0.92–1.00. Level
+/// does: measured on this mic, the noise floor sits at −52 dB p10 / −44 dB p90
+/// and speech at −25 dB. So a turn's quiet edges are trimmed on level before
+/// the recogniser sees them, which matters because a noise prefix does not
+/// merely add junk — it derails the whole decode. Measured: the same utterance
+/// came out "The migration is scheduled for Thursday morning" trimmed, and
+/// "The gap had not closed. If anything, it had wide." with 2.6 s of room
+/// noise in front of it.
+///
+/// Two terms, because either alone fails. The relative one adapts to a loud or
+/// quiet recording; the absolute one is what empties a turn that is *entirely*
+/// noise, where the track's own p90 is the noise and nothing looks quiet by
+/// comparison. That is the ordinary case of recording a call alone at a desk.
+const RELATIVE_FLOOR_DB: f32 = 15.0;
+const ABSOLUTE_FLOOR_DB: f32 = -38.0;
+
 trait OrtExt<T> {
     fn a(self) -> Result<T>;
 }
@@ -53,6 +70,51 @@ impl Vad {
         Ok(Self {
             session: Session::builder().a()?.commit_from_file(path).a()?,
         })
+    }
+
+    /// Per-frame RMS, on the same frame grid as `probabilities`.
+    fn frame_rms(samples: &[f32]) -> Vec<f32> {
+        (0..samples.len())
+            .step_by(FRAME)
+            .map(|start| {
+                let f = &samples[start..(start + FRAME).min(samples.len())];
+                (f.iter().map(|s| s * s).sum::<f32>() / f.len().max(1) as f32).sqrt()
+            })
+            .collect()
+    }
+
+    /// The level below which audio is treated as room noise rather than speech.
+    fn speech_floor(rms: &[f32]) -> f32 {
+        let mut sorted: Vec<f32> = rms.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let p90 = sorted
+            .get(sorted.len().saturating_mul(9) / 10)
+            .copied()
+            .unwrap_or(0.0);
+        let relative = p90 * 10f32.powf(-RELATIVE_FLOOR_DB / 20.0);
+        let absolute = 10f32.powf(ABSOLUTE_FLOOR_DB / 20.0);
+        relative.max(absolute)
+    }
+
+    /// Pull each turn's start and end in to the first and last frame that
+    /// clears `floor`, and drop a turn with nothing left. The `PAD_MS` margin
+    /// is re-applied afterwards so consonants survive, but never back out
+    /// beyond where the turn already started.
+    fn trim_quiet(segs: Vec<Segment>, rms: &[f32], floor: f32) -> Vec<Segment> {
+        let pad = PAD_MS * SR / 1000;
+        let min_speech = MIN_SPEECH_MS * SR / 1000;
+        let loud = |i: usize| rms.get(i).is_some_and(|&r| r >= floor);
+
+        segs.into_iter()
+            .filter_map(|s| {
+                let (f0, f1) = (s.start / FRAME, s.end.div_ceil(FRAME));
+                let first = (f0..f1).find(|&i| loud(i))?;
+                let last = (f0..f1).rev().find(|&i| loud(i))?;
+                let start = (first * FRAME).saturating_sub(pad).max(s.start);
+                let end = ((last + 1) * FRAME + pad).min(s.end);
+                (end.saturating_sub(start) >= min_speech).then_some(Segment { start, end })
+            })
+            .collect()
     }
 
     /// Per-frame speech probability.
@@ -88,8 +150,18 @@ impl Vad {
 
     /// Speech regions, in samples.
     pub fn segments(&mut self, samples: &[f32]) -> Result<Vec<Segment>> {
+        Ok(self.detect(samples)?.1)
+    }
+
+    /// The per-frame probabilities and the speech regions they imply, with
+    /// quiet edges trimmed off. Both callers need the probabilities, so they
+    /// are computed once and handed back.
+    fn detect(&mut self, samples: &[f32]) -> Result<(Vec<f32>, Vec<Segment>)> {
         let probs = self.probabilities(samples)?;
-        Ok(self.segments_from(&probs, samples.len()))
+        let rms = Self::frame_rms(samples);
+        let floor = Self::speech_floor(&rms);
+        let segs = Self::trim_quiet(self.segments_from(&probs, samples.len()), &rms, floor);
+        Ok((probs, segs))
     }
 
     fn segments_from(&self, probs: &[f32], n_samples: usize) -> Vec<Segment> {
@@ -147,14 +219,14 @@ impl Vad {
         padded
     }
 
-    /// Group speech into transcription-sized chunks, never cutting inside a
-    /// segment unless the segment is itself longer than `max_seconds` — in
-    /// which case it is split at the least-voiced frame near the boundary,
-    /// which is the best available approximation of a pause.
-    pub fn chunks(&mut self, samples: &[f32], max_seconds: usize) -> Result<Vec<Segment>> {
+    /// One segment per turn: speech regions as detected, with anything longer
+    /// than `max_seconds` split at the least-voiced frame near the boundary —
+    /// the best available approximation of a pause. Nothing is merged, so a
+    /// silence between two people stays a boundary and each record can carry
+    /// its own speaker.
+    pub fn turns(&mut self, samples: &[f32], max_seconds: usize) -> Result<Vec<Segment>> {
         let max = max_seconds * SR;
-        let probs = self.probabilities(samples)?;
-        let segs = self.segments_from(&probs, samples.len());
+        let (probs, segs) = self.detect(samples)?;
 
         let mut split: Vec<Segment> = Vec::new();
         for s in segs {
@@ -175,14 +247,98 @@ impl Vad {
             }
         }
 
-        // Merge neighbours that still fit, so we make few large calls.
+        Ok(split)
+    }
+
+    /// `turns`, with neighbours merged back together wherever they still fit
+    /// inside `max_seconds`. Fewer, larger recogniser calls — right when the
+    /// output is one block of text, wrong when each record needs its own
+    /// speaker, which is why `record` uses `turns` instead.
+    pub fn chunks(&mut self, samples: &[f32], max_seconds: usize) -> Result<Vec<Segment>> {
+        let max = max_seconds * SR;
         let mut out: Vec<Segment> = Vec::new();
-        for s in split {
+        for s in self.turns(samples, max_seconds)? {
             match out.last_mut() {
                 Some(cur) if s.end - cur.start <= max => cur.end = s.end,
                 _ => out.push(s),
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Frame levels in dB, laid out on the `FRAME` grid.
+    fn track(db: &[f32]) -> Vec<f32> {
+        db.iter().map(|d| 10f32.powf(d / 20.0)).collect()
+    }
+
+    #[test]
+    fn a_turn_loses_its_quiet_lead_in() {
+        // Room noise at −45 dB in front of speech at −27, which is the shape
+        // that made Parakeet invent a sentence.
+        let mut db = vec![-45.0; 80];
+        db.extend(std::iter::repeat_n(-27.0, 120));
+        let rms = track(&db);
+        let floor = Vad::speech_floor(&rms);
+        let segs = Vad::trim_quiet(
+            vec![Segment { start: 0, end: 200 * FRAME }],
+            &rms,
+            floor,
+        );
+        assert_eq!(segs.len(), 1);
+        // Starts inside the speech, allowing for the re-applied PAD_MS margin.
+        assert!(segs[0].start > 70 * FRAME, "start was {}", segs[0].start);
+        assert_eq!(segs[0].end, 200 * FRAME);
+    }
+
+    #[test]
+    fn a_turn_that_is_only_room_noise_is_dropped() {
+        // The desk-alone case: nothing here is speech, so the track's own p90
+        // is noise and only the absolute floor can reject it.
+        let rms = track(&vec![-45.0; 200]);
+        let floor = Vad::speech_floor(&rms);
+        let segs = Vad::trim_quiet(
+            vec![Segment { start: 0, end: 200 * FRAME }],
+            &rms,
+            floor,
+        );
+        assert!(segs.is_empty(), "kept {segs:?}");
+    }
+
+    #[test]
+    fn speech_throughout_is_left_alone() {
+        let rms = track(&vec![-25.0; 200]);
+        let floor = Vad::speech_floor(&rms);
+        let segs = Vad::trim_quiet(
+            vec![Segment { start: 0, end: 200 * FRAME }],
+            &rms,
+            floor,
+        );
+        assert_eq!(segs.len(), 1);
+        assert_eq!((segs[0].start, segs[0].end), (0, 200 * FRAME));
+    }
+
+    #[test]
+    fn the_absolute_floor_wins_on_a_very_quiet_recording() {
+        // Everything 20 dB down from the measurements in the constants above.
+        // The relative term would find the speech here, but the absolute floor
+        // sits above the whole track and bins it. That is the cost of being
+        // able to reject a noise-only track, and it is the limitation to
+        // revisit first if a real recording ever comes back empty.
+        let mut db = vec![-70.0; 80];
+        db.extend(std::iter::repeat_n(-47.0, 120));
+        let rms = track(&db);
+        let floor = Vad::speech_floor(&rms);
+        assert_eq!(floor, 10f32.powf(ABSOLUTE_FLOOR_DB / 20.0));
+        assert!(Vad::trim_quiet(
+            vec![Segment { start: 0, end: 200 * FRAME }],
+            &rms,
+            floor,
+        )
+        .is_empty());
     }
 }

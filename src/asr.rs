@@ -145,7 +145,25 @@ impl Recognizer {
         samples: &[f32],
         chunks: &[crate::vad::Segment],
     ) -> Result<String> {
-        let mut parts = Vec::new();
+        let parts = self.transcribe_segments(samples, chunks)?;
+        Ok(parts
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>()
+            .join(" "))
+    }
+
+    /// As [`transcribe_chunked`](Self::transcribe_chunked), but keeping each
+    /// segment's boundaries alongside its text. A session transcript needs to
+    /// know *when* something was said — to interleave two tracks, to seek the
+    /// audio, and to give later layers a stable thing to point at — and joining
+    /// into one string throws exactly that away.
+    pub fn transcribe_segments(
+        &mut self,
+        samples: &[f32],
+        chunks: &[crate::vad::Segment],
+    ) -> Result<Vec<(crate::vad::Segment, String)>> {
+        let mut out = Vec::new();
         for c in chunks {
             let seg = &samples[c.start.min(samples.len())..c.end.min(samples.len())];
             if seg.len() < 1600 {
@@ -153,10 +171,10 @@ impl Recognizer {
             }
             let text = self.transcribe(seg)?;
             if !text.is_empty() {
-                parts.push(text);
+                out.push((*c, text));
             }
         }
-        Ok(parts.join(" "))
+        Ok(out)
     }
 
     /// Transcribe audio of any length, chunked so peak memory stays flat.

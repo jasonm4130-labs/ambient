@@ -1,0 +1,22 @@
+{
+  "name": "ambient-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && cp dist/index.html ../assets/settings.html",
+    "dev": "vite",
+    "check": "tsc --noEmit",
+    "lint": "oxlint src",
+    "fmt": "oxfmt src vite.config.ts"
+  },
+  "dependencies": {
+    "effect": "3.22.1"
+  },
+  "devDependencies": {
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vite-plugin-singlefile": "2.3.3"
+  }
+}

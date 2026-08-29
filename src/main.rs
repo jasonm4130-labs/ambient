@@ -6,15 +6,132 @@ const USAGE: &str = "\
 ambient — local-first ambient capture
 
 USAGE
+  ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>]
+                 [--seconds <n>]       record until stopped, then transcribe
+  ambient stop [<session-dir>]         stop the recording in progress
+  ambient show <session-dir> [--verbatim]
+                                       print a recorded session
+  ambient diarize <session-dir> [--threshold <f>]
+                                       assign speakers to a recorded session
+  ambient name <session-dir> <label> <name>
+                                       name a speaker, e.g. call-1 Priya
+  ambient export <session-dir> [--out <path>]
+                                       write transcript.md
+  ambient config [<key> <value>]       show or change settings
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
-  ambient tap <out.wav> <secs> [bundle-id...]   record system audio, no bot
+  ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
   ambient vad <a.wav>                  show detected speech segments
+
+Sessions are written to ~/Documents/Ambient (override with AMBIENT_HOME).
 ";
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
+        // No arguments: the menu bar app. With arguments it stays the CLI, so
+        // one signed executable serves both and `open -a Ambient.app --args …`
+        // still reaches the diagnostics.
+        None => ambient::menubar::run(),
+        Some("record") => {
+            let mut name: Option<String> = None;
+            let mut model: Option<String> = None;
+            let mut seconds: Option<u64> = None;
+            let mut apps: Vec<String> = Vec::new();
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--name" => name = args.next(),
+                    "--model" => model = args.next(),
+                    "--seconds" => {
+                        seconds = Some(
+                            args.next()
+                                .ok_or_else(|| anyhow::anyhow!("--seconds needs a value"))?
+                                .parse()?,
+                        )
+                    }
+                    "--app" => {
+                        if let Some(b) = args.next() {
+                            apps.push(b);
+                        }
+                    }
+                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+                }
+            }
+            let dir =
+                ambient::session::record(name.as_deref(), &apps, model.as_deref(), seconds)?;
+            println!("{}", dir.display());
+            Ok(())
+        }
+        Some("stop") => {
+            let dir = args.next();
+            let stopped = ambient::session::stop_recording(
+                dir.as_deref().map(std::path::Path::new),
+            )?;
+            println!("{}", stopped.display());
+            Ok(())
+        }
+        Some("name") => {
+            let dir = args.next().unwrap_or_default();
+            let label = args.next().unwrap_or_default();
+            let who = args.next().unwrap_or_default();
+            if dir.is_empty() || label.is_empty() || who.is_empty() {
+                bail!("{USAGE}");
+            }
+            let n = ambient::session::name_speaker(std::path::Path::new(&dir), &label, &who)?;
+            eprintln!("  {n} line(s) now attributed to {who}");
+            ambient::session::show(std::path::Path::new(&dir), false)
+        }
+        Some("export") => {
+            let dir = args.next().unwrap_or_default();
+            if dir.is_empty() {
+                bail!("{USAGE}");
+            }
+            let dir = std::path::Path::new(&dir);
+            let mut out = dir.join("transcript.md");
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--out" => {
+                        out = args
+                            .next()
+                            .ok_or_else(|| anyhow::anyhow!("--out needs a path"))?
+                            .into()
+                    }
+                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+                }
+            }
+            std::fs::write(&out, ambient::session::markdown(dir)?)?;
+            println!("{}", out.display());
+            Ok(())
+        }
+        Some("show") => {
+            let dir = args.next().unwrap_or_default();
+            if dir.is_empty() {
+                bail!("{USAGE}");
+            }
+            let verbatim = args.any(|a| a == "--verbatim");
+            ambient::session::show(std::path::Path::new(&dir), verbatim)
+        }
+        Some("diarize") => {
+            let dir = args.next().unwrap_or_default();
+            if dir.is_empty() {
+                bail!("{USAGE}");
+            }
+            let mut threshold = ambient::diarize::DEFAULT_THRESHOLD;
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--threshold" => {
+                        threshold = args
+                            .next()
+                            .ok_or_else(|| anyhow::anyhow!("--threshold needs a value"))?
+                            .parse()?
+                    }
+                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+                }
+            }
+            let n = ambient::session::diarize_session(std::path::Path::new(&dir), threshold)?;
+            eprintln!("  {n} edit(s) appended");
+            ambient::session::show(std::path::Path::new(&dir), false)
+        }
         Some("probe") => {
             ambient::probe::run()?;
             ambient::probe::probe_ort();
@@ -26,7 +143,10 @@ fn main() -> Result<()> {
             if model.is_empty() || wav.is_empty() {
                 bail!("{USAGE}");
             }
-            let samples = ambient::features::read_wav(&wav)?;
+            // Accept any sample rate: features::read_wav insists on 16 kHz and
+            // tells you to resample first, which until now nothing could do.
+            let (raw, rate) = ambient::resample::read_wav_any(std::path::Path::new(&wav))?;
+            let samples = ambient::resample::to_16k(&raw, rate)?;
             let secs = samples.len() as f64 / 16_000.0;
             let t = std::time::Instant::now();
             let mut rec = ambient::asr::Recognizer::load(&model)?;
@@ -35,7 +155,7 @@ fn main() -> Result<()> {
             let text = match ambient::vad::Vad::load("models/silero_vad.onnx") {
                 Ok(mut vad) => {
                     let chunks = vad.chunks(&samples, 30)?;
-                    let speech: f64 = chunks.iter().map(|c| c.seconds()).sum();
+                    let speech = chunks.iter().map(|c| c.seconds()).sum::<f64>().max(0.0);
                     eprintln!(
                         "vad: {} chunk(s), {speech:.1}s speech of {secs:.1}s",
                         chunks.len()
@@ -57,7 +177,7 @@ fn main() -> Result<()> {
             let samples = ambient::features::read_wav(&wav)?;
             let mut vad = ambient::vad::Vad::load("models/silero_vad.onnx")?;
             let segs = vad.segments(&samples)?;
-            let total: f64 = segs.iter().map(|s| s.seconds()).sum();
+            let total = segs.iter().map(|s| s.seconds()).sum::<f64>().max(0.0);
             let dur = samples.len() as f64 / 16_000.0;
             for (i, s) in segs.iter().enumerate() {
                 println!(
@@ -77,64 +197,146 @@ fn main() -> Result<()> {
         Some("tap") => {
             let out = args.next().unwrap_or_default();
             let secs: u64 = args.next().unwrap_or_default().parse().unwrap_or(10);
-            let bundles: Vec<String> = args.collect();
+            let rest: Vec<String> = args.collect();
+            let include_mic = !rest.iter().any(|a| a == "--no-mic");
+            // Diagnostic: does a process *spawned by* the bundle inherit its
+            // audio-capture grant? The answer decides whether a front-end can
+            // shell out to this binary or has to link it. Cannot be answered by
+            // reading anything — TCC hands back silence, not an error.
+            let via_child = rest.iter().any(|a| a == "--via-child");
+            let bundles: Vec<String> = rest
+                .into_iter()
+                .filter(|a| a != "--no-mic" && a != "--via-child")
+                .collect();
             if out.is_empty() {
                 bail!("{USAGE}");
             }
+            if via_child {
+                let exe = std::env::current_exe()?;
+                eprintln!("spawning child: {} tap {out} {secs}", exe.display());
+                let status = std::process::Command::new(&exe)
+                    .args(["tap", &out, &secs.to_string()])
+                    .status()?;
+                eprintln!("child exited: {status}");
+                return Ok(());
+            }
+            // Same precedence as `record`: an argument beats the setting.
+            let cfg = ambient::config::Config::load();
+            let from_config = bundles.is_empty() && !cfg.apps.is_empty();
+            let bundles = if from_config { cfg.apps.clone() } else { bundles };
             if bundles.is_empty() {
                 eprintln!("tapping ALL system audio for {secs}s");
             } else {
-                eprintln!("tapping {} for {secs}s", bundles.join(", "));
+                eprintln!(
+                    "tapping {} for {secs}s{}",
+                    bundles.join(", "),
+                    if from_config { " (from settings)" } else { "" }
+                );
             }
 
-            let tap = ambient::capture::ProcessTap::start(&bundles, 60, true)?;
+            let tap = ambient::capture::ProcessTap::start(
+                &bundles,
+                60,
+                include_mic,
+                cfg.input_device.as_deref(),
+            )?;
             eprintln!(
-                "running: {} Hz, {} ch total ({} mic + {} call)",
-                tap.sample_rate as u32,
-                tap.channels,
-                tap.mic_channels,
-                tap.channels - tap.mic_channels
+                "running: room {} Hz x {} ch, call {} Hz x {} ch",
+                tap.mic_rate as u32, tap.mic_channels, tap.call_rate as u32, tap.call_channels
             );
 
-            let mut cursor = 0usize;
-            let mut all: Vec<f32> = Vec::new();
+            let mut drain = ambient::capture::Drain::default();
+            let (mut room, mut call): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+            let mut max_rendering = 0usize;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
             while std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                let (chunk, next) = tap.ring.drain_from(cursor);
-                cursor = next;
-                all.extend_from_slice(&chunk);
+                let (r, c) = tap.drain(&mut drain);
+                room.extend_from_slice(&r);
+                call.extend_from_slice(&c);
+                max_rendering =
+                    max_rendering.max(ambient::probe::processes_rendering_output());
             }
 
-            let spec = hound::WavSpec {
-                channels: tap.channels as u16,
-                sample_rate: tap.sample_rate as u32,
-                bits_per_sample: 16,
-                sample_format: hound::SampleFormat::Int,
-            };
-            let mut w = hound::WavWriter::create(&out, spec)?;
-            // Per-channel peaks, so a silent track is obvious immediately.
-            let ch = tap.channels as usize;
-            let mut peaks = vec![0.0f32; ch.max(1)];
-            for (i, s) in all.iter().enumerate() {
-                let c = i % ch.max(1);
-                peaks[c] = peaks[c].max(s.abs());
-                w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
+            // Two clocks now, so two files rather than one interleaved wav.
+            let peak = |v: &[f32]| v.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+            let (mic_real, _, call_real, _) = tap.real_seconds(&drain);
+            let base = out.strip_suffix(".wav").unwrap_or(&out).to_string();
+            for (label, samples, hz, real, path) in [
+                ("room", &room, tap.mic_rate, mic_real, format!("{base}.room.wav")),
+                ("call", &call, tap.call_rate, call_real, format!("{base}.call.wav")),
+            ] {
+                if samples.is_empty() {
+                    eprintln!("  {label}: no audio");
+                    continue;
+                }
+                let spec = hound::WavSpec {
+                    channels: 1,
+                    sample_rate: hz as u32,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                };
+                let mut w = hound::WavWriter::create(&path, spec)?;
+                for s in samples.iter() {
+                    w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
+                }
+                w.finalize()?;
+                let total = samples.len() as f64 / hz;
+                eprintln!(
+                    "  {label} peak {:.3} — {path} ({total:.1}s, {real:.1}s real{})",
+                    peak(samples),
+                    if total - real > 0.2 {
+                        format!(", {:.1}s padded", total - real)
+                    } else {
+                        String::new()
+                    }
+                );
             }
-            w.finalize()?;
-            let peak = peaks.iter().cloned().fold(0.0f32, f32::max);
-            for (i, p) in peaks.iter().enumerate() {
-                let label = if (i as u32) < tap.mic_channels { "mic " } else { "call" };
-                eprintln!("  ch{i} {label} peak {p:.3}");
+
+            if let Some(advice) =
+                ambient::capture::silent_tap_advice(peak(&call), max_rendering, &bundles)
+            {
+                eprintln!("\nWARNING: {advice}\n");
             }
-            eprintln!(
-                "wrote {out}: {} samples, {:.1}s, peak {:.3}",
-                all.len(),
-                all.len() as f64 / (tap.sample_rate * tap.channels as f64),
-                peak
-            );
-            if peak < 1e-4 {
-                eprintln!("WARNING: silence captured — was anything actually playing?");
+            Ok(())
+        }
+        Some("config") => {
+            let key = args.next();
+            let mut cfg = ambient::config::Config::load();
+            match (key, args.next()) {
+                (Some(k), Some(v)) => {
+                    cfg.set(&k, &v)?;
+                    cfg.save()?;
+                    println!("{} = {}", k, v);
+                    eprintln!("written to {}", ambient::config::path().display());
+                }
+                (Some(k), None) => bail!("`ambient config {k}` needs a value"),
+                (None, _) => {
+                    println!("{:<14} {}", "apps", if cfg.apps.is_empty() {
+                        "(all system audio)".to_string()
+                    } else {
+                        cfg.apps.join(", ")
+                    });
+                    println!("{:<14} {}", "input_device",
+                        cfg.input_device.clone().unwrap_or_else(|| "(system default)".into()));
+                    println!("{:<14} {}", "diarize", cfg.diarize);
+                    println!("{:<14} {}", "threshold", cfg.threshold);
+                    println!("{:<14} {}", "sessions_dir",
+                        cfg.sessions_dir.clone()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(~/Documents/Ambient)".into()));
+                    println!();
+                    println!("in effect: sessions go to {}", ambient::session::home().display());
+                    if std::env::var_os("AMBIENT_HOME").is_some() {
+                        println!("           (AMBIENT_HOME is set and overrides sessions_dir)");
+                    }
+                    println!("file:      {}", ambient::config::path().display());
+                    println!();
+                    println!("input devices:");
+                    for (_, n) in ambient::capture::input_devices() {
+                        println!("  {n}");
+                    }
+                }
             }
             Ok(())
         }

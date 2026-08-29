@@ -120,6 +120,32 @@ pub fn probe_ort() {
     println!("                 partition onto CPU. Measure with the real model.");
 }
 
+/// How many processes are rendering output right now.
+///
+/// Used to tell two identical-looking failures apart: a tap that is silent
+/// because nothing was playing, and a tap that is silent because it was denied.
+/// The second is the dangerous one — Core Audio reports success, delivers
+/// correctly-shaped buffers, and fills them with zeros.
+pub fn processes_rendering_output() -> usize {
+    let processes: Vec<AudioObjectID> = match unsafe {
+        get_array(
+            kAudioObjectSystemObject as AudioObjectID,
+            kAudioHardwarePropertyProcessObjectList,
+        )
+    } {
+        Ok(p) => p,
+        Err(_) => return 0,
+    };
+    processes
+        .into_iter()
+        .filter(|&p| {
+            let on: u32 =
+                unsafe { get_scalar(p, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) };
+            on != 0
+        })
+        .count()
+}
+
 pub fn run() -> Result<()> {
     println!("── capture ────────────────────────────────────────────");
 
@@ -131,7 +157,7 @@ pub fn run() -> Result<()> {
     };
 
     println!("{} audio processes known to Core Audio\n", processes.len());
-    println!("{:<8} {:<8} {:<10} {}", "OBJ", "PID", "OUTPUT", "BUNDLE");
+    println!("{:<8} {:<8} {:<10} BUNDLE", "OBJ", "PID", "OUTPUT");
 
     let mut tappable = 0;
     for p in processes {

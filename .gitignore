@@ -1,3 +1,4 @@
-/target
-/models
+/.signing/
 /build
+/models
+/target

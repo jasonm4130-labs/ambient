@@ -1,5 +1,12 @@
 pub mod asr;
 pub mod capture;
+pub mod config;
+pub mod diarize;
+pub mod fbank;
 pub mod features;
+pub mod menubar;
 pub mod probe;
+pub mod resample;
+pub mod session;
+pub mod settings;
 pub mod vad;

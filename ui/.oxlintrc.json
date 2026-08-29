@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "pedantic": "warn"
+  },
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "rules": {
+    "unicorn/prefer-query-selector": "off"
+  }
+}
