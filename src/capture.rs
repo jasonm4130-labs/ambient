@@ -18,7 +18,12 @@ use std::sync::Arc;
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_core_audio::{
-    kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceNameKey,
+    kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeInput,
+    AudioObjectGetPropertyDataSize,
+    kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceMainSubDeviceKey,
+    kAudioAggregateDeviceNameKey, kAudioAggregateDeviceSubDeviceListKey,
+    kAudioDevicePropertyDeviceUID, kAudioHardwarePropertyDefaultInputDevice,
+    kAudioObjectSystemObject, kAudioSubDeviceDriftCompensationKey, kAudioSubDeviceUIDKey,
     kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey,
     kAudioAggregateDeviceUIDKey, kAudioObjectPropertyElementMain,
     kAudioObjectPropertyScopeGlobal, kAudioSubTapUIDKey, kAudioTapPropertyFormat,
@@ -55,6 +60,22 @@ impl Ring {
         for &s in samples {
             unsafe { *self.buf[w % cap].get() = s };
             w += 1;
+        }
+        self.write.store(w, Ordering::Release);
+    }
+
+    /// Interleave up to `n` source buffers frame by frame. Stack-only, so it
+    /// is safe to call from the realtime thread.
+    #[inline]
+    fn push_interleaved(&self, srcs: &[&[f32]], frames: usize) {
+        let cap = self.buf.len();
+        let mut w = self.write.load(Ordering::Relaxed);
+        for f in 0..frames {
+            for src in srcs {
+                let v = if f < src.len() { src[f] } else { 0.0 };
+                unsafe { *self.buf[w % cap].get() = v };
+                w += 1;
+            }
         }
         self.write.store(w, Ordering::Release);
     }
@@ -120,19 +141,92 @@ unsafe fn tap_format(tap: AudioObjectID) -> Result<AudioStreamBasicDescription> 
     Ok(asbd)
 }
 
+/// UID of the current default input device, and its object id.
+unsafe fn default_input() -> Result<(AudioObjectID, Retained<NSString>)> {
+    let mut a = addr(kAudioHardwarePropertyDefaultInputDevice);
+    let mut size = std::mem::size_of::<AudioObjectID>() as u32;
+    let mut dev: AudioObjectID = 0;
+    let st = AudioObjectGetPropertyData(
+        kAudioObjectSystemObject as AudioObjectID,
+        NonNull::from(&mut a),
+        0,
+        std::ptr::null(),
+        NonNull::from(&mut size),
+        NonNull::new(&mut dev as *mut _ as *mut c_void).unwrap(),
+    );
+    if st != 0 || dev == 0 {
+        bail!("no default input device: OSStatus {st}");
+    }
+
+    let mut a = addr(kAudioDevicePropertyDeviceUID);
+    let mut size = std::mem::size_of::<*const c_void>() as u32;
+    let mut raw: *const NSString = std::ptr::null();
+    let st = AudioObjectGetPropertyData(
+        dev,
+        NonNull::from(&mut a),
+        0,
+        std::ptr::null(),
+        NonNull::from(&mut size),
+        NonNull::new(&mut raw as *mut *const NSString as *mut c_void).unwrap(),
+    );
+    if st != 0 || raw.is_null() {
+        bail!("kAudioDevicePropertyDeviceUID failed: OSStatus {st}");
+    }
+    Ok((dev, Retained::from_raw(raw as *mut NSString).unwrap()))
+}
+
+/// Number of input channels a device exposes.
+unsafe fn input_channel_count(dev: AudioObjectID) -> Result<u32> {
+    let mut a = AudioObjectPropertyAddress {
+        mSelector: kAudioDevicePropertyStreamConfiguration,
+        mScope: kAudioObjectPropertyScopeInput,
+        mElement: kAudioObjectPropertyElementMain,
+    };
+    let mut size: u32 = 0;
+    let st = AudioObjectGetPropertyDataSize(
+        dev,
+        NonNull::from(&mut a),
+        0,
+        std::ptr::null(),
+        NonNull::from(&mut size),
+    );
+    if st != 0 {
+        bail!("stream config size failed: OSStatus {st}");
+    }
+    let mut raw = vec![0u8; size as usize];
+    let st = AudioObjectGetPropertyData(
+        dev,
+        NonNull::from(&mut a),
+        0,
+        std::ptr::null(),
+        NonNull::from(&mut size),
+        NonNull::new(raw.as_mut_ptr() as *mut c_void).unwrap(),
+    );
+    if st != 0 {
+        bail!("stream config failed: OSStatus {st}");
+    }
+    let list = &*(raw.as_ptr() as *const objc2_core_audio_types::AudioBufferList);
+    let n = list.mNumberBuffers as usize;
+    let bufs = std::slice::from_raw_parts(list.mBuffers.as_ptr(), n);
+    Ok(bufs.iter().map(|b| b.mNumberChannels).sum::<u32>().max(1))
+}
+
 pub struct ProcessTap {
     tap: AudioObjectID,
     device: AudioObjectID,
     proc_id: AudioDeviceIOProcID,
     pub ring: Arc<Ring>,
     pub sample_rate: f64,
+    /// Total channels the IOProc delivers, mic buffers first then the tap.
     pub channels: u32,
+    /// How many of those leading channels are the microphone.
+    pub mic_channels: u32,
 }
 
 impl ProcessTap {
     /// Tap the given bundle IDs, mixed down to mono. An empty list taps
     /// everything the machine is playing.
-    pub fn start(bundle_ids: &[String], ring_seconds: usize) -> Result<Self> {
+    pub fn start(bundle_ids: &[String], ring_seconds: usize, include_mic: bool) -> Result<Self> {
         unsafe {
             let ids: Vec<Retained<NSString>> =
                 bundle_ids.iter().map(|s| NSString::from_str(s)).collect();
@@ -183,22 +277,60 @@ impl ProcessTap {
             let name = NSString::from_str("ambient aggregate");
             let one = NSNumber::new_i32(1);
 
-            let dict = NSDictionary::from_slices(
-                &[
-                    &*NSString::from_str(kAudioAggregateDeviceNameKey.to_str().unwrap()),
-                    &*NSString::from_str(kAudioAggregateDeviceUIDKey.to_str().unwrap()),
-                    &*NSString::from_str(kAudioAggregateDeviceIsPrivateKey.to_str().unwrap()),
-                    &*NSString::from_str(kAudioAggregateDeviceTapAutoStartKey.to_str().unwrap()),
-                    &*NSString::from_str(kAudioAggregateDeviceTapListKey.to_str().unwrap()),
-                ],
-                &[
-                    &*name as &objc2::runtime::AnyObject,
-                    &*agg_uid as &objc2::runtime::AnyObject,
-                    &*one as &objc2::runtime::AnyObject,
-                    &*one as &objc2::runtime::AnyObject,
-                    &*tap_list as &objc2::runtime::AnyObject,
-                ],
-            );
+            // Putting the microphone in the same aggregate as the tap is what
+            // keeps the two tracks sample-aligned: one IOProc, one clock, with
+            // Core Audio doing drift compensation between them. Two separate
+            // streams would slowly slide apart over a long meeting.
+            let (mic_dev, mic_uid) = if include_mic {
+                let (d, u) = default_input()?;
+                (Some(d), Some(u))
+            } else {
+                (None, None)
+            };
+
+            let sub_list = match &mic_uid {
+                Some(uid) => {
+                    let sub = NSDictionary::from_slices(
+                        &[
+                            &*NSString::from_str(kAudioSubDeviceUIDKey.to_str().unwrap()),
+                            &*NSString::from_str(
+                                kAudioSubDeviceDriftCompensationKey.to_str().unwrap(),
+                            ),
+                        ],
+                        &[
+                            &**uid as &objc2::runtime::AnyObject,
+                            &*one as &objc2::runtime::AnyObject,
+                        ],
+                    );
+                    NSArray::from_slice(&[&*sub as &objc2::runtime::AnyObject])
+                }
+                None => NSArray::from_slice(&[]),
+            };
+
+            let mut keys: Vec<&NSString> = Vec::new();
+            let mut vals: Vec<&objc2::runtime::AnyObject> = Vec::new();
+            let k_name = NSString::from_str(kAudioAggregateDeviceNameKey.to_str().unwrap());
+            let k_uid = NSString::from_str(kAudioAggregateDeviceUIDKey.to_str().unwrap());
+            let k_priv = NSString::from_str(kAudioAggregateDeviceIsPrivateKey.to_str().unwrap());
+            let k_auto =
+                NSString::from_str(kAudioAggregateDeviceTapAutoStartKey.to_str().unwrap());
+            let k_taps = NSString::from_str(kAudioAggregateDeviceTapListKey.to_str().unwrap());
+            let k_subs = NSString::from_str(kAudioAggregateDeviceSubDeviceListKey.to_str().unwrap());
+            let k_main = NSString::from_str(kAudioAggregateDeviceMainSubDeviceKey.to_str().unwrap());
+
+            keys.push(&k_name); vals.push(&*name);
+            keys.push(&k_uid);  vals.push(&*agg_uid);
+            keys.push(&k_priv); vals.push(&*one);
+            keys.push(&k_auto); vals.push(&*one);
+            keys.push(&k_taps); vals.push(&*tap_list);
+            keys.push(&k_subs); vals.push(&*sub_list);
+            if let Some(uid) = &mic_uid {
+                // Clock the aggregate off the real hardware, not the tap.
+                keys.push(&k_main);
+                vals.push(&**uid);
+            }
+
+            let dict = NSDictionary::from_slices(&keys, &vals);
 
             let mut device: AudioObjectID = 0;
             let cf_dict: &objc2_core_foundation::CFDictionary =
@@ -209,7 +341,12 @@ impl ProcessTap {
                 bail!("AudioHardwareCreateAggregateDevice failed: OSStatus {st}");
             }
 
-            let channels = asbd.mChannelsPerFrame.max(1);
+            let tap_channels = asbd.mChannelsPerFrame.max(1);
+            let mic_channels = match mic_dev {
+                Some(d) => input_channel_count(d).unwrap_or(1),
+                None => 0,
+            };
+            let channels = mic_channels + tap_channels;
             let sample_rate = asbd.mSampleRate;
             let ring = Arc::new(Ring::new(
                 (sample_rate as usize) * channels as usize * ring_seconds,
@@ -223,15 +360,30 @@ impl ProcessTap {
                       _out: NonNull<objc2_core_audio_types::AudioBufferList>,
                       _out_time: NonNull<objc2_core_audio_types::AudioTimeStamp>| {
                     let list = input.as_ref();
-                    let n = list.mNumberBuffers as usize;
+                    let n = (list.mNumberBuffers as usize).min(8);
                     let buffers = std::slice::from_raw_parts(list.mBuffers.as_ptr(), n);
+
+                    // Fixed-capacity, stack-allocated: no heap work on the
+                    // realtime thread.
+                    let mut srcs: [&[f32]; 8] = [&[]; 8];
+                    let mut used = 0usize;
+                    let mut frames = 0usize;
                     for b in buffers {
-                        if b.mData.is_null() {
+                        if b.mData.is_null() || b.mNumberChannels == 0 {
                             continue;
                         }
                         let count = b.mDataByteSize as usize / std::mem::size_of::<f32>();
                         let data = std::slice::from_raw_parts(b.mData as *const f32, count);
-                        ring_cb.push(data);
+                        let f = count / b.mNumberChannels as usize;
+                        frames = frames.max(f);
+                        srcs[used] = data;
+                        used += 1;
+                        if used == 8 {
+                            break;
+                        }
+                    }
+                    if used > 0 && frames > 0 {
+                        ring_cb.push_interleaved(&srcs[..used], frames);
                     }
                 },
             );
@@ -255,7 +407,7 @@ impl ProcessTap {
                 bail!("AudioDeviceStart failed: OSStatus {st}");
             }
 
-            Ok(Self { tap, device, proc_id, ring, sample_rate, channels })
+            Ok(Self { tap, device, proc_id, ring, sample_rate, channels, mic_channels })
         }
     }
 }

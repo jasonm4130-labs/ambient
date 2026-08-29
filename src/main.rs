@@ -48,10 +48,13 @@ fn main() -> Result<()> {
                 eprintln!("tapping {} for {secs}s", bundles.join(", "));
             }
 
-            let tap = ambient::capture::ProcessTap::start(&bundles, 60)?;
+            let tap = ambient::capture::ProcessTap::start(&bundles, 60, true)?;
             eprintln!(
-                "tap running: {} Hz, {} ch",
-                tap.sample_rate as u32, tap.channels
+                "running: {} Hz, {} ch total ({} mic + {} call)",
+                tap.sample_rate as u32,
+                tap.channels,
+                tap.mic_channels,
+                tap.channels - tap.mic_channels
             );
 
             let mut cursor = 0usize;
@@ -71,12 +74,20 @@ fn main() -> Result<()> {
                 sample_format: hound::SampleFormat::Int,
             };
             let mut w = hound::WavWriter::create(&out, spec)?;
-            let mut peak = 0.0f32;
-            for s in &all {
-                peak = peak.max(s.abs());
+            // Per-channel peaks, so a silent track is obvious immediately.
+            let ch = tap.channels as usize;
+            let mut peaks = vec![0.0f32; ch.max(1)];
+            for (i, s) in all.iter().enumerate() {
+                let c = i % ch.max(1);
+                peaks[c] = peaks[c].max(s.abs());
                 w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
             }
             w.finalize()?;
+            let peak = peaks.iter().cloned().fold(0.0f32, f32::max);
+            for (i, p) in peaks.iter().enumerate() {
+                let label = if (i as u32) < tap.mic_channels { "mic " } else { "call" };
+                eprintln!("  ch{i} {label} peak {p:.3}");
+            }
             eprintln!(
                 "wrote {out}: {} samples, {:.1}s, peak {:.3}",
                 all.len(),

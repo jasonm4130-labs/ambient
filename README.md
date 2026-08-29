@@ -63,6 +63,33 @@ open -a "$PWD/build/Ambient.app" --args tap /tmp/out.wav 14   # works
 ./build/Ambient.app/Contents/MacOS/ambient tap ...            # silence
 ```
 
+### Two tracks, sample-aligned
+
+`ambient tap` records **you and the far side on separate channels**: ch0 is the
+microphone, ch1 is the tapped call audio. Both live in one aggregate device
+with drift compensation, so a single IOProc delivers them on one clock —
+two independent streams would slide apart over a long meeting.
+
+The split does more than separate speakers. ch1 is *exactly what this Mac
+renders* and nothing else; ch0 is the whole room. A test recording made that
+concrete: `say` played through the speakers while a YouTube video ran on a TV
+across the room.
+
+| Track | Transcript |
+| --- | --- |
+| ch1 call | "This voice is arriving on the call track through the process tab." |
+| ch0 mic | "…through the process tag. **Once his build is complete, he quickly finds himself.**" |
+
+The second sentence is the television, picked up acoustically. It is on the mic
+track and absent from the tap track, which is the boundary working exactly as
+designed.
+
+**Implication for the room, and for consent.** The microphone captures
+everything audible: a TV, a radio, and in an office the conversation at the
+next desk — people who are not in your meeting and have not agreed to anything.
+The tap has no such problem. This is a further argument for building calls
+first, and for the mic track to be VAD-gated and treated as the sensitive one.
+
 Verified end to end: tapped system audio, resampled to 16 kHz, transcribed as
 "Right, the process tab is capturing system audio with nothing joining the
 meeting." (`tap` -> "tab" and `Priya` -> "CRO" are the usual proper-noun and
