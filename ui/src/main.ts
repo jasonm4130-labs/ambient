@@ -9,6 +9,14 @@ const runtime = ManagedRuntime.make(Layer.mergeAll(BridgeLive));
 /// user just did.
 let current: Settings = empty;
 
+/// The page's own memory of the capture mode.
+///
+/// It cannot be inferred from the config, because "selected apps, none picked
+/// yet" and "everything" are both an empty `apps` list. Inferring it meant
+/// choosing Selected apps did nothing visible and left the + Add button hidden,
+/// so there was no way to pick a first app at all.
+let scopeChoice: "all" | "some" | null = null;
+
 const el = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);
   if (found === null) throw new Error(`no #${id} in the page`);
@@ -129,7 +137,11 @@ const renderMics = (settings: Settings): void => {
 
 const render = (settings: Settings): void => {
   current = settings;
-  const filtered = settings.apps.length > 0;
+  // An app on the list always means filtering, whatever was last clicked — and
+  // it makes the mode stick, so removing the last chip leaves the + Add button
+  // where it was rather than trapping you back in Everything.
+  if (settings.apps.length > 0) scopeChoice = "some";
+  const filtered = scopeChoice === "some";
 
   el<HTMLSelectElement>("scope").value = filtered ? "some" : "all";
   el("chips").style.display = filtered ? "flex" : "none";
@@ -163,7 +175,14 @@ const render = (settings: Settings): void => {
 const wire = (): void => {
   el<HTMLSelectElement>("scope").addEventListener("change", (e) => {
     const value = (e.target as HTMLSelectElement).value;
-    if (value === "all" || value === "some") send({ scope: value });
+    if (value === "all" || value === "some") {
+      scopeChoice = value;
+      // Render now rather than waiting for the round trip: switching to
+      // Selected apps with none yet chosen changes nothing in the config, so
+      // no push would come back and the row would stay hidden.
+      render({ ...current, apps: value === "all" ? [] : current.apps });
+      send({ scope: value });
+    }
   });
   el<HTMLSelectElement>("mic").addEventListener("change", (e) =>
     send({ input_device: (e.target as HTMLSelectElement).value }),

@@ -185,6 +185,22 @@ fn main() {
                 );
             }
             9 => {
+                println!("\n[8] the empty-list trap: switch to Everything, then back");
+                js(
+                    &w,
+                    r#"(() => {
+                        const sc = document.getElementById("scope");
+                        sc.value = "all"; sc.dispatchEvent(new Event("change"));
+                        sc.value = "some"; sc.dispatchEvent(new Event("change"));
+                        const chips = document.getElementById("chips");
+                        window.webkit.messageHandlers.ambient.postMessage(JSON.stringify({
+                          probe_trap: sc.value + "|shown=" + (chips.style.display !== "none")
+                            + "|add=" + (document.querySelector(".add") !== null)
+                        }));
+                     })();"#,
+                );
+            }
+            10 => {
                 let out = std::env::args()
                     .nth(1)
                     .unwrap_or_else(|| "uicheck.png".into());
@@ -205,7 +221,7 @@ fn main() {
                 unsafe { w.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
                 std::mem::forget(handler);
             }
-            10 => {
+            11 => {
                 println!(
                     "\n{} message(s) reached the bridge",
                     p.ivars().seen.borrow().len()
