@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Download every ONNX model ambient needs. ~3.3 GB in total, dominated by the
-# recogniser; diarization adds 32 MB and VAD under a megabyte.
+# Download every ONNX model ambient needs. ~670 MB on disk for the default set,
+# dominated by the recogniser at 640 MB; diarization adds 32 MB and VAD under a
+# megabyte. Passing a different ASR model as $1 fetches that one instead, and
+# they accumulate — a models/ directory holding several is much larger.
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p models && cd models

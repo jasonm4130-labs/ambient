@@ -83,7 +83,7 @@ compliance regime from a text file of names — and a confidently misattributed
 turn is a lie in your notes, which is worse than an honest `call-2`. The roster
 removes the retyping, not the choosing.
 
-Naming goes through the same `session::name_speaker` the CLI uses, so the edit
+Naming from the settings window writes the same edit `ambient name` does, so it
 is recorded as the user's and survives a re-diarize.
 
 See [ADR-0009](../adr/0009-armed-consent-state.md), [ADR-0010](../adr/0010-names-not-voiceprints.md) and [ADR-0011](../adr/0011-audio-retention-sweep.md).

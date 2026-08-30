@@ -20,14 +20,16 @@ not prompt, so the failure is silent in the most literal sense.
 open -a "$PWD/build/Ambient.app" --args tap /tmp/out.wav 14
 ```
 
-The capture path itself looks like this — two separate IOProcs whose start order
-is load-bearing; see [two tracks, two clocks](two-tracks.md) for why there are
-two:
+By default `record` and `tap` reach the same path, so the participant below
+stands for both; `tap --no-mic` (`src/main.rs:235`) starts the tap alone and
+skips the input device entirely. The path is two separate IOProcs whose start
+order is load-bearing; see [two tracks, two clocks](two-tracks.md) for why
+there are two:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant R as ambient record
+    participant R as ambient record or tap
     participant M as Input device
     participant T as Process tap
     participant A as Aggregate device

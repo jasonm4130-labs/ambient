@@ -42,7 +42,8 @@ summarisation are done outside ambient on the exported `transcript.md`; nothing
 in this repo performs them.
 
 Known artefact: chunk seams can duplicate a word ("flat. flat regardless…").
-Fixable with overlap-and-dedupe; the repair pass also absorbs it.
+Fixable with overlap-and-dedupe, and a repair pass done outside ambient would
+absorb it too.
 
 ## What Phase 0 has established
 

@@ -54,6 +54,40 @@ and for the same reason the level meter is mirrored to `status`, since stderr
 under `open -a` goes nowhere. Ctrl-C still works when there is a terminal, and
 `--seconds <n>` bounds an unattended run.
 
+Nothing guards against a second recording. `record` creates its directory
+(`src/session.rs:246`) and starts the tap (`src/session.rs:248`) without ever
+asking whether one is already live, and `live_session` — the only way a bare
+`ambient stop` finds its target (`src/session.rs:948`) — collects every session
+directory whose `audio/room.native.wav` was written to in the last ten seconds,
+sorts them and pops (`src/session.rs:925`).
+
+The sort is lexicographic over the whole directory name, and that name is a
+minute-resolution timestamp plus, when `--name` was given, a slug
+(`src/session.rs:240-243`). So what pops is the lexicographically last name,
+which is the newest only when the two recordings started in different minutes;
+inside one minute the slug decides, and a named session sorts after an unnamed
+one whatever the clock said. A bare stop reaches whichever that is and leaves
+the other running, so `ambient stop <dir>` (`src/main.rs:66`) is the reliable
+form when two are in flight.
+
+Two same-minute recordings with the same name — or with no name, which is what
+both a bare `ambient record` and the menu bar use — compute the *identical* id,
+and `create_dir_all` is idempotent, so they do not race for a directory: they
+share one, write over each other's scratch wavs, and one `STOP` stops both.
+
+That is the shape the sentinel forces rather than an oversight. A `STOP` file
+carries no pid, and nothing keeps a registry of live sessions, so liveness is
+inferred from one file's modification time and "the newest" is the only
+question that mechanism can answer. The same check is why a `record` killed
+mid-recording does not intercept a later stop: its scratch wavs stay on disk,
+and without the ten-second window that corpse answers `ambient stop`, pointing
+it at a directory nothing is writing to (`src/session.rs:929`). The menu's
+level meter is only partly covered — its primary path is `live_session`, but
+during transcription the scratch wavs are gone and it falls back to whichever
+session directory sorts last, corpse included (`src/menubar.rs:405-414`).
+Clearing one out is under [when it does not
+work](../using/troubleshooting.md).
+
 `ambient show <dir>` folds `edits.jsonl` over `raw.jsonl`; `--verbatim` skips
 the fold. Reverts append a record naming an earlier line rather than deleting
 it, so the raw transcript is always recoverable byte-for-byte — verified by

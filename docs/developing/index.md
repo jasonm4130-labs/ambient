@@ -26,14 +26,14 @@ flowchart LR
     end
 
     disk[("Session directory<br/>~/Documents/Ambient")]
-    downstream["Repair, then Confluence<br/>(outside ambient)"]
+    downstream["Repair, then Confluence<br/>(planned, outside ambient)"]
 
     meeting -->|"process tap:<br/>exactly what this Mac plays"| capture
     room -->|"input device:<br/>the whole room"| capture
     capture --> disk
     disk --> process
     process -->|transcript.md| disk
-    disk --> downstream
+    disk -.-> downstream
 ```
 
 The two arrows into `capture` are the whole design in miniature. The tap hears
@@ -42,6 +42,13 @@ cannot pick up the desk next to you. The microphone hears everything in the
 room, which is what makes it useful and what makes it the sensitive one. They
 are kept apart all the way to the transcript, and merged only at export — see
 [capture](capture.md) and [two tracks, two clocks](two-tracks.md).
+
+The dashed arrow out of the session directory is the one thing in this diagram
+that is not built. Nothing in `Cargo.toml` is an HTTP client or an Anthropic
+SDK, and `src/` mentions neither Anthropic nor Confluence. So the claim is two
+sources in and one session directory out: everything past `transcript.md` is
+something you do yourself. The dash means something else in the diagram below,
+where it marks a built path that can be missing at runtime.
 
 ## What happens to the audio
 

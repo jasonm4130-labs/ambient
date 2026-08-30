@@ -1,7 +1,10 @@
 # Commands
 
 One binary. Run with no arguments it is the menu bar app; run with arguments it
-stays a CLI, so a single signed executable serves both.
+stays a CLI, so a single signed executable serves both. A verb it does not
+recognise is not an error: `ambient wibble` prints the usage banner on stdout
+and exits 0, exactly as asking for help would, so a mistyped verb reads as
+success to whatever is scripting it.
 
 ## Launching the verbs that need system audio
 
@@ -86,7 +89,12 @@ It writes a `STOP` file that the capture loop notices on its next 200 ms tick,
 echoes the session's `status` line to stderr, and prints the directory. A file
 rather than a signal because the launch that gets system audio has no terminal
 to Ctrl-C and no pid a user can see; Ctrl-C still works when there is a
-terminal. See [capture](../developing/capture.md).
+terminal. With two recordings in flight at once, a bare `stop` writes `STOP`
+into whichever live session directory sorts last by name — the newest, when the
+two started in different minutes — and leaves the other running; name the
+directory to reach a specific one. [When it does not
+work](troubleshooting.md) has the cases where sort order and start order come
+apart. See [capture](../developing/capture.md).
 
 ## show
 
@@ -107,7 +115,15 @@ ambient name <session-dir> <label> <name>
 Renames every line currently carrying `<label>`, e.g. `call-1 Priya`, reports
 how many lines moved, then prints the session. It appends a `speaker` edit like
 anything else, so it is undoable, and a later `diarize` leaves a human-assigned
-name alone. See [diarization](../developing/diarization.md).
+name alone.
+
+Asking for a label nothing carries is how you find out which labels exist. It
+refuses and lists them: `ambient name <dir> call-2 Priya` on a session holding
+two speakers answers `no lines labelled "call-2" (available: call-1, room-1)`,
+and on a session that has not been through `diarize` the list reads ``none —
+run `ambient diarize` first``. What it lists is the labels as they stand now, so
+once `call-1` has been named Priya it is `Priya` that comes back, not the label
+she replaced. See [diarization](../developing/diarization.md).
 
 ## diarize
 
@@ -170,7 +186,10 @@ With no arguments it prints the resolved settings, where sessions will actually
 go, the config file path, and the input devices it can currently see — and says
 so explicitly when `AMBIENT_HOME` is set and overriding `sessions_dir`. With a
 key and a value it sets one setting and writes the file. A key with no value is
-an error rather than a read. Keys and defaults are in
+an error rather than a read. Anything after the value is dropped without
+complaint — `ambient config threshold 0.4 wibble` sets the threshold and says
+nothing about `wibble` — where `record`, `export` and `diarize` bail on an
+argument they do not recognise. Keys and defaults are in
 [settings](settings.md).
 
 ## roster
@@ -181,7 +200,9 @@ ambient roster [add <name> | rm <name>]
 
 With no arguments it lists the people you record with, one per line. `add` is a
 no-op on a name already present (case-insensitively) and keeps the list sorted;
-`rm` errors if the name is not there. Removing someone does not unname them in
+`rm` errors if the name is not there. As with `config`, anything past the name
+is dropped in silence: `ambient roster add Priya wibble` adds Priya and never
+mentions the rest. Removing someone does not unname them in
 past recordings — those names live in each session's `edits.jsonl`. The roster
 holds names and nothing else; see [what is kept](what-is-kept.md).
 

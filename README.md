@@ -10,8 +10,13 @@ audio transcribes correctly.
 
 ## Quick start
 
+You need macOS 14.4 or later, `rustup` (`rust-toolchain.toml` pins the compiler
+to 1.95.0), the macOS SDK from Xcode or the Command Line Tools, and about 670 MB
+of disk for the models. [Getting started](docs/using/getting-started.md) says
+why each.
+
 ```sh
-./fetch-models.sh                 # ~3.3 GB: recogniser, diarization, VAD
+./fetch-models.sh                 # ~670 MB: recogniser, diarization, VAD
 cargo build --release
 cargo run --release -- probe      # is this machine viable?
 cargo run --release -- transcribe models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 audio.wav
