@@ -61,7 +61,7 @@ This is the part that will not work the way you expect.
 ```sh
 ./setup-signing.sh                # once — creates a stable signing identity
 ./make-app.sh                     # bundle and sign
-open -a "$PWD/build/Ambient.app"  # menu bar app
+open -a "$PWD/build/Ambient.app"  # menu bar item, and the window behind it
 ```
 
 **Run the bare binary from a terminal and every sample is zero.** The tap is
@@ -76,7 +76,7 @@ For the CLI verbs through the bundle, append `--args`:
 
 ```sh
 open -a "$PWD/build/Ambient.app" --args record --name standup
-cargo run --release -- stop       # or: the menu bar item
+cargo run --release -- stop       # or: Stop, from the menu bar or the window
 ```
 
 ## It asks twice
@@ -105,6 +105,50 @@ Both prompts are macOS asking. What ambient itself asks — whether to record a
 call it noticed, and what it keeps once the transcript exists — is [what is
 kept](what-is-kept.md).
 
+## The window
+
+The menu bar item is one of two surfaces and it is the smaller one. It carries
+the state — idle, armed, recording, transcribing, failed — and the consent
+items, and it is answerable without raising anything: *Record this call* and
+*Not this one* are both a click away in the menu.
+
+*Open Ambient*, key equivalent `0`, opens the other one. A sidebar of sessions
+newest first, a transcript beside it, and a *Tidied*/*Verbatim* toggle that
+chooses between the edit layer folded over the recogniser's output and the
+output itself — the same pair `ambient show` and `ambient show --verbatim`
+print. *Reveal in Finder* opens the selected session in Finder, or the sessions
+folder when nothing is selected, which is why the status menu no longer carries
+an *Open Sessions Folder* item of its own. *Copy Markdown* puts the transcript
+on the clipboard.
+
+While a recording is running it is pinned as the first row in the sidebar, with
+the elapsed time the capture worker itself counted and a level indicator per
+track. Those numbers come off memory shared with the worker rather than off any
+file, so they keep moving through transcription, and a capture that is hearing
+nothing says so in place rather than finishing quietly and leaving you to work
+it out afterwards.
+
+Below the transcript are the two things you do to a finished session. Naming
+works on **whichever session is selected**, not only the newest: each speaker
+diarization could not name gets a row with the first thing that voice said, a
+roster dropdown and a *Name* button, and pressing it appends exactly the edit
+`ambient name` appends. *Separate voices* runs diarization on a worker thread,
+so the window stays live while it works; it is disabled — and says which — when
+another session is already being processed, when there is no transcript yet, or
+when retention has already swept the audio it would need to read.
+
+Above the transcript is a banner, and it exists for one thing in particular. A
+denied system-audio tap does not fail: it returns correctly shaped zeros, and
+the advice about that used to reach `eprintln!` alone, which a bundle launch
+discards. Capture warnings are now written into the session's own
+`session.json` and shown here, so the failure is visible in the place you go to
+read the transcript.
+
+Closing the window does not quit the app; the menu bar item stays and a
+recording in flight carries on. What changes is the Dock: the app has no Dock
+icon and no ⌘-Tab entry while the window is closed, acquires both while it is
+open, and gives them back when it closes.
+
 ## Check the settings
 
 ```sh
@@ -112,23 +156,25 @@ cargo run --release -- config     # resolved settings, and the input devices it 
 ```
 
 Every setting is readable and settable from the CLI, so nothing depends on the
-GUI being open. The same values are editable in the running app through the menu
-bar's *Settings…* item, key equivalent `,`, which opens a window writing that
-same `config.json` plus the roster and the names you put on a finished
-recording's speakers. The full list is in [Settings](settings.md).
+GUI being open. The same values are editable in the running app: *Settings…*,
+key equivalent `,`, opens the window on its Settings row — the settings page is
+a view inside the one window rather than a window of its own — and it writes
+that same `config.json` plus the roster. The full list is in
+[Settings](settings.md).
 
 ## Five things you will want to do
 
-Recording a meeting is `ambient record`, launched the way the section above
-insists on; the flags are in [commands](commands.md). Renaming a speaker who
-came out wrong is `ambient name <dir> call-1 Priya`, which rewrites every line
-carrying that label. It appends one edit per line rather than overwriting
-anything, so the raw transcript survives and re-running `diarize` will not turn
-the name back — but there is no undo verb, and getting a name back means
-editing `edits.jsonl` by hand. The settings window's roster dropdown appends
-the identical edit. Getting the markdown out needs
+Recording a meeting is *Start Recording* in the menu bar, or `ambient record`
+launched the way the section above insists on; the flags are in
+[commands](commands.md). Renaming a speaker who came out wrong is the naming
+strip under the transcript, or `ambient name <dir> call-1 Priya`; either way
+every line carrying that label moves. It appends one edit per line rather than
+overwriting anything, so the raw transcript survives and re-running `diarize`
+will not turn the name back — but there is no undo verb, and getting a name
+back means editing `edits.jsonl` by hand. Getting the markdown out needs
 nothing at all: `record` writes `transcript.md` into the session directory
-itself, and [export](commands.md) exists to regenerate it or put a copy
+itself, *Copy Markdown* puts it on the clipboard, and
+[export](commands.md) exists to regenerate it or put a copy
 somewhere else. Declining a call the app noticed is the *Not this one* item
 that appears in the menu bar when a watched app starts audio — but only once
 you have named apps to watch, since the default list is empty and an empty list

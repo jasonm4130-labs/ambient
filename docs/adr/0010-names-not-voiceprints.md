@@ -24,10 +24,11 @@ small change that would remove the retyping entirely.
 
 ## Decision Outcome
 
-Names only. `ambient roster add <name>` keeps the list; after a recording the
-settings window lists each speaker diarization could not name alongside the
-first thing that voice said, and a dropdown of roster names puts a name on
-every line of that speaker.
+Names only. `ambient roster add <name>` keeps the list; under the transcript of
+the selected session the window lists each speaker diarization could not name
+alongside the first thing that voice said, and a dropdown of roster names puts
+a name on every line of that speaker. (That strip was the settings window's,
+and fed from the newest session alone, until the session browser took it over.)
 
 The compliance argument is the decisive one. An embedding kept in order to
 recognise someone later is biometric data under Article 9 of the UK GDPR — a

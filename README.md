@@ -32,12 +32,19 @@ no error and no permission prompt:
 ```sh
 ./setup-signing.sh                # once — stable signing identity
 ./make-app.sh                     # bundle + sign
-open -a "$PWD/build/Ambient.app"  # menu bar app
+open -a "$PWD/build/Ambient.app"  # menu bar item, and the window behind it
 ```
 
 That failure is the single most confusing thing in this project and
 [docs/using/troubleshooting.md](docs/using/troubleshooting.md) is the page that
 explains it.
+
+The app is a menu bar item and a window. The menu bar item is the consent
+surface — it arms when a watched app starts audio and is answerable without
+raising anything. *Open Ambient*, ⌘0, opens the window: a sidebar of sessions
+over the transcript, the recording in flight pinned at the top of the list, and
+the warnings a capture stored about itself. The CLI verbs below all still work
+and are what scripting and debugging use.
 
 ## End-to-end result
 
@@ -56,7 +63,8 @@ Accuracy is good on ordinary speech and technical vocabulary — GDPR, DPO, ONNX
 "Q3", "the 14th of October" all correct. It fails on **proper nouns**: "Priya"
 became "Crea", "Cloudflare" became "Cloudflow". That is the expected failure
 class. Inside ambient the mitigation is the roster: `ambient roster add Priya`
-then `ambient name`, which rewrites every line of a label. Repair and
+then either the window's naming strip or `ambient name`, both of which rewrite
+every line of a label. Repair and
 summarisation happen outside ambient, on the exported `transcript.md` — no part
 of that is in this repo.
 

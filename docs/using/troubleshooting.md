@@ -85,12 +85,20 @@ reached only when the tap was unfiltered. With `apps` set, an earlier branch
 answers first and reports that those apps played no audio during the recording,
 which is what a denied grant also looks like from inside the process.
 
-The reason this page carries the advice at all is that nobody can read it where
-it is printed. It goes to stderr, and the branch that produces it runs only when
-LaunchServices started the process — the launch with nowhere for stderr to go.
-The menu bar keeps its own log for that reason, but only what it routes through
-`log` lands there, and a recording that completes is logged as `session
-written:` whether the call track held anything or not.
+The reason this page carries the advice at all is that nobody could read it
+where it was printed. It goes to stderr, and the branch that produces it runs
+only when LaunchServices started the process — the launch with nowhere for
+stderr to go. Two things now catch it anyway. The capture warnings — this one
+and the room-silent warning above it — are written into the session's own
+`session.json`, in a `warnings` array, and the window shows them in a banner
+over the transcript, so the news reaches the place you go to read the
+recording. And the menu bar keeps its own log at
+`~/Library/Logs/Ambient/app.log`; only what it routes through `log` lands
+there, and a recording that completes is logged as `session written:` whether
+the call track held anything or not.
+
+A session recorded before the `warnings` array existed simply has none, and
+parses as it always did.
 
 ## I started a second recording by accident
 
@@ -123,13 +131,18 @@ path reaches the session the search will never return. List the sessions folder
 newest names. Why the mechanism can only answer "the newest" is in
 [sessions and the edit layer](../developing/sessions.md).
 
-There is a sharper version of this, and it is the likelier one, because the
-menu bar always records unnamed and so does a bare `ambient record`: two
-unnamed recordings begun inside the same minute derive the *same* id and the
-same directory. They do not get one each. The second capture's
-`WavWriter::create` re-creates `room.native.wav` under the first, both poll the
-same `STOP` file, and one stop ends both. Pass `--name` to keep them apart.
-The collision has not been reproduced here.
+Two unnamed recordings begun inside the same minute used to be the sharper
+version of this, and no longer are. A session directory is now *claimed* rather
+than assumed: `create_dir` — not `create_dir_all` — fails with `AlreadyExists`
+on a name something else already holds, so the second recording retries with a
+zero-padded suffix and gets `2026-08-29T1223-02` of its own. Two captures, two
+directories, two `STOP` files. The padding is not decoration: every listing
+here sorts names as bytes, and an unpadded `-10` would sort before `-2`.
+
+What the suffix does not fix is the paragraph above it. Both sessions are live
+and both are growing, so a bare `ambient stop` still reaches whichever of them
+sorts last and leaves the other running; naming the directory is still the way
+to reach a specific one.
 
 ## A session directory with only audio/ in it
 
@@ -147,10 +160,13 @@ recording that was killed rather than one that finished.
 Those scratch files are also how a live recording is found, which is why
 `live_session` insists the file was written to within the last ten seconds —
 without that check the corpse answers to `ambient stop`, pointing it at a
-directory nothing is writing to. The menu's level meter is only partly covered:
-while the app is transcribing the scratch wavs are already gone, so it falls
-back to whichever session directory sorts last, and a corpse sorting last will
-show a stale level there.
+directory nothing is writing to. The menu's level line is no longer exposed to
+any of this. It used to lose the scratch wavs at the start of transcription and
+fall back to whichever directory in the sessions folder sorted last — which was
+`app.log`, since a loose file sorts after every `2…` session id. The line now
+reads a meter the capture worker shares in memory, so it never consults the
+folder at all, and `app.log` has moved out of the sessions folder to
+`~/Library/Logs/Ambient/app.log` besides.
 
 Nothing will ever reclaim it. Retention skips any session with no
 `transcript.md`, on the grounds that the audio is the only copy of what was
@@ -181,14 +197,16 @@ it. That has not been reproduced against a genuinely full disk here; it is read
 off `hound`'s `write.rs` and `src/session.rs`.
 
 Launched as a bundle you will see none of that, because stderr has nowhere to
-go. The menu bar writes its own log to `app.log` beside the sessions —
-`~/Documents/Ambient/app.log` unless `sessions_dir` or `AMBIENT_HOME` moves it —
-and a recording that fails appends one line: `recording FAILED:` and the
+go. The menu bar writes its own log to `~/Library/Logs/Ambient/app.log` — a
+fixed path, unaffected by `sessions_dir` and `AMBIENT_HOME`, and deliberately
+outside the sessions folder, which should hold only sessions. A recording that
+fails appends one line there: `recording FAILED:` and the
 outermost message only, since it formats the error with `Display` rather than
 the `{e:#}` that would carry the causes. The full chain goes to stderr, which
-is exactly where a bundle launch cannot show it. Thin as that line is, it is
-the only place a bundle-launched user sees a failure at all, so it is the first
-file to open when a recording ends with no transcript.
+is exactly where a bundle launch cannot show it. That line is no longer the
+only sight of a failure — the window shows the failure in its banner, and the
+menu bar sits in a `Failed` state until it is dismissed — but it is still the
+first file to open when a recording ends with no transcript.
 
 None of this weakens the append-only guarantee. `raw.jsonl` is created after the
 capture loop, after both `finalize()` calls and after the resample, and

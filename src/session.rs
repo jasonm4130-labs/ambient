@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::capture::ProcessTap;
@@ -102,6 +102,12 @@ pub struct SessionMeta {
     pub mic_channels: u32,
     pub apps: Vec<String>,
     pub model: String,
+    /// What the capture wanted to say and could only say to stderr: a silent
+    /// room track, a tap that returned nothing. Stored so it is still there
+    /// when the session is opened tomorrow. `default` keeps sessions written
+    /// before this field loadable.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -208,12 +214,230 @@ pub const STOP_FILE: &str = "STOP";
 /// nowhere, so this is the only way to tell a live recording from a dead one.
 pub const STATUS_FILE: &str = "status";
 
+/// Which stage of a recording's life the worker is in, as told to a
+/// [`Meter`]. Distinct from `Phase` in `state.rs`: that governs which
+/// transitions are legal, this is what the worker itself is doing right now.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeterPhase {
+    Capturing = 0,
+    Transcribing = 1,
+    Diarizing = 2,
+    Done = 3,
+    Failed = 4,
+}
+
+impl MeterPhase {
+    fn from_u8(v: u8) -> MeterPhase {
+        match v {
+            1 => MeterPhase::Transcribing,
+            2 => MeterPhase::Diarizing,
+            3 => MeterPhase::Done,
+            4 => MeterPhase::Failed,
+            _ => MeterPhase::Capturing,
+        }
+    }
+}
+
+/// A live recording's level meter, shared between the worker thread and
+/// whichever UI is drawing it.
+///
+/// This is deliberately not the same numbers `record_into` already tracks for
+/// [`crate::capture::silent_tap_advice`] and the room-silent warning below:
+/// those are cumulative over the whole capture, and are the app's only guard
+/// against a capture that reports success and contains silence — resetting
+/// them would make a dead mic read as healthy the moment the meter cleared.
+/// `room_peak_milli`/`call_peak_milli` here answer a different question, "is
+/// audio arriving *right now*", and are reset every second for exactly that
+/// reason. Peaks are stored as thousandths of full scale so an `f32` amplitude
+/// fits an atomic integer.
+pub struct Meter {
+    pub elapsed_ms: AtomicU64,
+    pub room_peak_milli: AtomicU32,
+    pub call_peak_milli: AtomicU32,
+    pub audio_arriving: AtomicBool,
+    pub phase: AtomicU8,
+}
+
+impl Default for Meter {
+    fn default() -> Self {
+        Meter {
+            elapsed_ms: AtomicU64::new(0),
+            room_peak_milli: AtomicU32::new(0),
+            call_peak_milli: AtomicU32::new(0),
+            audio_arriving: AtomicBool::new(false),
+            phase: AtomicU8::new(MeterPhase::Capturing as u8),
+        }
+    }
+}
+
+impl Meter {
+    pub fn phase(&self) -> MeterPhase {
+        MeterPhase::from_u8(self.phase.load(Ordering::Relaxed))
+    }
+
+    fn set_phase(&self, p: MeterPhase) {
+        self.phase.store(p as u8, Ordering::Relaxed);
+    }
+
+    /// One line, matching the shape of the status file for the phases that
+    /// have a level to show, and reading the per-interval peaks — so a muted
+    /// mic falls back to zero within a second rather than holding whatever it
+    /// last saw.
+    pub fn status_line(&self) -> String {
+        let elapsed = self.elapsed_ms.load(Ordering::Relaxed) / 1000;
+        let (m, s) = (elapsed / 60, elapsed % 60);
+        match self.phase() {
+            MeterPhase::Capturing => {
+                if self.audio_arriving.load(Ordering::Relaxed) {
+                    let room = self.room_peak_milli.load(Ordering::Relaxed) as f32 / 1000.0;
+                    let call = self.call_peak_milli.load(Ordering::Relaxed) as f32 / 1000.0;
+                    format!("{m:02}:{s:02} · room {room:.2} · call {call:.2}")
+                } else {
+                    format!("{m:02}:{s:02}  no audio arriving")
+                }
+            }
+            MeterPhase::Transcribing => "transcribing…".to_string(),
+            MeterPhase::Diarizing => "separating voices…".to_string(),
+            MeterPhase::Done => "done".to_string(),
+            MeterPhase::Failed => "failed".to_string(),
+        }
+    }
+}
+
+/// A session directory this process created and therefore owns.
+///
+/// The only way to hold one is [`SessionDir::claim`], and claiming is what
+/// creates the directory — so a `SessionDir` is evidence that no other
+/// recording is writing there. That is what stops two recordings started in
+/// the same clock minute from sharing the directory their timestamp names.
+#[derive(Debug)]
+pub struct SessionDir(PathBuf);
+
+impl SessionDir {
+    /// The only constructor. `create_dir` — not `create_dir_all` — fails with
+    /// `AlreadyExists` rather than succeeding into an occupied directory, so
+    /// the claim is atomic against anything else racing for the same name.
+    ///
+    /// A collision retries with a **zero-padded** suffix (`-02`, `-03`).
+    /// `latest()` and every listing sort these names as bytes, and unpadded
+    /// `-10` sorts before `-2`.
+    pub fn claim(home: &Path, name: Option<&str>) -> Result<Self> {
+        std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
+        let started = chrono::Local::now();
+        let slug = name.map(slugify).filter(|s| !s.is_empty());
+        let base = match &slug {
+            Some(s) => format!("{}-{}", started.format("%Y-%m-%dT%H%M"), s),
+            None => started.format("%Y-%m-%dT%H%M").to_string(),
+        };
+        for n in 1..=99u32 {
+            let id = if n == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{n:02}")
+            };
+            let dir = home.join(&id);
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return Ok(SessionDir(dir)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    return Err(e).with_context(|| format!("creating {}", dir.display()));
+                }
+            }
+        }
+        bail!(
+            "{} already holds 99 sessions claimed as {base}",
+            home.display()
+        )
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// The session id, which is the directory's own name and never the string
+    /// that was formatted to ask for it: a claim that collided is called
+    /// `-02`, and everything written inside has to say so.
+    pub fn id(&self) -> String {
+        self.0
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+}
+
+impl AsRef<Path> for SessionDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Proof that a stop was asked for, and of nothing else. The unit field is
+/// private, so [`signal_stop`] is the only thing in the program that can make
+/// one — a "stopped" state cannot be constructed without having stopped.
+#[derive(Debug)]
+pub struct StopSignalled(());
+
+/// Ask the recording in `dir` to stop. Unlike [`stop_recording`] this cannot
+/// signal the wrong directory: it is told which one, by a value only a claim
+/// could have produced, so moving the sessions folder mid-recording does not
+/// make the running capture unreachable.
+pub fn signal_stop(dir: &SessionDir) -> Result<StopSignalled> {
+    let p = dir.path().join(STOP_FILE);
+    std::fs::write(&p, "").with_context(|| format!("writing {}", p.display()))?;
+    Ok(StopSignalled(()))
+}
+
+/// Removes a just-claimed directory unless the recording got far enough for it
+/// to hold something. Disarmed as soon as the tap is running: past that point
+/// the directory may hold the only copy of a conversation, and an empty
+/// directory left behind is the cheaper mistake by a wide margin.
+struct ClaimGuard<'a>(Option<&'a Path>);
+
+impl ClaimGuard<'_> {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for ClaimGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0 {
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+}
+
+/// Claim a directory under the sessions folder and record into it.
 pub fn record(
     name: Option<&str>,
     bundles: &[String],
     model_dir: Option<&str>,
     seconds: Option<u64>,
 ) -> Result<PathBuf> {
+    let dir = SessionDir::claim(&home(), name)?;
+    record_into(&dir, name, bundles, model_dir, seconds, None)
+}
+
+/// Record into a directory that has already been claimed. This creates no
+/// session directory of its own, so "record a second session into an occupied
+/// one" is not expressible by any caller, present or future.
+///
+/// `name` is the human title stored in `session.json`; the id is the claimed
+/// directory's own name and comes from `dir`. `meter`, when given, is written
+/// alongside the status file for a live UI to read without touching the
+/// filesystem.
+pub fn record_into(
+    dir: &SessionDir,
+    name: Option<&str>,
+    bundles: &[String],
+    model_dir: Option<&str>,
+    seconds: Option<u64>,
+    meter: Option<std::sync::Arc<Meter>>,
+) -> Result<PathBuf> {
+    let mut guard = ClaimGuard(Some(dir.path()));
+    let id = dir.id();
+    let dir = dir.path();
     let models = models_root()?;
     let asr_dir = match model_dir {
         Some(d) => PathBuf::from(d),
@@ -243,12 +467,6 @@ pub fn record(
     }
 
     let started = chrono::Local::now();
-    let slug = name.map(slugify).filter(|s| !s.is_empty());
-    let id = match &slug {
-        Some(s) => format!("{}-{}", started.format("%Y-%m-%dT%H%M"), s),
-        None => started.format("%Y-%m-%dT%H%M").to_string(),
-    };
-    let dir = home().join(&id);
     let audio = dir.join("audio");
     std::fs::create_dir_all(&audio).with_context(|| format!("creating {}", audio.display()))?;
 
@@ -283,6 +501,9 @@ pub fn record(
     };
     let mut room_w = hound::WavWriter::create(&room_native, spec(mic_hz))?;
     let mut call_w = hound::WavWriter::create(&call_native, spec(call_hz))?;
+    // Everything that can fail before this point fails with nothing recorded.
+    // Everything after it may be sitting on audio, so the directory stays.
+    guard.disarm();
 
     STOP.store(false, Ordering::SeqCst);
     unsafe {
@@ -291,8 +512,10 @@ pub fn record(
 
     let stop_file = dir.join(STOP_FILE);
     let status_file = dir.join(STATUS_FILE);
-    // A stale sentinel from a previous run would stop this one instantly.
-    std::fs::remove_file(&stop_file).ok();
+    // No stale-sentinel sweep here: the directory was claimed exclusively a
+    // moment ago, so it cannot hold one. Deleting a STOP written *since* the
+    // claim would swallow a real stop and leave the capture running under a
+    // caller that believes it stopped.
     let deadline = seconds.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
 
     let t0 = std::time::Instant::now();
@@ -300,6 +523,11 @@ pub fn record(
     let mut frames = 0u64;
     let mut room_peak = 0.0f32;
     let mut call_peak = 0.0f32;
+    // Beside the cumulative peaks above, not instead of them: these reset
+    // every time the meter is written, so a mic that goes silent mid-capture
+    // reads as silent within a second rather than holding its last peak.
+    let mut interval_room_peak = 0.0f32;
+    let mut interval_call_peak = 0.0f32;
     let mut last_print = std::time::Instant::now();
     let mut max_rendering = 0usize;
 
@@ -331,6 +559,19 @@ pub fn record(
             eprint!("\r  {line}   ");
             let _ = std::io::stderr().flush();
             std::fs::write(&status_file, format!("recording {line}\n")).ok();
+            if let Some(m) = &meter {
+                m.elapsed_ms
+                    .store(t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+                m.room_peak_milli
+                    .store((interval_room_peak * 1000.0) as u32, Ordering::Relaxed);
+                m.call_peak_milli
+                    .store((interval_call_peak * 1000.0) as u32, Ordering::Relaxed);
+                m.audio_arriving
+                    .store(mic_real + call_real > 0.0, Ordering::Relaxed);
+                m.set_phase(MeterPhase::Capturing);
+            }
+            interval_room_peak = 0.0;
+            interval_call_peak = 0.0;
             last_print = std::time::Instant::now();
         }
 
@@ -341,10 +582,12 @@ pub fn record(
 
         for s in &room {
             room_peak = room_peak.max(s.abs());
+            interval_room_peak = interval_room_peak.max(s.abs());
             room_w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
         }
         for s in &call {
             call_peak = call_peak.max(s.abs());
+            interval_call_peak = interval_call_peak.max(s.abs());
             call_w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
         }
     }
@@ -358,6 +601,9 @@ pub fn record(
     drop(tap);
     std::fs::remove_file(&stop_file).ok();
     std::fs::write(&status_file, "transcribing\n").ok();
+    if let Some(m) = &meter {
+        m.set_phase(MeterPhase::Transcribing);
+    }
     let ended = chrono::Local::now();
     let duration_s = frames as f64 / mic_hz.max(call_hz).max(1) as f64;
     eprintln!("\n  stopped after {duration_s:.1}s — transcribing");
@@ -371,6 +617,9 @@ pub fn record(
 
     if mic_real + call_real <= 0.0 {
         std::fs::write(&status_file, "failed: no audio was captured\n").ok();
+        if let Some(m) = &meter {
+            m.set_phase(MeterPhase::Failed);
+        }
         bail!(
             "capture was created (room {mic_hz} Hz, call {call_hz} Hz) but delivered no audio \
              in {:.0}s, \
@@ -381,11 +630,17 @@ pub fn record(
         );
     }
 
+    // Cumulative peaks over the whole capture, untouched: these two checks are
+    // the only guard against a capture that reports success and contains
+    // silence, and a per-interval peak would answer a different question.
+    let mut warnings: Vec<String> = Vec::new();
     if room_peak < 1e-4 {
         eprintln!("  WARNING: the room track is silent — check the microphone grant.");
+        warnings.push("the room track is silent — check the microphone grant.".into());
     }
     if let Some(advice) = crate::capture::silent_tap_advice(call_peak, max_rendering, bundles) {
         eprintln!("\n  WARNING: {advice}\n");
+        warnings.push(advice);
     }
 
     // One track at a time, so the native buffer is gone before the next is read
@@ -460,6 +715,7 @@ pub fn record(
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        warnings,
     };
     std::fs::write(
         dir.join("session.json"),
@@ -468,9 +724,12 @@ pub fn record(
 
     if cfg.diarize && lines > 0 {
         std::fs::write(dir.join(STATUS_FILE), "separating voices\n").ok();
+        if let Some(m) = &meter {
+            m.set_phase(MeterPhase::Diarizing);
+        }
         // Diarization is a nicety; a transcript without speakers still beats
         // losing the recording to a model that failed to load.
-        match diarize_session(&dir, cfg.threshold) {
+        match diarize_session(dir, cfg.threshold) {
             Ok(n) => eprintln!("  {n} speaker label(s)"),
             Err(e) => eprintln!(
                 "  WARNING: could not separate voices ({e}) — \
@@ -480,8 +739,11 @@ pub fn record(
     }
 
     let md = dir.join("transcript.md");
-    std::fs::write(&md, markdown(&dir)?)?;
+    std::fs::write(&md, markdown(dir)?)?;
     std::fs::write(dir.join(STATUS_FILE), "done\n").ok();
+    if let Some(m) = &meter {
+        m.set_phase(MeterPhase::Done);
+    }
 
     // Only now that the text exists is the audio safe to age out. This covers
     // the session just recorded as well as every older one, which is why there
@@ -492,20 +754,33 @@ pub fn record(
     }
 
     eprintln!("  {lines} line(s) written\n  {}", md.display());
-    Ok(dir)
+    Ok(dir.to_path_buf())
 }
 
-/// The most recently written session, by directory name. Session ids are
-/// timestamps, so sorting by name sorts by time without stat-ing anything.
-pub fn latest(root: &Path) -> Option<PathBuf> {
-    let mut all: Vec<PathBuf> = std::fs::read_dir(root)
-        .ok()?
+/// Every session directory under `root`, oldest first. Session ids are
+/// timestamps, so sorting by name sorts by time without stat-ing anything —
+/// and the `is_dir` filter is what keeps a loose file in the folder (`app.log`
+/// sorts after every `2…` id) out of the answer.
+///
+/// This is the one enumeration of the sessions folder. Anything else walking
+/// it with `read_dir` is the same bug in a new place.
+pub fn list(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut all: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
     all.sort();
-    all.pop()
+    all
+}
+
+/// The most recently written session. Built on [`list`] so a second walk
+/// cannot drift from the first.
+pub fn latest(root: &Path) -> Option<PathBuf> {
+    list(root).pop()
 }
 
 /// Delete track audio older than the retention window, leaving every transcript
@@ -937,7 +1212,7 @@ pub fn live_session() -> Option<PathBuf> {
 /// leaves its scratch wavs behind for ever, and without this check that corpse
 /// answers to `ambient stop` and to the menu's level meter — pointing both at a
 /// directory nothing is writing to.
-fn is_growing(p: &Path) -> bool {
+pub fn is_growing(p: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(p) else {
         return false;
     };
@@ -1220,6 +1495,130 @@ mod tests {
         let dir = fake_session(&root, "2026-01-01T0900", false);
         assert_eq!(sweep_audio(&root, Some(0)), 0);
         assert!(dir.join("audio").join("room.wav").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Bug 4. Two recordings starting inside the same clock minute used to be
+    /// handed the same directory name, and the second `create_dir_all`
+    /// succeeded straight into the first's session — overwriting its
+    /// transcript with its own.
+    #[test]
+    fn two_claims_in_one_clock_minute_yield_two_directories() {
+        let root = sweep_root("claim-collide");
+
+        // Two claims microseconds apart share a clock minute unless one lands
+        // across a minute boundary. Retry on a clean root rather than assert
+        // against the wall clock.
+        let mut pair = None;
+        for _ in 0..3 {
+            std::fs::remove_dir_all(&root).ok();
+            std::fs::create_dir_all(&root).unwrap();
+            let first = SessionDir::claim(&root, None).unwrap();
+            // The first session's only copy of what was said.
+            std::fs::write(first.path().join("transcript.md"), "the first conversation").unwrap();
+            let second = SessionDir::claim(&root, None).unwrap();
+            if second.id() == format!("{}-02", first.id()) {
+                pair = Some((first, second));
+                break;
+            }
+        }
+        let (first, second) = pair.expect("two claims never landed in one clock minute");
+
+        assert_ne!(first.path(), second.path());
+        assert!(second.path().is_dir());
+        // The claim is what makes the second directory empty: nothing of the
+        // first's survived into it, and nothing of the first's was lost.
+        assert_eq!(
+            std::fs::read_to_string(first.path().join("transcript.md")).unwrap(),
+            "the first conversation"
+        );
+        assert!(!second.path().join("transcript.md").exists());
+        // The id every file inside will carry is the directory's own name.
+        assert_eq!(
+            second.id(),
+            second.path().file_name().unwrap().to_string_lossy()
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The suffix is zero-padded because every listing here is a byte sort.
+    /// Unpadded, `-10` sorts before `-2` and the sidebar shows the tenth
+    /// recording of a minute above its second.
+    #[test]
+    fn a_padded_suffix_sorts_between_its_minute_and_the_next() {
+        let root = sweep_root("padding");
+        for id in [
+            "2026-08-30T1406",
+            "2026-08-30T1405-10",
+            "2026-08-30T1405",
+            "2026-08-30T1405-02",
+        ] {
+            std::fs::create_dir_all(root.join(id)).unwrap();
+        }
+        let names: Vec<String> = list(&root)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "2026-08-30T1405",
+                "2026-08-30T1405-02",
+                "2026-08-30T1405-10",
+                "2026-08-30T1406",
+            ]
+        );
+        assert_eq!(
+            latest(&root).unwrap().file_name().unwrap(),
+            "2026-08-30T1406"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Bug 2's other half. `app.log` sorts after every `2…` session id, so a
+    /// walk without the `is_dir` filter hands back the log file as the newest
+    /// session.
+    #[test]
+    fn list_ignores_files_in_the_sessions_folder() {
+        let root = sweep_root("applog");
+        fake_session(&root, "2026-01-01T0900", true);
+        std::fs::write(root.join("app.log"), "some log lines\n").unwrap();
+        std::fs::write(root.join("zzz.txt"), "not a session").unwrap();
+
+        let names: Vec<String> = list(&root)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["2026-01-01T0900"]);
+        assert_eq!(
+            latest(&root).unwrap().file_name().unwrap(),
+            "2026-01-01T0900"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `warnings` is new, and every session recorded before it exists has a
+    /// `session.json` without the field.
+    #[test]
+    fn a_session_json_without_warnings_still_parses() {
+        let old = r#"{"id":"2026-01-01T0900","name":null,"started_at":"a","ended_at":"b",
+                      "duration_s":1.0,"device_hz":48000,"mic_hz":48000,"channels":1,
+                      "mic_channels":1,"apps":[],"model":"parakeet"}"#;
+        let meta: SessionMeta = serde_json::from_str(old).unwrap();
+        assert!(meta.warnings.is_empty());
+    }
+
+    /// The witness: a `StopSignalled` cannot be made without writing the
+    /// sentinel, and the sentinel lands in the claimed directory rather than
+    /// in whatever `home()` says at the time.
+    #[test]
+    fn signal_stop_writes_the_sentinel_into_the_claimed_directory() {
+        let root = sweep_root("signalstop");
+        let dir = SessionDir::claim(&root, Some("Team Sync")).unwrap();
+        assert!(dir.id().ends_with("-team-sync"));
+        let _witness: StopSignalled = signal_stop(&dir).unwrap();
+        assert!(dir.path().join(STOP_FILE).is_file());
         std::fs::remove_dir_all(&root).ok();
     }
 

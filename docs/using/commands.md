@@ -6,9 +6,12 @@ sidebar:
 
 # Commands
 
-One binary. Run with no arguments it is the menu bar app; run with arguments it
-stays a CLI, so a single signed executable serves both. A verb it does not
-recognise is not an error: `ambient wibble` prints the usage banner on stdout
+One binary. Run with no arguments it is the app — a menu bar item and the
+session browser behind it; run with arguments it stays a CLI, so a single
+signed executable serves both. The window is the daily loop now: `show`,
+`name`, `diarize` and `export` all have a control in it, and this page stays a
+complete reference because scripting and debugging still go through the verbs.
+A verb it does not recognise is not an error: `ambient wibble` prints the usage banner on stdout
 and exits 0, exactly as asking for help would, so a mistyped verb reads as
 success to whatever is scripting it.
 
@@ -110,7 +113,8 @@ ambient show <session-dir> [--verbatim]
 
 Prints the session with `edits.jsonl` folded over `raw.jsonl`. `--verbatim`
 skips the fold and shows what the recogniser actually produced. Nothing is
-mutated. See [sessions](../developing/sessions.md).
+mutated. The window's *Tidied*/*Verbatim* toggle is the same pair of views. See
+[sessions](../developing/sessions.md).
 
 ## name
 
@@ -121,7 +125,8 @@ ambient name <session-dir> <label> <name>
 Renames every line currently carrying `<label>`, e.g. `call-1 Priya`, reports
 how many lines moved, then prints the session. It appends a `speaker` edit like
 anything else, so it is undoable, and a later `diarize` leaves a human-assigned
-name alone.
+name alone. The window's naming strip appends the identical edit, on whichever
+session is selected.
 
 Asking for a label nothing carries is how you find out which labels exist. It
 refuses and lists them: `ambient name <dir> call-2 Priya` on a session holding
@@ -143,7 +148,9 @@ the config file, so the `threshold` setting does not apply here; it governs only
 the automatic diarization at the end of `record`. Re-running appends
 `revert` records for the previous run's labels first, so a bad threshold costs a
 revert rather than a recording. It **refuses** on a session whose audio has been
-swept by retention, and on one with no records in `raw.jsonl`. See
+swept by retention, and on one with no records in `raw.jsonl` — the window's
+*Separate voices* button disables itself and says why in both cases rather than
+letting you ask. See
 [diarization](../developing/diarization.md).
 
 ## export

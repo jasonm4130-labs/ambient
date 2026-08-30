@@ -6,60 +6,41 @@
 //! channel, against 0.000 for the launch path that genuinely lacks the grant.
 //!
 //! Nothing here reaches into the capture layer. The worker runs the same
-//! blocking `session::record` the CLI runs, and the two halves talk through the
-//! `STOP` sentinel and `status` file that already existed for the detached
-//! bundle launch — which turn out to be exactly the interface a GUI wants.
+//! blocking `session::record_into` the CLI's `record` wraps, and the two halves
+//! talk through the `STOP` sentinel and `status` file that already existed for
+//! the detached bundle launch — which turn out to be exactly the interface a
+//! GUI wants.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::channel;
+use std::sync::Arc;
+use std::time::Instant;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSImage, NSMenu,
-    NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWorkspace,
+    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSVariableStatusItemLength,
 };
 use objc2_foundation::{
     MainThreadMarker, NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString,
-    NSTimer, NSURL,
+    NSTimer,
 };
 
-/// What the status item is doing, which is also what its icon says.
-#[derive(Clone, Copy, PartialEq)]
-enum State {
-    Idle,
-    /// A watched app started producing audio and Ambient is waiting to be told
-    /// whether to record it.
-    Armed,
-    Recording,
-    Transcribing,
-}
-
-impl State {
-    /// SF Symbols standing in for the artboard's three icons: outline when
-    /// present but recording nothing, filled while live, and a distinct shape
-    /// while the models are running.
-    fn symbol(self) -> &'static str {
-        match self {
-            State::Idle => "waveform",
-            State::Armed => "waveform.badge.exclamationmark",
-            State::Recording => "waveform.circle.fill",
-            State::Transcribing => "hourglass",
-        }
-    }
-}
+use crate::session::SessionDir;
+use crate::state::{Live, Phase, PhaseCell, PhaseKind, Quit};
 
 /// What the watcher should do about what is currently playing.
 #[derive(Debug, PartialEq)]
-enum Watch {
+enum Tick {
     Nothing,
-    /// Stand down from Armed: whatever was playing has stopped.
+    /// Stand down from Armed: the app it was waiting on has stopped, whether
+    /// or not anything else is still playing.
     Disarm,
-    /// Nothing is playing, so a previous "not this one" has served its purpose.
-    Forget,
     Arm(String),
     Start(String),
 }
@@ -69,59 +50,56 @@ enum Watch {
 /// An empty `apps` watches nothing. That list already means "capture all system
 /// audio", and arming on any sound would flap at every notification chime — so
 /// the Start item stays the only way in when nothing is named.
-fn decide(
-    state: State,
-    apps: &[String],
-    live: &[String],
-    declined: Option<&str>,
-    ask: bool,
-) -> Watch {
+fn next(phase: &Phase, apps: &[String], live: &[String], ask: bool) -> Tick {
     if apps.is_empty() {
-        return Watch::Nothing;
+        return Tick::Nothing;
     }
-    let playing: Vec<&String> = apps
-        .iter()
-        .filter(|a| live.iter().any(|l| l == *a))
-        .collect();
-    if playing.is_empty() {
-        // Nothing watched is playing. Stand down if we were waiting on an
-        // answer, and forget the decline so the next call is asked afresh.
-        return if state == State::Armed {
-            Watch::Disarm
-        } else if declined.is_some() {
-            Watch::Forget
-        } else {
-            Watch::Nothing
-        };
+    // Keyed on the armed app, not on whether anything at all is still
+    // playing: a music player left running all day must not hold the prompt
+    // open after the call it armed for has ended.
+    if let Phase::Armed { app, .. } = phase {
+        if !live.iter().any(|l| l == app) {
+            return Tick::Disarm;
+        }
     }
-    // A "not this one" only answers for as long as that call is still going.
-    // Once its app falls quiet the decline is spent, even if something else is
-    // still playing — so it stops counting here rather than a tick later.
-    let declined = declined.filter(|d| playing.iter().any(|a| a.as_str() == *d));
     // Skip past anything still declined rather than stopping at it: a watched
     // app left playing all day would otherwise mask every real call behind it.
-    let Some(app) = playing.iter().find(|a| declined != Some(a.as_str())) else {
-        return Watch::Nothing;
+    let declined = phase.declined();
+    let Some(app) = apps
+        .iter()
+        .filter(|a| live.iter().any(|l| l == *a))
+        .find(|a| !declined.is_declined(a))
+    else {
+        return Tick::Nothing;
     };
-    if state != State::Idle {
-        return Watch::Nothing;
+    // `Failed` is watched exactly like `Idle`: a failure the user has not
+    // dismissed must not stop the next call being noticed.
+    if !matches!(phase.kind(), PhaseKind::Idle | PhaseKind::Failed) {
+        return Tick::Nothing;
     }
     if ask {
-        Watch::Arm((*app).clone())
+        Tick::Arm(app.clone())
     } else {
-        Watch::Start((*app).clone())
+        Tick::Start(app.clone())
     }
 }
 
 struct Ivars {
     status_item: Retained<NSStatusItem>,
-    state: RefCell<State>,
-    /// Present only while a recording thread is alive.
-    result: RefCell<Option<Receiver<anyhow::Result<PathBuf>>>>,
-    quitting: RefCell<bool>,
+    /// The single source of truth. Nothing else here says what the app is
+    /// doing, and the recording's receiver lives inside it — so a deferred
+    /// quit and something alive to answer it are the same fact.
+    phase: PhaseCell,
+    /// The most recent failure, in the words it will be shown in. Step 5's
+    /// banner reads this; until then the menu's status line does.
+    banner: RefCell<Option<String>>,
+    quitting: Cell<bool>,
     log: PathBuf,
-    /// Held across opens so the window and its bridge survive being closed.
-    settings: RefCell<Option<crate::settings::SettingsWindow>>,
+    /// The session browser — and, since the settings page moved into it, the
+    /// app's only window. Held across opens so it and the settings bridge
+    /// survive being closed. Built on first open rather than at launch: the
+    /// app spends most of its life with nobody reading a transcript.
+    main_window: RefCell<Option<crate::window::MainWindow>>,
     start_item: RefCell<Option<Retained<NSMenuItem>>>,
     stop_item: RefCell<Option<Retained<NSMenuItem>>>,
     level_item: RefCell<Option<Retained<NSMenuItem>>>,
@@ -130,11 +108,6 @@ struct Ivars {
     /// The refresh timer runs at 2 Hz for the level meter; watching for calls
     /// needs nothing like that rate, so it happens every eighth tick.
     ticks: Cell<u64>,
-    /// The bundle that armed us, and one the user has waved away. The decline
-    /// is forgotten as soon as that app stops producing audio, so saying no to
-    /// one call does not opt out of the next.
-    armed_by: RefCell<Option<String>>,
-    declined: RefCell<Option<String>>,
 }
 
 define_class!(
@@ -148,40 +121,67 @@ define_class!(
     unsafe impl NSApplicationDelegate for Delegate {
         /// Quitting during a recording used to kill the worker outright,
         /// abandoning the audio and leaving scratch files that look live for
-        /// ever. Stop it properly and let the transcription finish.
+        /// ever. Stop it properly and let the transcription finish — and if
+        /// the stop itself fails, refuse the quit rather than walking away
+        /// from a capture that is still running.
         #[unsafe(method(applicationShouldTerminate:))]
-        fn should_terminate(&self, _app: &NSApplication) -> usize {
-            let state = *self.ivars().state.borrow();
-            match state {
-                // Nothing is running. Armed is only ever waiting on an answer,
-                // and deferring for a worker that was never spawned would hang
-                // the quit for ever — the reply only goes out when a recording
-                // thread hands back a result.
-                State::Idle | State::Armed => 1, // NSTerminateNow
-                State::Recording | State::Transcribing => {
-                    if state == State::Recording {
-                        crate::session::stop_recording(None).ok();
-                        // Through set_state, so the icon and menu stop claiming
-                        // a recording is still running.
-                        self.set_state(State::Transcribing);
-                    }
+        fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
+            // The whole table lives in `Phase::on_quit`. `Later` is
+            // unconstructible outside a variant that owns the receiver which
+            // will answer it, so the pairing bug 1 needed — a deferred quit
+            // with nothing alive to reply — cannot be expressed here.
+            let reply = self.ivars().phase.transition(|p| p.on_quit());
+            self.render();
+            match reply {
+                Quit::Now => NSApplicationTerminateReply::TerminateNow,
+                Quit::Later(_) => {
                     self.log("quit requested — finishing the recording first");
-                    // NSTerminateLater: `refresh` replies once the worker is done.
-                    *self.ivars().quitting.borrow_mut() = true;
-                    2
+                    self.ivars().quitting.set(true);
+                    // `refresh` replies once the worker hands back a result.
+                    NSApplicationTerminateReply::TerminateLater
+                }
+                Quit::Cancel(e) => {
+                    self.fail("could not stop the recording", &e);
+                    self.alert(
+                        "Ambient is still recording",
+                        &format!(
+                            "The recording could not be stopped, so quitting now would \
+                             abandon it.\n\n{e}\n\nThe capture is still running. Try Stop \
+                             Recording again, or check the sessions folder."
+                        ),
+                    );
+                    NSApplicationTerminateReply::TerminateCancel
                 }
             }
+        }
+
+        /// **False, or the flip is worse than not flipping.** The window is a
+        /// reader for a background agent, and closing a reader must not kill
+        /// the agent — an app that stopped recording your calls because you
+        /// closed a transcript would be the worst bug in the program.
+        #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
+        fn terminate_after_last_window(&self, _app: &NSApplication) -> bool {
+            false
+        }
+
+        /// Clicking the Dock icon, or `open -a Ambient`, while the app is
+        /// already running. Without this the icon the promotion just put in
+        /// the Dock does nothing at all when clicked.
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn should_handle_reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
+            self.present_window(false);
+            true
         }
     }
 
     impl Delegate {
         #[unsafe(method(startRecording:))]
         fn start_recording(&self, _sender: Option<&AnyObject>) {
-            if matches!(*self.ivars().state.borrow(), State::Recording | State::Transcribing) {
+            if self.ivars().phase.snapshot().has_worker {
                 return;
             }
             self.log("start recording");
-            self.begin_recording();
+            self.begin_recording(None);
         }
 
         /// The armed state's yes. Identical to pressing Start, but logged
@@ -189,12 +189,13 @@ define_class!(
         /// able to point at afterwards.
         #[unsafe(method(recordThisCall:))]
         fn record_this_call(&self, _sender: Option<&AnyObject>) {
-            if *self.ivars().state.borrow() != State::Armed {
-                return;
-            }
-            let who = self.ivars().armed_by.borrow().clone().unwrap_or_default();
+            let armed = self.ivars().phase.with(|p| match p.kind() {
+                PhaseKind::Armed => p.app(),
+                _ => None,
+            });
+            let Some(who) = armed else { return };
             self.log(&format!("recording {who} — allowed by the user"));
-            self.begin_recording();
+            self.begin_recording(Some(who));
         }
 
         /// The armed state's no. Remembered against the bundle so the menu does
@@ -202,65 +203,58 @@ define_class!(
         /// quiet.
         #[unsafe(method(notThisOne:))]
         fn not_this_one(&self, _sender: Option<&AnyObject>) {
-            if *self.ivars().state.borrow() != State::Armed {
-                return;
-            }
-            let who = self.ivars().armed_by.borrow().clone();
-            self.log(&format!(
-                "declined {} — not recording",
-                who.clone().unwrap_or_default()
-            ));
-            *self.ivars().declined.borrow_mut() = who;
-            *self.ivars().armed_by.borrow_mut() = None;
-            self.set_state(State::Idle);
+            let who = self.ivars().phase.with(|p| match p.kind() {
+                PhaseKind::Armed => p.app(),
+                _ => None,
+            });
+            let Some(who) = who else { return };
+            self.log(&format!("declined {who} — not recording"));
+            self.ivars().phase.transition(|mut p| {
+                p.declined_mut().decline(&who);
+                (p.disarm(), ())
+            });
+            self.render();
         }
 
         #[unsafe(method(stopRecording:))]
         fn stop_recording(&self, _sender: Option<&AnyObject>) {
-            if *self.ivars().state.borrow() != State::Recording {
+            if self.ivars().phase.snapshot().kind != PhaseKind::Recording {
                 return;
             }
             self.log("stop requested");
-            // Stopping is an answer about this call. Without recording it, the
-            // watcher sees the app still playing on its next tick and starts a
-            // fresh recording — leaving no way to stop until the call ends.
+            // Read before the transition: the closure is pure, and neither of
+            // these can be asked for while the phase is out of its cell.
             let cfg = crate::config::Config::load();
-            let live = crate::probe::bundles_rendering_output();
-            let playing = cfg
-                .apps
-                .iter()
-                .find(|a| live.iter().any(|l| l == *a))
-                .cloned();
-            let armed = self.ivars().armed_by.borrow().clone();
-            *self.ivars().declined.borrow_mut() = playing.or(armed);
-            // Writes the sentinel the capture loop polls every 200 ms.
-            if let Err(e) = crate::session::stop_recording(None) {
-                eprintln!("stop: {e}");
+            let playing = crate::probe::bundles_rendering_output();
+            // The sentinel goes into the directory this recording claimed, so
+            // changing the sessions folder mid-recording no longer makes the
+            // running capture unreachable.
+            let failure = self.ivars().phase.transition(|p| {
+                match p.decline_this_call(&cfg.apps, &playing).stop() {
+                    Ok(next) => (next, None),
+                    Err((back, e)) => (back, Some(e)),
+                }
+            });
+            if let Some(e) = failure {
+                // Still Recording, because the worker is still recording.
+                // Stop stays enabled and Start stays disabled.
+                self.fail("could not stop the recording", &e);
             }
-            self.set_state(State::Transcribing);
+            self.render();
         }
 
+        /// Settings is a row in the one window now, not a window of its own.
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
-            let mtm = MainThreadMarker::from(self);
-            let mut slot = self.ivars().settings.borrow_mut();
-            let w = slot.get_or_insert_with(|| crate::settings::SettingsWindow::open(mtm));
-            // The CLI can have changed the file since this window last drew.
-            w.refresh();
-            w.show(mtm);
+            self.present_window(true);
         }
 
-        #[unsafe(method(openSessions:))]
-        fn open_sessions(&self, _sender: Option<&AnyObject>) {
-            let home = crate::session::home();
-            std::fs::create_dir_all(&home).ok();
-            let s = NSString::from_str(&home.to_string_lossy());
-            {
-                if let Some(url) = NSURL::fileURLWithPath(&s).into() {
-                    let url: Retained<NSURL> = url;
-                    NSWorkspace::sharedWorkspace().openURL(&url);
-                }
-            }
+        /// Open the session browser. This replaces Open Sessions Folder,
+        /// which was standing in for a browser that now exists — the folder
+        /// is one Reveal in Finder away inside the window.
+        #[unsafe(method(openWindow:))]
+        fn open_window(&self, _sender: Option<&AnyObject>) {
+            self.present_window(false);
         }
 
         #[unsafe(method(tick:))]
@@ -274,7 +268,9 @@ impl Delegate {
     fn log(&self, msg: &str) {
         eprintln!("{msg}");
         let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
-        std::fs::create_dir_all(crate::session::home()).ok();
+        if let Some(parent) = self.ivars().log.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -285,64 +281,152 @@ impl Delegate {
         }
     }
 
-    /// Shared by the Start item and the armed state's yes.
-    fn begin_recording(&self) {
+    /// The one place a failure is recorded: the log line, and the words the
+    /// banner will use. `eprintln!` goes nowhere under `open -a`, so a failure
+    /// that only reaches stderr has not been reported at all.
+    fn fail(&self, ctx: &str, e: &anyhow::Error) {
+        let msg = format!("{ctx}: {e:#}");
+        self.log(&format!("FAILED — {msg}"));
+        *self.ivars().banner.borrow_mut() = Some(msg);
+    }
+
+    /// A modal the user cannot miss. Used only where carrying on would lose a
+    /// recording, because an Accessory app interrupting anything else is rude.
+    fn alert(&self, title: &str, body: &str) {
+        let mtm = MainThreadMarker::from(self);
+        let a = NSAlert::new(mtm);
+        a.setAlertStyle(NSAlertStyle::Critical);
+        a.setMessageText(&NSString::from_str(title));
+        a.setInformativeText(&NSString::from_str(body));
+        NSApplication::sharedApplication(mtm).activate();
+        a.runModal();
+    }
+
+    /// Open the one window, promoting the app to `Regular` on the way.
+    ///
+    /// The **only** promoter, and every caller of it is an explicit user
+    /// action: Open Ambient, Settings…, or a click on the Dock icon. A call
+    /// arriving, a recording starting and a transcript finishing all go
+    /// through `render`, which never touches the policy — a background event
+    /// that put Ambient in front of the meeting you are in would be worse
+    /// than having no window at all.
+    fn present_window(&self, settings: bool) {
+        let mtm = MainThreadMarker::from(self);
+        {
+            let mut slot = self.ivars().main_window.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(crate::window::MainWindow::open(mtm));
+            }
+        }
+        // Order front first, then paint: `render` skips a window that is not
+        // visible, and both happen inside one turn of the run loop, so nothing
+        // is drawn in between.
+        if let Some(w) = self.ivars().main_window.borrow().as_ref() {
+            w.show(mtm);
+            if settings {
+                w.select_settings();
+            }
+        }
+        self.render();
+        if let Some(w) = self.ivars().main_window.borrow().as_ref() {
+            self.log(&w.describe_state());
+        }
+    }
+
+    /// Shared by the Start item, the armed state's yes, and the watcher.
+    ///
+    /// The directory is claimed here, on the main thread, before the worker
+    /// exists — so the phase knows where the recording is writing rather than
+    /// having to go and find it later.
+    fn begin_recording(&self, app: Option<String>) {
+        let dir = match SessionDir::claim(&crate::session::home(), None) {
+            Ok(d) => Arc::new(d),
+            Err(e) => {
+                self.fail("could not start a recording", &e);
+                // Stand down rather than sit Armed over a recording that was
+                // never spawned.
+                self.ivars().phase.transition(|p| (p.disarm(), ()));
+                self.render();
+                return;
+            }
+        };
         let (tx, rx) = channel();
+        let worker = dir.clone();
+        let meter = Arc::new(crate::session::Meter::default());
+        let worker_meter = meter.clone();
         std::thread::spawn(move || {
             // The same blocking function the CLI runs. ProcessTap is created
             // and dropped on this thread and never moves.
-            tx.send(crate::session::record(None, &[], None, None)).ok();
+            tx.send(crate::session::record_into(
+                &worker,
+                None,
+                &[],
+                None,
+                None,
+                Some(worker_meter),
+            ))
+            .ok();
         });
-        *self.ivars().result.borrow_mut() = Some(rx);
-        // armed_by is deliberately kept: stopping needs to know which call this
-        // recording belongs to.
-        self.set_state(State::Recording);
+        let live = Live {
+            dir,
+            started: Instant::now(),
+            // Kept: stopping needs to know which call this recording belongs to.
+            app,
+            result: rx,
+            meter,
+        };
+        let orphan = self.ivars().phase.transition(|p| p.start(live));
+        if let Some(live) = orphan {
+            // Unreachable: the phase was checked on this same thread a few
+            // lines up. Say so, and stop the worker rather than dropping its
+            // receiver and leaving a capture nobody owns.
+            crate::session::signal_stop(&live.dir).ok();
+            self.log("internal error: a recording started into a busy phase — stopped again");
+        }
+        self.render();
     }
 
-    /// Notice a watched app starting to produce audio, and act on `decide`.
+    /// Notice a watched app starting to produce audio, and act on `next`.
     fn poll_for_calls(&self) {
         let cfg = crate::config::Config::load();
-        let live = crate::probe::bundles_rendering_output();
-        // The borrow is released before anything below can borrow again.
-        let declined = self.ivars().declined.borrow().clone();
-        let what = decide(
-            *self.ivars().state.borrow(),
-            &cfg.apps,
-            &live,
-            declined.as_deref(),
-            cfg.ask_before_recording,
-        );
-        match what {
-            Watch::Nothing => {}
-            Watch::Forget => *self.ivars().declined.borrow_mut() = None,
-            Watch::Disarm => {
-                *self.ivars().declined.borrow_mut() = None;
-                *self.ivars().armed_by.borrow_mut() = None;
-                self.set_state(State::Idle);
-            }
-            Watch::Arm(app) => {
+        let playing = crate::probe::bundles_rendering_output();
+        let tick = self.ivars().phase.transition(|mut p| {
+            // Unconditional, every poll: a "not this one" answers only for as
+            // long as that call is still going.
+            p.declined_mut().retire(&playing);
+            let tick = next(&p, &cfg.apps, &playing, cfg.ask_before_recording);
+            let p = match &tick {
+                Tick::Disarm => p.disarm(),
+                Tick::Arm(app) => p.arm(app.clone()),
+                // `Start` needs a worker, which is not something a pure
+                // closure may spawn. Handled below.
+                Tick::Nothing | Tick::Start(_) => p,
+            };
+            (p, tick)
+        });
+        match tick {
+            Tick::Nothing => {}
+            Tick::Disarm => self.render(),
+            Tick::Arm(app) => {
                 self.log(&format!("{app} is producing audio — waiting to be told"));
-                // Any earlier decline is spent: `decide` only offers an app it
-                // is not currently answering for.
-                *self.ivars().declined.borrow_mut() = None;
-                *self.ivars().armed_by.borrow_mut() = Some(app);
-                self.set_state(State::Armed);
+                self.render();
             }
-            Watch::Start(app) => {
+            Tick::Start(app) => {
                 self.log(&format!("{app} is producing audio — recording"));
-                *self.ivars().declined.borrow_mut() = None;
-                *self.ivars().armed_by.borrow_mut() = Some(app);
-                self.begin_recording();
+                self.begin_recording(Some(app));
             }
         }
     }
 
-    fn set_state(&self, state: State) {
-        *self.ivars().state.borrow_mut() = state;
+    /// The only writer of the menu. Every control's title, enabled and hidden
+    /// flag comes from the phase and from nowhere else; a control set anywhere
+    /// but here is a future desync.
+    fn render(&self) {
+        let view = self.ivars().phase.snapshot();
         let mtm = MainThreadMarker::from(self);
         {
             if let Some(button) = self.ivars().status_item.button(mtm) {
-                let name = NSString::from_str(state.symbol());
+                let name = NSString::from_str(view.kind.symbol());
                 let desc = NSString::from_str("Ambient");
                 if let Some(img) =
                     NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, Some(&desc))
@@ -352,17 +436,44 @@ impl Delegate {
                 }
             }
         }
-        let recording = state == State::Recording;
-        let idle = state == State::Idle;
-        let armed = state == State::Armed;
+        let armed = view.kind == PhaseKind::Armed;
+        let failed = view.kind == PhaseKind::Failed;
         if let Some(i) = self.ivars().start_item.borrow().as_ref() {
-            i.setEnabled(idle || armed);
+            i.setEnabled(!view.has_worker);
         }
         if let Some(i) = self.ivars().stop_item.borrow().as_ref() {
-            i.setEnabled(recording);
+            // Stays enabled through a failed stop, because the worker is still
+            // recording and pressing Stop again is the right thing to do.
+            i.setEnabled(view.kind == PhaseKind::Recording);
         }
         if let Some(i) = self.ivars().level_item.borrow().as_ref() {
-            i.setHidden(idle || armed);
+            // Shown while a worker is running, and while a failure is standing:
+            // a recording that produced audio and no transcript must not be
+            // drawn as "nothing happened".
+            i.setHidden(!(view.has_worker || failed));
+            if failed {
+                // The banner first: it holds the most recent failure, which
+                // is not always the one that put the phase here — a claim
+                // that failed over a standing `Failed` is newer news.
+                let text = self
+                    .ivars()
+                    .banner
+                    .borrow()
+                    .clone()
+                    .or_else(|| self.ivars().phase.with(|p| p.failure().map(str::to_string)))
+                    .unwrap_or_else(|| "the last recording failed".into());
+                i.setTitle(&NSString::from_str(&format!("failed: {text}")));
+            } else if view.has_worker {
+                // Read from the shared `Meter` rather than the session's
+                // status file: there is no walk of the sessions folder left
+                // to pick the wrong thing, and no free-text file to parse.
+                let text = self
+                    .ivars()
+                    .phase
+                    .with(|p| p.live().map(|l| l.meter.status_line()))
+                    .unwrap_or_else(|| "starting…".into());
+                i.setTitle(&NSString::from_str(&text));
+            }
         }
         // The consent pair is the whole menu when it is showing: hidden the
         // rest of the time so the ordinary menu is not cluttered by a choice
@@ -379,72 +490,84 @@ impl Delegate {
         if armed {
             if let (Some(i), Some(app)) = (
                 self.ivars().record_call_item.borrow().as_ref(),
-                self.ivars().armed_by.borrow().as_ref(),
+                self.ivars().phase.with(Phase::app),
             ) {
                 i.setTitle(&NSString::from_str(&format!("Record {app}")));
             }
         }
+        // The window is painted from the same phase in the same pass. It has
+        // its own single renderer; this is the only place it is called.
+        if let Some(w) = self.ivars().main_window.borrow().as_ref() {
+            self.ivars().phase.with(|p| w.render(p, mtm));
+        }
     }
 
-    /// Called on a timer: mirror the recording's own status line into the menu,
-    /// and notice when the worker has finished.
+    /// Called on a timer: repaint from the phase, and notice when the worker
+    /// has finished.
     fn refresh(&self) {
-        let state = *self.ivars().state.borrow();
+        let view = self.ivars().phase.snapshot();
 
         // Every eighth tick, so roughly every four seconds. Enumerating audio
         // processes twice a second would be pure waste for something that
         // changes when a human joins a call.
         let n = self.ivars().ticks.get().wrapping_add(1);
         self.ivars().ticks.set(n);
-        if n % 8 == 0 && matches!(state, State::Idle | State::Armed) {
+        if n % 8 == 0 && view.kind.is_watching() {
             self.poll_for_calls();
         }
 
-        if !matches!(state, State::Idle | State::Armed) {
-            let text = crate::session::live_session()
-                .or_else(|| {
-                    // During transcription the scratch wavs are gone, so fall
-                    // back to whichever session was written most recently.
-                    let mut all: Vec<PathBuf> = std::fs::read_dir(crate::session::home())
-                        .ok()?
-                        .filter_map(|e| e.ok().map(|e| e.path()))
-                        .collect();
-                    all.sort();
-                    all.pop()
-                })
-                .and_then(|d| std::fs::read_to_string(d.join(crate::session::STATUS_FILE)).ok())
-                .unwrap_or_else(|| "starting…".into());
-            if let Some(i) = self.ivars().level_item.borrow().as_ref() {
-                i.setTitle(&NSString::from_str(text.trim()));
-            }
-        }
+        // Every tick, through the one renderer: the elapsed line moves while
+        // nothing about the phase does, and a control set anywhere but
+        // `render` is a future desync.
+        self.render();
 
-        let finished = {
-            let guard = self.ivars().result.borrow();
-            match guard.as_ref() {
-                Some(rx) => match rx.try_recv() {
-                    Ok(r) => Some(r),
-                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        Some(Err(anyhow::anyhow!("the recording thread went away")))
-                    }
-                },
-                None => None,
-            }
-        };
+        // Retry a demotion that its own guards refused. `windowWillClose:` is
+        // the only other caller, so without this the guards are one-shot: open
+        // the About panel, close the main window (the guard refuses, correctly,
+        // because demoting would strip About's menu bar), then close About, and
+        // the app is left in Regular for ever — Dock icon and Cmd-Tab entry
+        // with no window behind them. This is not a background flip: it
+        // completes a close the user already asked for. Both guards still hold,
+        // and the call is a no-op under Accessory, so a tick costs one
+        // `activationPolicy()` read in the normal case.
+        crate::window::demote_to_accessory(MainThreadMarker::from(self), None);
+
+        let finished = self.ivars().phase.with(|p| {
+            p.live().and_then(|l| match l.result.try_recv() {
+                Ok(r) => Some(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(anyhow::anyhow!("the recording thread went away")))
+                }
+            })
+        });
         if let Some(result) = finished {
-            *self.ivars().result.borrow_mut() = None;
-            match result {
+            match &result {
                 Ok(dir) => self.log(&format!("session written: {}", dir.display())),
-                Err(e) => self.log(&format!("recording FAILED: {e}")),
+                Err(e) => self.fail("recording", e),
             }
-            self.set_state(State::Idle);
-            if *self.ivars().quitting.borrow() {
+            self.ivars().phase.transition(|p| (p.finished(result), ()));
+            self.render();
+            if self.ivars().quitting.get() {
                 let mtm = MainThreadMarker::from(self);
                 NSApplication::sharedApplication(mtm).replyToApplicationShouldTerminate(true);
             }
         }
     }
+}
+
+/// `~/Library/Logs/Ambient/app.log`. Out of the sessions folder on purpose:
+/// `app.log` sorts after every `2…` session id, so any walk that forgets to
+/// filter picks the log up as the newest session — and the sessions folder
+/// should hold only sessions.
+fn log_path() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join("Library")
+        .join("Logs")
+        .join("Ambient")
+        .join("app.log")
 }
 
 fn item(
@@ -468,27 +591,29 @@ pub fn run() -> anyhow::Result<()> {
     // Accessory: lives in the menu bar, keeps out of the Dock and the switcher.
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
+    // A real application main menu, installed before any window exists. It is
+    // inert under Accessory and mandatory under Regular: promoting the policy
+    // without it yields a menu bar holding only the Apple menu.
+    crate::window::install_main_menu(mtm);
+
     let status_item =
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
 
     let delegate = Delegate::alloc(mtm).set_ivars(Ivars {
         status_item: status_item.clone(),
-        state: RefCell::new(State::Idle),
-        result: RefCell::new(None),
-        quitting: RefCell::new(false),
+        phase: PhaseCell::new(Phase::idle()),
+        banner: RefCell::new(None),
+        quitting: Cell::new(false),
         // Launched from Finder there is nowhere for stderr to go, so keep our
-        // own log next to the sessions — the last failure was invisible for
-        // exactly this reason.
-        log: crate::session::home().join("app.log"),
-        settings: RefCell::new(None),
+        // own log — the last failure was invisible for exactly this reason.
+        log: log_path(),
+        main_window: RefCell::new(None),
         start_item: RefCell::new(None),
         stop_item: RefCell::new(None),
         level_item: RefCell::new(None),
         record_call_item: RefCell::new(None),
         decline_item: RefCell::new(None),
         ticks: Cell::new(0),
-        armed_by: RefCell::new(None),
-        declined: RefCell::new(None),
     });
     let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };
 
@@ -499,10 +624,10 @@ pub fn run() -> anyhow::Result<()> {
     let stop = item(mtm, "Stop Recording", Some(sel!(stopRecording:)), "s");
     let level = item(mtm, "", None, "");
     let settings = item(mtm, "Settings…", Some(sel!(openSettings:)), ",");
-    let sessions = item(mtm, "Open Sessions Folder", Some(sel!(openSessions:)), "");
+    let open = item(mtm, "Open Ambient", Some(sel!(openWindow:)), "0");
     let quit = item(mtm, "Quit Ambient", Some(sel!(terminate:)), "q");
 
-    for i in [&start, &stop, &settings, &sessions, &record_call, &decline] {
+    for i in [&start, &stop, &settings, &open, &record_call, &decline] {
         unsafe { i.setTarget(Some(&delegate)) };
     }
     {
@@ -519,8 +644,8 @@ pub fn run() -> anyhow::Result<()> {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&level);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        menu.addItem(&open);
         menu.addItem(&settings);
-        menu.addItem(&sessions);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&quit);
         status_item.setMenu(Some(&menu));
@@ -531,7 +656,7 @@ pub fn run() -> anyhow::Result<()> {
     *delegate.ivars().level_item.borrow_mut() = Some(level);
     *delegate.ivars().record_call_item.borrow_mut() = Some(record_call);
     *delegate.ivars().decline_item.borrow_mut() = Some(decline);
-    delegate.set_state(State::Idle);
+    delegate.render();
     // The status item is the whole app; say plainly whether the system gave us
     // one rather than leaving an empty menu bar to be interpreted.
     eprintln!(
@@ -567,9 +692,30 @@ pub fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::test_support::{recording, scratch};
+    use crate::state::Declined;
 
     fn apps() -> Vec<String> {
         vec!["us.zoom.xos".into(), "com.microsoft.teams2".into()]
+    }
+
+    fn declined(apps: &[&str]) -> Declined {
+        let mut d = Declined::default();
+        for a in apps {
+            d.decline(a);
+        }
+        d
+    }
+
+    fn idle(d: Declined) -> Phase {
+        Phase::Idle { declined: d }
+    }
+
+    fn armed(app: &str, d: Declined) -> Phase {
+        Phase::Armed {
+            app: app.into(),
+            declined: d,
+        }
     }
 
     /// The rule that matters most: with nothing named, nothing is ever armed.
@@ -578,15 +724,18 @@ mod tests {
     #[test]
     fn an_empty_watch_list_never_arms() {
         let live = vec!["us.zoom.xos".to_string()];
-        assert_eq!(decide(State::Idle, &[], &live, None, true), Watch::Nothing);
+        assert_eq!(
+            next(&idle(Declined::default()), &[], &live, true),
+            Tick::Nothing
+        );
     }
 
     #[test]
     fn a_watched_app_playing_arms_when_asked_to_ask() {
         let live = vec!["us.zoom.xos".to_string()];
         assert_eq!(
-            decide(State::Idle, &apps(), &live, None, true),
-            Watch::Arm("us.zoom.xos".into())
+            next(&idle(Declined::default()), &apps(), &live, true),
+            Tick::Arm("us.zoom.xos".into())
         );
     }
 
@@ -594,8 +743,8 @@ mod tests {
     fn with_asking_off_it_records_by_itself() {
         let live = vec!["com.microsoft.teams2".to_string()];
         assert_eq!(
-            decide(State::Idle, &apps(), &live, None, false),
-            Watch::Start("com.microsoft.teams2".into())
+            next(&idle(Declined::default()), &apps(), &live, false),
+            Tick::Start("com.microsoft.teams2".into())
         );
     }
 
@@ -603,8 +752,8 @@ mod tests {
     fn an_unwatched_app_playing_is_ignored() {
         let live = vec!["com.spotify.client".to_string()];
         assert_eq!(
-            decide(State::Idle, &apps(), &live, None, true),
-            Watch::Nothing
+            next(&idle(Declined::default()), &apps(), &live, true),
+            Tick::Nothing
         );
     }
 
@@ -614,26 +763,27 @@ mod tests {
     fn a_declined_call_is_not_asked_about_again() {
         let live = vec!["us.zoom.xos".to_string()];
         assert_eq!(
-            decide(State::Idle, &apps(), &live, Some("us.zoom.xos"), true),
-            Watch::Nothing
+            next(&idle(declined(&["us.zoom.xos"])), &apps(), &live, true),
+            Tick::Nothing
         );
     }
 
-    /// ...but declining one call must not opt out of the next one.
+    /// ...but declining one call must not opt out of the next one: once the
+    /// app falls quiet, `retire` drops it from the set.
     #[test]
     fn the_decline_is_forgotten_once_the_call_ends() {
-        assert_eq!(
-            decide(State::Idle, &apps(), &[], Some("us.zoom.xos"), true),
-            Watch::Forget
-        );
+        let mut d = declined(&["us.zoom.xos"]);
+        d.retire(&[]);
+        assert!(!d.is_declined("us.zoom.xos"));
+        assert_eq!(next(&idle(d), &apps(), &[], true), Tick::Nothing);
     }
 
     #[test]
     fn declining_one_app_does_not_silence_another() {
         let live = vec!["com.microsoft.teams2".to_string()];
         assert_eq!(
-            decide(State::Idle, &apps(), &live, Some("us.zoom.xos"), true),
-            Watch::Arm("com.microsoft.teams2".into())
+            next(&idle(declined(&["us.zoom.xos"])), &apps(), &live, true),
+            Tick::Arm("com.microsoft.teams2".into())
         );
     }
 
@@ -646,8 +796,8 @@ mod tests {
             "com.microsoft.teams2".to_string(),
         ];
         assert_eq!(
-            decide(State::Idle, &apps(), &live, Some("us.zoom.xos"), true),
-            Watch::Arm("com.microsoft.teams2".into())
+            next(&idle(declined(&["us.zoom.xos"])), &apps(), &live, true),
+            Tick::Arm("com.microsoft.teams2".into())
         );
     }
 
@@ -655,25 +805,108 @@ mod tests {
     fn everything_playing_being_declined_asks_nothing() {
         let live = vec!["us.zoom.xos".to_string()];
         assert_eq!(
-            decide(State::Idle, &apps(), &live, Some("us.zoom.xos"), true),
-            Watch::Nothing
+            next(&idle(declined(&["us.zoom.xos"])), &apps(), &live, true),
+            Tick::Nothing
         );
     }
 
     #[test]
     fn a_call_ending_while_armed_stands_down() {
         assert_eq!(
-            decide(State::Armed, &apps(), &[], None, true),
-            Watch::Disarm
+            next(
+                &armed("us.zoom.xos", Declined::default()),
+                &apps(),
+                &[],
+                true
+            ),
+            Tick::Disarm
         );
     }
 
     /// A recording in progress must never be disturbed by the watcher.
     #[test]
     fn recording_and_transcribing_are_left_alone() {
+        let root = scratch("watcher-busy");
         let live = vec!["us.zoom.xos".to_string()];
-        for state in [State::Recording, State::Transcribing, State::Armed] {
-            assert_eq!(decide(state, &apps(), &live, None, true), Watch::Nothing);
+
+        let (rec, _tx) = recording(&root, Some("us.zoom.xos"), Declined::default());
+        let transcribing = {
+            let (r, _tx2) = recording(&root, Some("us.zoom.xos"), Declined::default());
+            r.stop().unwrap_or_else(|(_, e)| panic!("{e}"))
+        };
+        for phase in [rec, transcribing, armed("us.zoom.xos", Declined::default())] {
+            assert_eq!(next(&phase, &apps(), &live, true), Tick::Nothing);
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `Failed` is watched exactly like `Idle`, or an undismissed failure
+    /// leaves the app deaf to every later call.
+    #[test]
+    fn a_standing_failure_does_not_make_the_watcher_deaf() {
+        let live = vec!["us.zoom.xos".to_string()];
+        let failed = Phase::Failed {
+            dir: None,
+            error: "the models did not load".into(),
+            at: chrono::Local::now(),
+            declined: Declined::default(),
+        };
+        assert_eq!(
+            next(&failed, &apps(), &live, true),
+            Tick::Arm("us.zoom.xos".into())
+        );
+    }
+
+    /// Two watched apps playing: declining one must leave the other free to
+    /// arm, and the decline must survive across ticks rather than being
+    /// clobbered by the arm.
+    #[test]
+    fn declining_one_of_two_leaves_the_other_armable_and_sticky() {
+        let live = vec![
+            "us.zoom.xos".to_string(),
+            "com.microsoft.teams2".to_string(),
+        ];
+        let d = declined(&["us.zoom.xos"]);
+
+        assert_eq!(
+            next(&idle(d.clone()), &apps(), &live, true),
+            Tick::Arm("com.microsoft.teams2".into())
+        );
+        // Arm for teams and poll again: zoom must still read as declined,
+        // because the set moves into the new phase rather than being rebuilt.
+        let phase = idle(d).arm("com.microsoft.teams2".into());
+        assert_eq!(next(&phase, &apps(), &live, true), Tick::Nothing);
+        assert!(phase.declined().is_declined("us.zoom.xos"));
+    }
+
+    /// Both watched apps declined: nothing arms, and nothing re-prompts on a
+    /// later tick with the same apps still playing.
+    #[test]
+    fn declining_both_arms_nothing_and_never_reprompts() {
+        let live = vec![
+            "us.zoom.xos".to_string(),
+            "com.microsoft.teams2".to_string(),
+        ];
+        let d = declined(&["us.zoom.xos", "com.microsoft.teams2"]);
+        for _ in 0..3 {
+            assert_eq!(next(&idle(d.clone()), &apps(), &live, true), Tick::Nothing);
+        }
+    }
+
+    /// The armed app falls quiet while a different watched app keeps playing:
+    /// the phase must return to Idle rather than staying armed because
+    /// *something* is still playing.
+    #[test]
+    fn armed_app_going_quiet_disarms_even_if_another_still_plays() {
+        let live = vec!["com.microsoft.teams2".to_string()];
+        assert_eq!(
+            next(
+                &armed("us.zoom.xos", Declined::default()),
+                &apps(),
+                &live,
+                true
+            ),
+            Tick::Disarm
+        );
     }
 }

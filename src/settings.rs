@@ -1,24 +1,25 @@
-//! The settings window.
+//! The settings pane.
 //!
-//! An `NSWindow` holding a `WKWebView`, which renders the same page the design
-//! canvas draws. The page is embedded with `include_str!` rather than shipped
-//! in the bundle's Resources: launched through LaunchServices the working
-//! directory is `/`, and that is the only launch that has the audio-capture
-//! grant, so a relative path would break the one path that matters.
+//! A `WKWebView` rendering the same page the design canvas draws, living as one
+//! of the main window's sibling views rather than in a window of its own. The
+//! page is embedded with `include_str!` rather than shipped in the bundle's
+//! Resources: launched through LaunchServices the working directory is `/`, and
+//! that is the only launch that has the audio-capture grant, so a relative path
+//! would break the one path that matters.
 //!
 //! The bridge carries a **JSON string** in each direction rather than a
 //! dictionary. `WKScriptMessage::body` hands back an `AnyObject` that would
 //! otherwise need unpicking one `NSDictionary` value at a time; a string goes
 //! straight to serde.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSModalResponseOK, NSOpenPanel, NSWindow, NSWindowStyleMask,
+    NSAlert, NSAlertStyle, NSAutoresizingMaskOptions, NSModalResponseOK, NSOpenPanel,
 };
 use objc2_foundation::{
     MainThreadMarker, NSBundle, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -70,6 +71,11 @@ struct Ivars {
     /// Remembers the app list while "Everything" is selected, so switching to
     /// "Selected apps" and back does not silently discard it.
     stashed: RefCell<Vec<String>>,
+    /// Whether the app is holding a live recording. Written by the window's
+    /// one renderer, from the phase, once a tick — this pane has no state of
+    /// its own about what the app is doing, and asking for one would be the
+    /// second source of truth the design forbids.
+    recording: Cell<bool>,
 }
 
 define_class!(
@@ -176,7 +182,20 @@ impl Bridge {
                 }
             }
             Some("choose_dir") => {
-                if let Some(p) = self.pick_dir() {
+                // Bug 1's root cause, blocked from the other side. A recording
+                // writes into the directory it claimed, so moving the folder
+                // under it no longer makes the capture unreachable — but the
+                // sessions the browser lists, the retention sweep and the next
+                // claim all follow the setting, and changing it mid-capture
+                // splits one conversation across two folders for no gain.
+                if self.ivars().recording.get() {
+                    self.refuse(
+                        "Ambient is recording",
+                        "The sessions folder cannot be changed while a recording is \
+                         running.\n\nStop the recording first, and this session will \
+                         finish where it started.",
+                    );
+                } else if let Some(p) = self.pick_dir() {
                     cfg.sessions_dir = Some(p);
                 }
             }
@@ -188,6 +207,19 @@ impl Bridge {
             eprintln!("settings: could not save ({e})");
         }
         self.push(&cfg);
+    }
+
+    /// Say no, and say why. The page is a view of the file, so `push` at the
+    /// end of `handle` already puts the unchanged folder back on screen —
+    /// this is what stops that reading as the click having done nothing.
+    fn refuse(&self, title: &str, body: &str) {
+        eprintln!("settings: refused — {title}: {body}");
+        let mtm = MainThreadMarker::from(self);
+        let a = NSAlert::new(mtm);
+        a.setAlertStyle(NSAlertStyle::Warning);
+        a.setMessageText(&NSString::from_str(title));
+        a.setInformativeText(&NSString::from_str(body));
+        a.runModal();
     }
 
     /// An app bundle, resolved to the bundle ID the tap actually needs. The
@@ -287,42 +319,28 @@ impl Bridge {
     }
 }
 
-/// The window, kept alive by whoever calls this — closing it would otherwise
-/// deallocate the web view and the bridge with it.
-pub struct SettingsWindow {
-    window: Retained<NSWindow>,
-    _bridge: Retained<Bridge>,
+/// The settings pane: the `WKWebView` and the bridge that answers it, kept
+/// together because the bridge is the web view's script-message handler and
+/// nothing else retains it.
+///
+/// It used to be a window. Two windows meant two menu bars to keep straight
+/// under the activation-policy flip — closing the main one would have stripped
+/// the settings window's menu bar out from under it — and one of them showed
+/// the naming section for `latest()` alone while the other could name any
+/// session. It is a sibling view of the main window's pane now, selected by the
+/// Settings row, and the page, the bridge and `Bridge::handle` are otherwise
+/// exactly what they were.
+pub struct SettingsPane {
+    web: Retained<WKWebView>,
+    bridge: Retained<Bridge>,
 }
 
-impl SettingsWindow {
-    pub fn open(mtm: MainThreadMarker) -> Self {
-        // Taller than the four-row original, and resizable: the who's-who
-        // section grows with the roster and with however many speakers the last
-        // recording found, so no fixed height is right for long.
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 720.0));
-        let style = NSWindowStyleMask::Titled
-            | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Miniaturizable
-            | NSWindowStyleMask::Resizable;
-        let window: Retained<NSWindow> = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                frame,
-                style,
-                NSBackingStoreType::Buffered,
-                false,
-            )
-        };
-        unsafe {
-            window.setTitle(&NSString::from_str("Ambient Settings"));
-            // Closing must not deallocate the window; the menu reopens this one.
-            window.setReleasedWhenClosed(false);
-            window.setContentMinSize(NSSize::new(520.0, 360.0));
-        }
-
+impl SettingsPane {
+    pub fn new(mtm: MainThreadMarker) -> Self {
         let bridge = Bridge::alloc(mtm).set_ivars(Ivars {
             web: RefCell::new(None),
             stashed: RefCell::new(Vec::new()),
+            recording: Cell::new(false),
         });
         let bridge: Retained<Bridge> = unsafe { msg_send![super(bridge), init] };
 
@@ -332,33 +350,54 @@ impl SettingsWindow {
             let handler = ProtocolObject::from_ref(&*bridge);
             controller.addScriptMessageHandler_name(handler, &NSString::from_str("ambient"));
         }
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 720.0));
         let web: Retained<WKWebView> =
             unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), frame, &cfg) };
         unsafe { web.loadHTMLString_baseURL(&NSString::from_str(PAGE), None) };
+        web.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        web.setHidden(true);
         *bridge.ivars().web.borrow_mut() = Some(web.clone());
 
-        window.setContentView(Some(&web));
-        window.center();
-
-        Self {
-            window,
-            _bridge: bridge,
-        }
+        Self { web, bridge }
     }
 
-    /// Bring it forward. An Accessory-policy app has no menu bar of its own, so
-    /// it has to activate explicitly or the window opens behind everything.
-    pub fn show(&self, mtm: MainThreadMarker) {
-        let app = NSApplication::sharedApplication(mtm);
-        #[allow(deprecated)]
-        app.activateIgnoringOtherApps(true);
-        self.window.makeKeyAndOrderFront(None);
+    /// The view to add as a sibling, hide and frame. Everything else about the
+    /// pane is the bridge's business.
+    pub fn view(&self) -> &WKWebView {
+        &self.web
     }
 
     /// Re-read the file and repaint. The CLI can change settings behind the
-    /// window's back, so reopening it re-reads rather than trusting what it
-    /// last drew.
+    /// pane's back, so showing it re-reads rather than trusting what it last
+    /// drew.
     pub fn refresh(&self) {
-        self._bridge.push(&Config::load());
+        self.bridge.push(&Config::load());
+    }
+
+    /// Told from the window's one renderer, off the phase. The bridge refuses
+    /// to move the sessions folder while this is set.
+    pub fn set_recording(&self, recording: bool) {
+        self.bridge.ivars().recording.set(recording);
+    }
+
+    /// For the launch log. A `WKWebView` that was re-parented into a view
+    /// hierarchy it has never lived in before can be present, unhidden and
+    /// correctly framed while showing nothing at all, and that failure is
+    /// invisible to everything except asking the page itself.
+    pub fn describe(&self) -> String {
+        let f = self.web.frame();
+        // Both are plain property reads on a view this thread owns.
+        let (progress, loading) =
+            unsafe { (self.web.estimatedProgress(), self.web.isLoading()) };
+        format!(
+            "{}x{} loaded {:.0}%{}",
+            f.size.width as i64,
+            f.size.height as i64,
+            progress * 100.0,
+            if loading { " (loading)" } else { "" },
+        )
     }
 }

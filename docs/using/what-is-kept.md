@@ -11,7 +11,8 @@ tool is allowed to keep, and for how long. Consent decides whether a recording
 starts at all, retention decides how long the audio outlives the transcript,
 and the roster decides what is stored about the people in it.
 
-The menu bar is the consent surface, and it is a state machine:
+The menu bar is the consent surface — the window can be closed, and answering
+about a call never needs it open — and it is a state machine:
 
 ```mermaid
 stateDiagram-v2
@@ -19,14 +20,17 @@ stateDiagram-v2
     [*] --> Idle
     Idle --> Armed: a watched app starts audio
     Armed --> Recording: Record this call
-    Armed --> Idle: it goes quiet
-    Armed --> Idle: Not this one, remembered until quiet
+    Armed --> Idle: the app it armed for goes quiet
+    Armed --> Idle: Not this one, remembered until that app is quiet
     Armed --> Recording: Start Recording, from the menu
     Idle --> Recording: Start Recording, from the menu
     Idle --> Recording: a watched app starts audio<br/>and ask_before_recording is off
     Recording --> Transcribing: Stop
-    Recording --> Idle: capture failed, no transcript
-    Transcribing --> Idle: finished, transcript written or not
+    Recording --> Recording: Stop failed
+    Transcribing --> Idle: finished, transcript written
+    Transcribing --> Failed: finished with an error
+    Failed --> Idle: dismissed
+    Failed --> Armed: a watched app starts audio
 
     note right of Armed
         An empty apps list arms on nothing.
@@ -36,12 +40,23 @@ stateDiagram-v2
     end note
 ```
 
+Two of those edges are worth reading twice. A **stop that fails** leaves the
+phase at `Recording`, because that is the honest state — the worker really is
+still recording, so Stop stays enabled and Start stays disabled rather than the
+app advancing past a capture it never stopped. And `Failed` is watched exactly
+like `Idle`: a failure nobody has dismissed does not stop the next call being
+noticed.
+
 ## Consent: the armed state
 
 With `apps` set, the menu bar watches for one of them producing audio and moves
 to a fourth state, **Armed** — the menu then offers *Record this call* or *Not
-this one*. Declining is remembered against that bundle and forgotten once it
-goes quiet, so saying no to one call does not opt out of the next.
+this one*. Declining is remembered **against that bundle id and no other**, so
+saying no to Teams says nothing about Zoom, and it is forgotten once that app
+stops producing audio, so it does not opt out of the next call either. Standing
+down from Armed is keyed the same way: it is the app Ambient armed for going
+quiet that ends the wait, not the machine falling silent, so a music player
+left running all day cannot hold the prompt open after the call has ended.
 
 An empty `apps` list watches nothing. That list already means "capture all
 system audio", and arming on any sound at all would flap at every notification
@@ -74,14 +89,19 @@ directories are the ones to check by hand if you care about the retention
 window holding. And
 `ambient diarize` **refuses** on a session whose audio has been swept, because
 a re-run reverts the previous labels before it discovers there is nothing to
-read — which would silently unlabel every speaker nobody had named by hand.
+read — which would silently unlabel every speaker nobody had named by hand. The
+window says the same thing before you can ask: on a swept session *Separate
+voices* is disabled and carries the reason under it, rather than offering a
+button that would only refuse.
 
 ## Who's who
 
 `ambient roster add <name>` keeps a list of the people you record with, in
-`roster.json` beside the config. After a recording, the settings window lists
-each speaker diarization could not name alongside the first thing that voice
-said, and a dropdown of roster names puts a name on every line of that speaker.
+`roster.json` beside the config. Under the transcript of **whichever session is
+selected** in the window, each speaker diarization could not name gets a row
+carrying the first thing that voice said, and a dropdown of roster names puts a
+name on every line of that speaker. It is any session and not only the most
+recent one: the naming strip follows the selection.
 
 It stores **no voiceprints**, so it never guesses. An embedding kept to
 recognise someone later is biometric data under Article 9, a different
@@ -89,7 +109,7 @@ compliance regime from a text file of names — and a confidently misattributed
 turn is a lie in your notes, which is worse than an honest `call-2`. The roster
 removes the retyping, not the choosing.
 
-Naming from the settings window writes the same edit `ambient name` does, so it
-is recorded as the user's and survives a re-diarize.
+Naming from the window writes the same edit `ambient name` does, so it is
+recorded as the user's and survives a re-diarize.
 
 See [ADR-0009](../adr/0009-armed-consent-state.md), [ADR-0010](../adr/0010-names-not-voiceprints.md) and [ADR-0011](../adr/0011-audio-retention-sweep.md).

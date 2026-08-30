@@ -46,8 +46,8 @@ that do not need a Mac are most of the wall clock. The `rust` job measured
 `assets/settings.html` is committed but generated, so `cargo build` never needs
 node. `git diff --exit-code assets/settings.html` after `pnpm run build` catches
 a committed bundle that no longer matches the TypeScript it was built from —
-which is otherwise invisible until someone opens the settings window and sees an
-old page.
+which is otherwise invisible until someone opens the settings page and sees an
+old one.
 
 ## What CI deliberately does not do
 

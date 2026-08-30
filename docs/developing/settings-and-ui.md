@@ -7,9 +7,10 @@ sidebar:
 # Settings and the UI
 
 Ambient's settings live in one JSON file, reachable from a CLI verb and from a
-menu bar window that renders a bundled web page. This chapter covers where that
-file lives, how it is resolved, how the page is built, and why three separate
-binaries exist purely to check that the assembled app is what it claims to be.
+bundled web page rendered inside the app's window. This chapter covers where
+that file lives, how it is resolved, how the page is built, and why five
+separate binaries exist purely to check that the assembled app is what it
+claims to be.
 
 Every setting has code behind it, and nothing is stored that nothing reads. The
 full key-by-key list is in [the config reference](../using/settings.md).
@@ -30,13 +31,20 @@ A named input device that has gone away **warns and names the alternatives**
 before falling back. Silent fallback is this project's recurring failure and
 the one thing a settings layer must not reintroduce.
 
-## The settings window
+## The settings pane
 
-An `NSWindow` holding a `WKWebView`, rendering the same page the design canvas
-draws. The page is embedded with `include_str!`: launched through
-LaunchServices the working directory is `/`, and that is the only launch with
-the audio-capture grant, so a relative path would break the one path that
-matters.
+A `WKWebView` rendering the same page the design canvas draws, living as one of
+the main window's sibling views and selected by the sidebar's Settings row. It
+used to be an `NSWindow` of its own, and stopped being one for two reasons: two
+windows meant two menu bars to keep straight under the activation-policy flip —
+closing the main one would strip the settings window's menu bar out from under
+it — and the settings page's naming section was fed from `latest()` alone,
+while the window can name any session. The page, the bridge and
+`Bridge::handle` are otherwise exactly what they were.
+
+The page is embedded with `include_str!`: launched through LaunchServices the
+working directory is `/`, and that is the only launch with the audio-capture
+grant, so a relative path would break the one path that matters.
 
 The bridge carries a **JSON string** each way. `WKScriptMessage::body` otherwise
 arrives as an `NSDictionary` that Rust would unpick a value at a time; a string
@@ -78,15 +86,14 @@ armed — silent, and only catchable by asking. It runs in CI, and it caught
 reaches the bridge. Compiling and type-checking prove the page *says* the right
 thing; only this proves it does anything.
 
-## Why there are three checking binaries
+## Why there are five checking binaries
 
-Each of the three asserts something a compiler cannot: that an artefact the
-running OS resolves at runtime is the one the code assumed. They differ in
-which artefact.
+Each of the five asserts something a compiler cannot: that what the running OS
+resolves, or what the running app actually does, is what the code assumed. They
+differ in which artefact.
 
-**`src/bin/symbolcheck.rs`** asks `NSImage::imageWithSystemSymbolName` for each
-of the four menu bar symbols — `waveform`, `waveform.badge.exclamationmark`,
-`waveform.circle.fill`, `hourglass` — and exits non-zero if any is missing,
+**`src/bin/symbolcheck.rs`** asks `NSImage::imageWithSystemSymbolName` for every
+menu bar symbol and exits non-zero if any is missing,
 printing "`{missing} symbol(s) will silently leave the wrong icon showing`".
 The silent failure it exists to catch is named in its own header: "`set_state`
 only sets an image when `imageWithSystemSymbolName` returns one, so a symbol
@@ -94,6 +101,11 @@ this OS does not have leaves the previous icon in place — the menu bar would
 then say 'recording' while armed, silently. That is this project's recurring
 failure mode, so it gets a check rather than a hope." It caught
 `waveform.badge.questionmark` not existing on this OS.
+
+It walks `PhaseKind::ALL` rather than a list of its own, because a list here is
+a second source of truth and it had already drifted: adding the `Failed` phase
+gave the menu a fifth symbol, and this check went on validating four — the
+silent wrong-icon failure it exists to catch, in the check itself.
 
 **`src/bin/iconcheck.rs`** takes a built `.app` and an output path, asks
 `NSWorkspace::iconForFile` what icon macOS resolves for the bundle, prints the
@@ -110,6 +122,32 @@ toggling ask-before-recording, adding a person, naming a speaker — and prints
 every message that reaches the bridge, snapshotting a PNG at the end. Its
 header: "Compiling and type-checking prove the page *says* the right thing;
 only this proves it does anything."
+
+**`src/bin/policycheck.rs`** drives the activation-policy flip and prints what
+the app becomes. None of it is visible to inspection: whether the process has a
+Dock icon is a property of the running process, and both guards on the
+demotion are about windows that only exist at run time — `NSApp.windows()`
+carries AppKit's own furniture, the status item's bar window and the carrier
+behind an open menu, and a guard counting those would mean the app never
+demoted at all. It opens the real `MainWindow`, closes it the way ⌘W does so
+`windowWillClose:` really runs, and asserts the seven states in its header:
+launch is Accessory, showing promotes, closing demotes, a modal session refuses
+the demotion, another visible window refuses it too, the refresh tick's retry
+demotes once that window goes away, and minimising is not closing.
+
+**`src/bin/windowcheck.rs`** drives the real session browser through the real
+`render(&Phase)`. Two hazards there are invisible to inspection: pinning the
+live row at index 0 shifts every session's row index on the way into and out of
+`Recording`, and `reloadData` clears the selection without firing
+`tableViewSelectionDidChange:`. So the script selects nothing by row index
+anywhere, and asserts that a session selected before a recording starts is
+still the selected session afterwards, at its new row. It writes the meter the
+way the capture worker writes it — the same atomics, once a second — and opens
+no audio device, which is the point: the window's live readout is supposed to
+come off shared memory rather than the filesystem.
+
+Both run against a scratch sessions folder: `AMBIENT_HOME=<scratch> cargo run
+--bin policycheck`.
 
 Two worked examples of the class of bug that only a running check finds.
 

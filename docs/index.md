@@ -19,6 +19,13 @@ measured — see [porting](developing/porting.md).
 There is no published release yet. Running ambient still means building it,
 which is why [Getting started](using/getting-started.md) opens with a compiler.
 
+What you get once it runs is a menu bar item and a window. The menu bar item is
+the consent surface — it arms when a watched app starts audio and is answerable
+without raising anything else — and the window, *Open Ambient* or ⌘0, is where
+the sessions are: a list, a transcript, the recording in flight pinned at the
+top of it, and the warnings a capture stored about itself. The CLI verbs remain
+the whole surface for scripting and debugging.
+
 ## What a packaged release still needs
 
 The tooling now exists and the last missing piece is an Apple certificate.

@@ -77,9 +77,17 @@ the other running, so `ambient stop <dir>` (`src/main.rs:66`) is the reliable
 form when two are in flight.
 
 Two same-minute recordings with the same name — or with no name, which is what
-both a bare `ambient record` and the menu bar use — compute the *identical* id,
-and `create_dir_all` is idempotent, so they do not race for a directory: they
-share one, write over each other's scratch wavs, and one `STOP` stops both.
+both a bare `ambient record` and the menu bar use — compute the identical id,
+and used to share the directory it named, because `create_dir_all` is
+idempotent. They no longer can. `SessionDir::claim` is the only constructor and
+claiming is what creates the directory, with `create_dir` rather than
+`create_dir_all`: an occupied name comes back `AlreadyExists` instead of
+succeeding into it, so the second recording retries as `-02`, `-03` and so on
+up to `-99`. A `SessionDir` is therefore evidence that no other recording is
+writing there, and the suffix is zero-padded because every listing here is a
+byte sort and an unpadded `-10` would sort before `-2`. The id a session
+reports is the directory's own name and never the string that was formatted to
+ask for it.
 
 That is the shape the sentinel forces rather than an oversight. A `STOP` file
 carries no pid, and nothing keeps a registry of live sessions, so liveness is
@@ -87,12 +95,14 @@ inferred from one file's modification time and "the newest" is the only
 question that mechanism can answer. The same check is why a `record` killed
 mid-recording does not intercept a later stop: its scratch wavs stay on disk,
 and without the ten-second window that corpse answers `ambient stop`, pointing
-it at a directory nothing is writing to (`src/session.rs:929`). The menu's
-level meter is only partly covered — its primary path is `live_session`, but
-during transcription the scratch wavs are gone and it falls back to whichever
-session directory sorts last, corpse included (`src/menubar.rs:405-414`).
-Clearing one out is under [when it does not
-work](../using/troubleshooting.md).
+it at a directory nothing is writing to. The menu's level line used to be
+exposed to the same thing from the other side: during transcription the scratch
+wavs are gone, so it fell back to whichever entry in the sessions folder sorted
+last — a corpse, or `app.log`, which sorts after every `2…` id. It reads the
+capture worker's shared `Meter` now and consults the folder for nothing, which
+is what let that fallback be deleted rather than repaired; `app.log` has also
+moved out to `~/Library/Logs/Ambient/`. Clearing a corpse out is under [when it
+does not work](../using/troubleshooting.md).
 
 `ambient show <dir>` folds `edits.jsonl` over `raw.jsonl`; `--verbatim` skips
 the fold. Reverts append a record naming an earlier line rather than deleting

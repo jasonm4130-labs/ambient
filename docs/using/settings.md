@@ -38,6 +38,13 @@ from the built-in `0.5` and only `--threshold` moves it. `ambient config` with n
 arguments prints the resolved values and says outright when `AMBIENT_HOME` is
 overriding `sessions_dir`.
 
+`sessions_dir` is the one setting the GUI will refuse. Changing it while a
+recording is running splits one conversation across two folders for nothing —
+the capture itself is safe either way, because it writes into the directory it
+claimed at the start rather than into whatever `sessions_dir` says now — so the
+settings page says no, in an alert naming the reason, rather than accepting a
+click and appearing to have done nothing. The CLI does not guard it.
+
 The file is `~/Library/Application Support/Ambient/config.json` — deliberately
 not under the sessions folder, since that folder is itself a setting, and a
 config that lives inside the thing it configures cannot be found before it is
