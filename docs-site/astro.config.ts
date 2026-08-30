@@ -4,6 +4,7 @@ import nimbus, { defineConfig as defineNimbusConfig } from "@cloudflare/nimbus-d
 import { tableScroll } from "@cloudflare/nimbus-docs/markdown";
 import { stripTitleH1 } from "./src/plugins/strip-title-h1";
 import { mermaidPassthrough } from "./src/plugins/mermaid-passthrough";
+import { rewriteMdLinks } from "./src/plugins/rewrite-md-links";
 
 const nimbusConfig = defineNimbusConfig({
   // Nothing is deployed yet, so this origin is provisional — it drives
@@ -48,13 +49,14 @@ export default defineConfig({
       // Wrap wide tables so they scroll instead of overflowing the page
       // (styled by `.nb-table-scroll` in src/styles/prose.css).
       markdown: {
-        hastPlugins: [tableScroll(), stripTitleH1],
+        hastPlugins: [tableScroll(), stripTitleH1, rewriteMdLinks],
         // mermaid has to act at mdast, before Shiki turns the fence into
-        // highlighted markup; the H1 strip has to act at hast, because Sätteri
-        // never dispatches `heading` to user mdast plugins. Both exist because
-        // `docs/` is read two ways — in GitHub's file view and on this site —
-        // and each reader needs something the other does not. See the plugin
-        // files for the reasoning.
+        // highlighted markup. The H1 strip acts at hast — not because `heading`
+        // is unreachable at mdast (it is dispatched; that earlier claim was
+        // wrong), but because the hast version is the one verified to work.
+        // These exist because `docs/` is read two ways — in GitHub's file view
+        // and on this site — and each reader needs something the other does
+        // not. See the plugin files for the reasoning.
         mdastPlugins: [mermaidPassthrough],
       },
     }),

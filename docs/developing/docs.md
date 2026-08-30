@@ -43,24 +43,40 @@ escape rather than a documented feature, and it is load-bearing — if a Nimbus
 upgrade changes how that base is computed, the build fails loudly at content
 sync rather than silently rendering nothing.
 
-## Two plugins, because `docs/` is read two ways
+## Three plugins, because `docs/` is read two ways
 
 Every page has to work in GitHub's file view *and* on the site, and each reader
-needs something the other does not. Both plugins are in `docs-site/src/plugins/`.
+needs something the other does not. All three plugins are in
+`docs-site/src/plugins/`.
+
+**`rewrite-md-links.ts`** turns a relative `troubleshooting.md` href into the
+route Nimbus built for it, `/using/troubleshooting/`. GitHub needs the `.md`
+form — it resolves to the sibling file — but Nimbus passes that href through to
+the HTML untouched, where the browser resolves it against the *page route* and
+gets a 404. This is not a theoretical gap: 111 links across 28 of ~30 pages
+shipped broken this way, with the build and every other guard green.
+
+Moving `docs/` into `docs-site/src/content/docs/` does **not** fix it. That was
+tested with a three-page fixture in the framework-native location, and the hrefs
+shipped verbatim there too — link rewriting is not a function of where the
+content lives. The mapping lowercases, because Nimbus slugs `adr/README.md` to
+`/adr/readme/`.
 
 **`strip-title-h1.ts`** removes the leading `# Heading` from the rendered body.
 On GitHub the H1 is the page title, so it must stay in the file; on the site
 Nimbus renders the title from frontmatter, so the same H1 would appear twice.
-It is a *hast* plugin, not an mdast one: Sätteri — Astro 7's default markdown
-processor, which Nimbus wires in — never dispatches `heading` to user mdast
-plugins. That was measured, not assumed. A visitor returning a marker comment
-produced nothing in the output while the sibling `code` visitor fired normally,
-so headings are only reachable once they are `h1` elements.
+It is a *hast* plugin, and that is the version verified to work end to end. An
+earlier version of this page justified the choice by claiming Sätteri — Astro
+7's default markdown processor, which Nimbus wires in — never dispatches
+`heading` to user mdast plugins. **That is false**: a probe plugin counted 186
+`heading` dispatches in one build. The mdast attempt failed for some other
+reason, which was never established; the measurement that "showed" it was a
+marker-comment visitor whose output proved nothing.
 
 **`mermaid-passthrough.ts`** rewrites a ` ```mermaid ` fence to a raw
 `<pre class="mermaid">` at the mdast stage, before Shiki sees it. This one has
-to be mdast for the opposite reason: once Shiki has run, the diagram source is
-spread across per-token `<span>`s.
+to be mdast for a reason that was checked: once Shiki has run, the diagram
+source is spread across per-token `<span>`s.
 
 ## Diagrams
 
@@ -93,7 +109,7 @@ may change.
 
 ## The build guards
 
-`docs.yml` runs five checks, and each one exists because something got through
+`docs.yml` runs six checks, and each one exists because something got through
 without it.
 
 **Every mermaid fence reached the renderer.** Counts pages with a fence in
@@ -116,6 +132,16 @@ fine, and only a later bare reference to `call` fails.
 `README.md`. Nothing else does: `nimbus-docs lint` is MDX-only and takes no
 path, so it never sees `docs/**/*.md`; the Astro build renders a dead link
 happily; and `README.md` sits outside every content pipeline in the repo.
+
+**`check-routes.mjs`** asks the other half of that question: every link in the
+*built* HTML must land on a route the build actually emitted. A link can pass
+`check-links.mjs` and still 404 on the site, which is exactly how the 111 broken
+links above survived. It has two rules, because existence alone is not enough —
+Nimbus emits an `index.md` alternate inside every page directory, so an
+unrewritten `index.md` href resolves to a real file (the raw markdown) and
+existence-checking calls it a pass. Both directions are proven: removing
+`rewrite-md-links.ts` from `astro.config.ts` makes the check report exactly
+those 111 links.
 
 **Every ADR is a nav-ordered page.** A record with no frontmatter fails the
 content schema and takes the build down with it, but one that builds can still

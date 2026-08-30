@@ -10,11 +10,12 @@ import { defineHastPlugin } from "satteri";
  * wrong — the alternative was hand-editing the H1 out of 32 files and giving up
  * the GitHub view.
  *
- * A hast plugin rather than an mdast one: Sätteri never dispatches `heading` to
- * user mdast plugins (verified — a visitor returning a marker comment produced
- * nothing in the output, while the sibling `code` visitor in
- * mermaid-passthrough.ts fired normally), so headings are only reachable once
- * they are `h1` elements. Nimbus runs hast plugins before its heading-ids pass.
+ * A hast plugin rather than an mdast one. This comment used to claim Sätteri
+ * never dispatches `heading` to user mdast plugins; that is false — a probe
+ * plugin counted 186 `heading` dispatches in a single build. The mdast attempt
+ * did fail, but not for that reason, and the real one was never established.
+ * What is verified is this version: it strips the H1 end to end. Nimbus runs
+ * hast plugins before its heading-ids pass.
  *
  * A factory, with `stripped` inside it: Sätteri calls the factory once per
  * compile, which is what resets the flag per document. At module scope the
