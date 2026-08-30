@@ -5,9 +5,10 @@ extend-exclude = [
   "assets/settings.html",
   "*.lock",
   "ui/pnpm-lock.yaml",
-  "docs/mermaid.min.js",
-  "docs/mermaid-init.js",
-  "book/",
+  # Moved here from docs/ when the site became Nimbus; mermaid-init.js is
+  # hand-written but sits beside the bundle it drives.
+  "docs-site/public/mermaid.min.js",
+  "docs-site/public/mermaid-init.js",
 ]
 
 [default.extend-words]
