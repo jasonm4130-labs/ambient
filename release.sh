@@ -63,11 +63,22 @@ AMBIENT_BUNDLE_MODELS=1 AMBIENT_SIGN_ID="$SIGN_ID" ./make-app.sh
 # --- verify the signature before spending minutes on notarization -----------
 echo "==> verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP"
-codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "^(Authority|TeamIdentifier)" | sed 's/^/    /'
-codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "flags=.*runtime" || {
-  echo "bundle is not hardened — notarization would reject it" >&2; exit 1
-}
-echo "    hardened runtime: yes"
+
+# Captured once into a variable rather than piped. Under `set -o pipefail` a
+# `codesign ... | grep -q` reports failure whenever grep matches early enough to
+# close the pipe and hand codesign a SIGPIPE — the pipeline's status becomes
+# codesign's death, not grep's match. The same shape already bit the mermaid
+# guard in docs.yml. A dry run reported "not hardened" for a bundle that was
+# demonstrably hardened; that exact failure did not reproduce afterwards, which
+# is itself the argument for not leaving a race in a release gate.
+SIGINFO=$(codesign -dv --verbose=4 "$APP" 2>&1)
+printf '%s\n' "$SIGINFO" | grep -E "^(Authority|TeamIdentifier)" | sed 's/^/    /'
+case "$SIGINFO" in
+  *"flags="*"runtime"*) echo "    hardened runtime: yes" ;;
+  *) echo "bundle is not hardened — notarization would reject it" >&2
+     printf '%s\n' "$SIGINFO" | sed 's/^/    /' >&2
+     exit 1 ;;
+esac
 
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"

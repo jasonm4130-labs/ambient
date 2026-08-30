@@ -65,6 +65,35 @@ if [ "${1:-}" = "--developer-id" ]; then
        -out "$WORK/id.p12" -passout pass:ambient -name "developerID"
 
   security import "$WORK/id.p12" -k "$KEYCHAIN" -P ambient -T /usr/bin/codesign -A
+
+  # The leaf alone is not enough. Without Apple's Developer ID intermediate in a
+  # searchable keychain, codesign fails with "unable to build chain to
+  # self-signed root" and errSecInternalComponent, while `security verify-cert`
+  # reports the certificate as fine — the two build the chain differently, and
+  # only codesign's opinion matters. Observed on a clean machine; the identity
+  # does not even appear under `find-identity -v` until this is present.
+  ISSUER_OU=$(openssl x509 -inform DER -in "$CER" -noout -issuer 2>/dev/null | grep -o 'OU *= *G[0-9]' | grep -o 'G[0-9]')
+  CA_URL="https://www.apple.com/certificateauthority/DeveloperID${ISSUER_OU:-G2}CA.cer"
+  if ! security find-certificate -c "Developer ID Certification Authority" >/dev/null 2>&1; then
+    echo "installing Apple's Developer ID ${ISSUER_OU:-G2} intermediate ..."
+    if curl -fsSL -o "$WORK/ca.cer" "$CA_URL"; then
+      # Only accept it if it is genuinely the issuer of the certificate above,
+      # rather than trusting the URL.
+      want=$(openssl x509 -inform DER -in "$CER" -noout -issuer | sed 's/^issuer=//')
+      got=$(openssl x509 -inform DER -in "$WORK/ca.cer" -noout -subject | sed 's/^subject=//')
+      if [ "$want" = "$got" ]; then
+        security import "$WORK/ca.cer" -k "$KEYCHAIN"
+      else
+        echo "  downloaded intermediate is not this certificate's issuer — skipping" >&2
+        echo "  wanted: $want" >&2
+        echo "  got:    $got" >&2
+      fi
+    else
+      echo "  could not fetch $CA_URL — install it by hand from" >&2
+      echo "  https://www.apple.com/certificateauthority/ or signing will fail" >&2
+    fi
+  fi
+
   echo
   echo "imported. Identities now available:"
   security find-identity -v -p codesigning | sed 's/^/  /'
