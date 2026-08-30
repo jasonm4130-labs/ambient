@@ -48,9 +48,22 @@ SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
 echo "    identity: $SIGN_ID"
 
 if [ "$DRY_RUN" = 0 ]; then
-  for v in AC_API_KEY_ID AC_API_ISSUER_ID; do
-    [ -n "${!v:-}" ] || { echo "$v is unset — run under: op run --env-file .env.op -- $0" >&2; exit 1; }
-  done
+  # Two ways to authenticate to notarisation, and neither has anything to do
+  # with the App Store — App Store Connect is just the identity system Apple
+  # reuses for it. Nothing here is ever submitted for review.
+  #   AC_APPLE_ID + AC_APP_PASSWORD   an app-specific password from appleid.apple.com
+  #   AC_API_KEY_* (+ issuer)         an App Store Connect API key
+  if [ -n "${AC_APPLE_ID:-}" ] && [ -n "${AC_APP_PASSWORD:-}" ]; then
+    AUTH_MODE=apple-id
+  elif [ -n "${AC_API_KEY_ID:-}" ] && { [ -n "${AC_API_KEY_P8:-}" ] || [ -n "${AC_API_KEY_PATH:-}" ]; }; then
+    AUTH_MODE=api-key
+  else
+    echo "no notarisation credentials. Run under: op run --env-file .env.op -- $0" >&2
+    echo "and set EITHER AC_APPLE_ID + AC_APP_PASSWORD, OR AC_API_KEY_ID plus" >&2
+    echo "AC_API_KEY_P8 (and AC_API_ISSUER_ID for a team key)." >&2
+    exit 1
+  fi
+  echo "    notarising via: $AUTH_MODE"
   command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 1; }
   gh auth status >/dev/null 2>&1 || { echo "gh is not authenticated — run: gh auth login" >&2; exit 1; }
 fi
@@ -93,26 +106,34 @@ fi
 # notarytool wants the key as a file. It is held in an env var so it never
 # touches this repo; write it to a private temp file for the call only.
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-if [ -n "${AC_API_KEY_P8:-}" ]; then
-  KEYFILE="$WORK/key.p8"; umask 077; printf '%s\n' "$AC_API_KEY_P8" > "$KEYFILE"
-elif [ -n "${AC_API_KEY_PATH:-}" ]; then
-  KEYFILE="$AC_API_KEY_PATH"
+NOTARY_AUTH=()
+if [ "$AUTH_MODE" = "apple-id" ]; then
+  NOTARY_AUTH=(--apple-id "$AC_APPLE_ID" --password "$AC_APP_PASSWORD"
+               --team-id "${AC_TEAM_ID:-}")
+  [ -n "${AC_TEAM_ID:-}" ] || { echo "AC_TEAM_ID is required with an Apple ID" >&2; exit 1; }
 else
-  echo "neither AC_API_KEY_P8 nor AC_API_KEY_PATH is set" >&2; exit 1
+  if [ -n "${AC_API_KEY_P8:-}" ]; then
+    # notarytool wants a file. The key is held in an env var so it never touches
+    # this repo; write it out private, for the length of this call only.
+    KEYFILE="$WORK/key.p8"; (umask 077; printf '%s\n' "$AC_API_KEY_P8" > "$KEYFILE")
+  else
+    KEYFILE="$AC_API_KEY_PATH"
+  fi
+  NOTARY_AUTH=(--key "$KEYFILE" --key-id "$AC_API_KEY_ID")
+  # Only a team key takes an issuer; passing one for an individual key is an error.
+  [ -n "${AC_API_ISSUER_ID:-}" ] && NOTARY_AUTH+=(--issuer "$AC_API_ISSUER_ID")
 fi
 
 echo "==> submitting to Apple (this takes a few minutes)"
 set +e
-xcrun notarytool submit "$ZIP" \
-  --key "$KEYFILE" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID" \
-  --wait --timeout 45m
+xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait --timeout 45m
 NOTARY_STATUS=$?
 set -e
 if [ "$NOTARY_STATUS" -ne 0 ]; then
   echo >&2
   echo "notarization failed. Read the actual reason rather than guessing:" >&2
-  echo "  xcrun notarytool history --key <key> --key-id $AC_API_KEY_ID --issuer $AC_API_ISSUER_ID" >&2
-  echo "  xcrun notarytool log <submission-id> --key <key> --key-id ... --issuer ..." >&2
+  echo "  xcrun notarytool history <same auth flags as above>" >&2
+  echo "  xcrun notarytool log <submission-id> <same auth flags>" >&2
   exit 1
 fi
 
