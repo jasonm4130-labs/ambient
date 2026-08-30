@@ -1,0 +1,53 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Header from "../components/Header.astro";
+import { config } from "virtual:nimbus/config";
+---
+
+<BaseLayout title={config.title} description={config.description}>
+  <div class="flex flex-col min-h-screen">
+    <Header />
+    <main id="main-content" tabindex="-1" class="flex-1 mx-auto max-w-2xl w-full px-6 py-24">
+      <h1
+        class="text-foreground leading-tight"
+        style="font-size: var(--nb-h1-size); font-weight: var(--nb-h1-weight); letter-spacing: var(--nb-h1-tracking);"
+      >
+        {config.title}
+      </h1>
+      <p class="mt-2 text-[1.0625rem] text-muted-foreground leading-relaxed">
+        {config.description}
+      </p>
+
+      <div class="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <a
+          href="/using/getting-started/"
+          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
+        >
+          <div class="font-medium text-foreground">Install and record</div>
+          <div class="mt-0.5 text-sm text-muted-foreground">Build it, sign it, capture your first meeting</div>
+        </a>
+        <a
+          href="/using/commands/"
+          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
+        >
+          <div class="font-medium text-foreground">Commands</div>
+          <div class="mt-0.5 text-sm text-muted-foreground">Every verb, and which need system audio</div>
+        </a>
+        <a
+          href="/using/what-is-kept/"
+          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
+        >
+          <div class="font-medium text-foreground">What gets recorded</div>
+          <div class="mt-0.5 text-sm text-muted-foreground">Consent, retention, and putting names to voices</div>
+        </a>
+        <a
+          href="/developing/"
+          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
+        >
+          <div class="font-medium text-foreground">How it works</div>
+          <div class="mt-0.5 text-sm text-muted-foreground">Architecture, decisions and measurements</div>
+        </a>
+      </div>
+    </main>
+  </div>
+</BaseLayout>

@@ -1,8 +1,9 @@
 // Parse every ```mermaid block in docs/ with the real Mermaid parser.
 //
-// mdbook-mermaid only wraps a fence in <pre class="mermaid">; it never parses
-// the diagram. A syntax error therefore builds cleanly, passes every other
-// guard in this workflow, and renders as an error box on the published page.
+// docs-site/src/plugins/mermaid-passthrough.ts only rewrites a fence to
+// <pre class="mermaid">; it never parses the diagram. A syntax error therefore
+// builds cleanly, passes every other guard in this workflow, and renders as an
+// error box in the reader's browser.
 // This caught a node named `call` — a reserved word in flowcharts, because of
 // the `call` click directive — which read as perfectly ordinary in the diff.
 import { JSDOM } from "jsdom";

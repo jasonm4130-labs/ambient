@@ -1,3 +1,9 @@
+---
+title: "11. Sweep track audio after 7 days"
+sidebar:
+  order: 51
+---
+
 # 11. Sweep track audio after 7 days
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

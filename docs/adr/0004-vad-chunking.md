@@ -1,3 +1,9 @@
+---
+title: "4. Chunk at VAD-chosen boundaries in 30 s windows"
+sidebar:
+  order: 44
+---
+
 # 4. Chunk at VAD-chosen boundaries in 30 s windows
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

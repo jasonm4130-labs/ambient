@@ -1,3 +1,9 @@
+---
+title: "Porting to the work M5 (16 GB)"
+sidebar:
+  order: 29
+---
+
 # Porting to the work M5 (16 GB)
 
 The point of the exercise. Every number in [Measurements](measurements.md)

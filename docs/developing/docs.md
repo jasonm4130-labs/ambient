@@ -1,111 +1,162 @@
+---
+title: "Building these docs"
+sidebar:
+  order: 31
+---
+
 # Building these docs
 
-The site is [mdBook](https://rust-lang.github.io/mdBook/) with
-[mdbook-mermaid](https://github.com/badboy/mdbook-mermaid). Source is the
-markdown under `docs/`; `book.toml` at the repo root points `src` there, so the
-ADRs keep the conventional citable path `docs/adr/NNNN-slug.md` and every
-relative link works identically in GitHub's file view and on the built site.
+The site is [Nimbus](https://nimbus-docs.com) — Cloudflare's Astro-based docs
+framework — themed with [Cirrus](https://github.com/jasonm4130/cirrus). The
+Astro project lives in `docs-site/`; **the markdown does not.** `docs/` at the
+repo root stays the source of truth, and `docs-site/` reads it from outside its
+own tree.
 
 ## Build it locally
 
 ```sh
-cargo install mdbook mdbook-mermaid     # or download the release binaries
-mdbook serve --open                     # live reload on http://localhost:3000
-mdbook build                            # → book/
+cd docs-site
+npm ci
+npm run dev             # http://localhost:4321
+npm run build           # → docs-site/dist/
+npx astro check         # typecheck
 ```
 
-`book/` is gitignored.
+`docs-site/dist/`, `node_modules/`, `.astro/` and `.nimbus/` are gitignored.
 
-## Why mdBook
+## Why the markdown stays in `docs/`
 
-The competition was Astro Starlight, VitePress, Docusaurus, Eleventy and Zola,
-and mdBook wins on what it *adds to this repo*: one pinned binary fetched by
-`curl`. No `docs/package.json`, no second lockfile, no `node_modules`, no fourth
-Dependabot ecosystem. Docusaurus alone is 1153 packages and 233 MB, and it fails
-outright against the `"type": "module"` that `ui/package.json` already sets.
+Nimbus expects content at `src/content/docs/`. Moving it there would have cost
+three things, and none of them was worth the tidiness:
 
-Two mdBook features earn their keep beyond that. Admonitions are native as of
-0.5.0, so there is no `mdbook-admonish` to add. And an include directive can
-lift a named region out of a real source file, which is the one mechanism on
-offer for stopping a quoted constant drifting from `src/`. Nothing here uses one
-yet, and that is deliberate: prose *about* code drifts slowly and harmlessly,
-while a quoted constant that drifts is a lie, so the directive is worth reaching
-for only where exactness is load-bearing. Keeping the count near zero is also
-what keeps a later move to another generator cheap.
+- **The ADRs would lose their citable path.** `adr/README.md` makes the
+  filename the record's identity — "never reused and never renamed" — and
+  commit messages cite by number. `docs/adr/NNNN-slug.md` is that path.
+- **Fifteen inbound links** point into `docs/adr/` from across the tree.
+- **`docs/` would stop being readable in GitHub's file view**, which is where
+  these pages get read when nobody has built the site.
 
-The honest weakness is that mdBook's default theme is the Rust Book's theme. It
-is legible, familiar and dark-mode capable, and for a private repo read by a
-handful of people that is enough. Overriding it means editing `index.hbs` and
-the CSS, and the 0.5 theme files changed incompatibly from 0.4, so any override
-is pinned to the 0.5 line.
+So `docs-site/src/content.config.ts` escapes its own project instead.
+`docsCollection` builds its loader base as `` `./src/content/${base}` ``, so
+`base: "../../../docs"` resolves to the sibling directory. It is a relative
+escape rather than a documented feature, and it is load-bearing — if a Nimbus
+upgrade changes how that base is computed, the build fails loudly at content
+sync rather than silently rendering nothing.
+
+## Two plugins, because `docs/` is read two ways
+
+Every page has to work in GitHub's file view *and* on the site, and each reader
+needs something the other does not. Both plugins are in `docs-site/src/plugins/`.
+
+**`strip-title-h1.ts`** removes the leading `# Heading` from the rendered body.
+On GitHub the H1 is the page title, so it must stay in the file; on the site
+Nimbus renders the title from frontmatter, so the same H1 would appear twice.
+It is a *hast* plugin, not an mdast one: Sätteri — Astro 7's default markdown
+processor, which Nimbus wires in — never dispatches `heading` to user mdast
+plugins. That was measured, not assumed. A visitor returning a marker comment
+produced nothing in the output while the sibling `code` visitor fired normally,
+so headings are only reachable once they are `h1` elements.
+
+**`mermaid-passthrough.ts`** rewrites a ` ```mermaid ` fence to a raw
+`<pre class="mermaid">` at the mdast stage, before Shiki sees it. This one has
+to be mdast for the opposite reason: once Shiki has run, the diagram source is
+spread across per-token `<span>`s.
 
 ## Diagrams
 
-Diagrams are fenced ` ```mermaid ` blocks in the markdown. mdBook has no native
-Mermaid support — a bare fence renders as a literal `<pre><code>` block — so
-`mdbook-mermaid` is a required preprocessor, declared in `book.toml`, with
-`mermaid.min.js` and `mermaid-init.js` committed under `docs/`.
+Nimbus has **no Mermaid support.** It registers `mermaid` as a Shiki
+*language*, so an untouched fence ships as a syntax-highlighted code listing
+with no diagram anywhere in the HTML — verified before any of this was written,
+by grepping a built page for `aria-roledescription`, the marker Mermaid's own
+SVG output writes, and finding zero.
+
+So the fences are rewritten by the plugin above and rendered in the browser by
+`docs-site/public/mermaid-init.js`. That script is not the upstream
+`mdbook-mermaid` one: Nimbus stamps `data-mode="dark"` on `<html>` rather than
+using mdBook's theme element ids, so the theme is observable and diagrams
+re-render in place instead of forcing a reload; and Nimbus mounts
+`<ClientRouter />`, so navigation never fires `DOMContentLoaded` and the hook is
+`astro:page-load`. `mermaid.min.js` is 2.6 MB and only four of ~30 pages carry a
+diagram, so it is fetched on demand rather than shipped with every page.
+
+The alternative was `rehype-mermaid`, which renders at build time. It was
+rejected for one reason: it needs a headless browser in CI.
 
 Authoring them as text rather than as image files buys two things. They diff in
 review, and **GitHub renders them natively in `.md` files**, so `docs/` is a
 readable architecture document to anyone browsing the repo whether or not the
-site is built. That also bounds the risk of depending on a single-maintainer
-preprocessor: if `mdbook-mermaid` ever strands, the failure mode is unrendered
-fences on the site, not lost content, and the fix is deleting one stanza from
-`book.toml`.
+site is built.
 
 Use plain `flowchart` with `subgraph` boundaries rather than Mermaid's
 `C4Context` syntax, which upstream still labels experimental with a syntax that
-may change. Diagrams are parse-checked in CI — see the build guard below.
+may change.
 
-## The build guard
+## The build guards
 
-**mdBook exits 0 on a broken include and ships the literal directive into the
-HTML.** Measured, not assumed: pointing an include at a nonexistent file logged
-`ERROR Error updating …` followed by two `WARN Caused By:` lines, exited 0, and
-left the raw directive in the rendered page. Neither half of that is visible in
-the exit code, so `docs.yml` checks both — it fails if the build log contains an
-`ERROR` line, and it greps the rendered HTML for a directive that survived.
+`docs.yml` runs five checks, and each one exists because something got through
+without it.
 
-The grep is deliberately narrower than the obvious one. This very page mentions
-the directive, so matching on the opening braces alone would fail the build on
-its own documentation; the pattern instead requires a directive word followed by
-an argument, which only a real unexpanded include produces.
+**Every mermaid fence reached the renderer.** Counts pages with a fence in
+`docs/` against pages with a `<pre class="mermaid">` in `dist/`, and fails if a
+`data-nb-lang="mermaid"` survives anywhere — that attribute *is* the failure,
+because it means Shiki got the fence. The grep is restricted to `--include='*.html'`:
+Nimbus emits an `.md` and an `.mdx` alternate beside every page, so an
+unrestricted count sees each page two or three times and the comparison becomes
+meaningless. That mistake was made once here already.
 
-A third check parses every ` ```mermaid ` block with the real Mermaid parser.
-`mdbook-mermaid` only *wraps* a fence in `<pre class="mermaid">` — it never
-parses the diagram — so a syntax error builds cleanly, passes every other guard
-here, and renders as an error box on the published page. It earned its place
-immediately: it caught a node named `call`, which is a reserved word in
-flowcharts because of the `call` click directive, and which reads as completely
-ordinary in a diff. Note the shape of that bug, because it is the reason the
-check exists rather than a style rule — `call["Meeting app"]` parses fine, and
-only a later bare reference to `call` fails.
+**`check-mermaid.mjs`** parses every fence with the real Mermaid parser. The
+passthrough plugin only *moves* a fence; it never parses the diagram, so a
+syntax error builds cleanly and renders as an error box in the browser. It
+earned its place immediately: it caught a node named `call`, a reserved word in
+flowcharts because of the `call` click directive, which reads as completely
+ordinary in a diff. Note the shape of that bug — `call["Meeting app"]` parses
+fine, and only a later bare reference to `call` fails.
 
-This is the one step in the docs workflow that needs node, which is a real cost
-against the argument for mdBook above. It is a pinned two-package `npm ci` in
-`.github/scripts/`, deliberately separate from `ui/` because it is a CI tool and
-not a dependency of anything that ships.
+**`check-links.mjs`** resolves every relative markdown link in `docs/` and
+`README.md`. Nothing else does: `nimbus-docs lint` is MDX-only and takes no
+path, so it never sees `docs/**/*.md`; the Astro build renders a dead link
+happily; and `README.md` sits outside every content pipeline in the repo.
 
-A fourth check asserts that every `docs/adr/[0-9]*.md` appears in
-`docs/SUMMARY.md`, because a record absent from the nav is invisible on the site
-even though the file is right there in the repo.
+**Every ADR is a nav-ordered page.** A record with no frontmatter fails the
+content schema and takes the build down with it, but one that builds can still
+have no `sidebar.order` and land unplaced in the nav. The guard asserts the
+record *count* before looping, because `nullglob` off plus an empty directory
+used to make it pass vacuously.
+
+**`astro check`** typechecks the project.
+
+## Why not mdBook
+
+This site was mdBook until 2026-08-30, and the argument for it was real: one
+pinned binary fetched by `curl`, no `docs/package.json`, no second lockfile, no
+`node_modules`. That argument was made when the docs had no design of their own
+and mdBook's default Rust Book theme was good enough.
+
+Cirrus is what changed it. Theming mdBook means editing `index.hbs` and the CSS
+against a theme layout that broke incompatibly between 0.4 and 0.5, so every
+override is pinned to a line that will break again. Nimbus takes the theme as
+CSS custom properties, which is what Cirrus already is.
+
+The costs are paid honestly and are listed in
+[ADR-0013](../adr/0013-nimbus-over-mdbook.md): a third npm ecosystem in
+Dependabot, a lockfile, and a build that needs node. Two of those were already
+true — `ui/` and `.github/scripts/` are both npm, and `check-mermaid.mjs` always
+needed node.
 
 ## Deployment
 
-Not wired up yet, and the decision is Jason's to make.
+Not wired up yet, and the decision is Jason's to make. Nothing about the move
+to Nimbus changed this section.
 
 GitHub Pages is a hard block rather than a preference: `ambient` is private in
 an org on the free plan, and Pages is unavailable for private repos there. Even
 on a paid plan the site would be world-readable — private Pages needs Enterprise
 Cloud.
 
-The intended target is **Cloudflare Workers Static Assets** by direct upload,
-on Cloudflare's own instruction that new projects should use Workers rather than
-Pages. It would live in its own `docs.yml` rather than in `ci.yml`, for two
-mechanical reasons: `ci.yml` sets `cancel-in-progress: true` at workflow scope,
-which can kill a deploy mid-upload, and `paths:` filters are per-workflow rather
-than per-job.
+The intended target is **Cloudflare Workers Static Assets**, which is what
+`docs-site/wrangler.jsonc` already points at (`assets.directory: ./dist`), on
+Cloudflare's own instruction that new projects should use Workers rather than
+Pages.
 
 Two things must be settled before it is turned on:
 
@@ -118,4 +169,6 @@ Two things must be settled before it is turned on:
    `op read 'op://…/CLOUDFLARE_API_TOKEN' | gh secret set CLOUDFLARE_API_TOKEN`.
 
 Until then `docs.yml` builds and verifies the site on every change and uploads
-nothing.
+the result as an artifact. The `site` value in `docs-site/astro.config.ts` is a
+placeholder, and canonical URLs, the sitemap, `robots.txt` and the links in
+`/llms.txt` are all wrong until the Worker exists and that value is corrected.

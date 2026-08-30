@@ -1,3 +1,9 @@
+---
+title: "12. CI verifies assembly; behaviour is verified by dedicated binaries"
+sidebar:
+  order: 52
+---
+
 # 12. CI verifies assembly; behaviour is verified by dedicated binaries
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

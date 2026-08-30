@@ -1,3 +1,9 @@
+---
+title: "6. Hand-write a separate feature front-end per model"
+sidebar:
+  order: 46
+---
+
 # 6. Hand-write a separate feature front-end per model
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

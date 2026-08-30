@@ -1,3 +1,9 @@
+---
+title: "2. Launch only as a certificate-signed bundle through LaunchServices"
+sidebar:
+  order: 42
+---
+
 # 2. Launch only as a certificate-signed bundle through LaunchServices
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

@@ -1,3 +1,9 @@
+---
+title: "9. Consent is an Armed menu bar state with per-call opt-in"
+sidebar:
+  order: 49
+---
+
 # 9. Consent is an Armed menu bar state with per-call opt-in
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

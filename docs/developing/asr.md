@@ -1,3 +1,9 @@
+---
+title: "Speech recognition"
+sidebar:
+  order: 24
+---
+
 # Speech recognition
 
 The recogniser is Parakeet TDT 0.6b, run through ONNX Runtime on the CPU. This

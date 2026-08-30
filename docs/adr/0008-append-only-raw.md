@@ -1,3 +1,9 @@
+---
+title: "8. `raw.jsonl` is append-only and `transcript.md` is derived"
+sidebar:
+  order: 48
+---
+
 # 8. `raw.jsonl` is append-only and `transcript.md` is derived
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

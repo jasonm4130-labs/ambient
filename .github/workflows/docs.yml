@@ -6,17 +6,13 @@ name: docs
 on:
   push:
     branches: [main]
-    paths: ['docs/**', 'book.toml', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-site/**', '.github/workflows/docs.yml']
   pull_request:
-    paths: ['docs/**', 'book.toml', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-site/**', '.github/workflows/docs.yml']
 
 concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  MDBOOK_VERSION: v0.5.4
-  MDBOOK_MERMAID_VERSION: v0.17.1
 
 jobs:
   build:
@@ -24,76 +20,99 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      # Two pinned binaries and a curl. The whole reason for choosing mdBook
-      # over a JS generator is that this step is the entire toolchain — no
-      # setup-node, no lockfile, no fourth Dependabot ecosystem.
-      - name: Install mdBook and mdbook-mermaid
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin"
-          curl -fsSL "https://github.com/badboy/mdbook-mermaid/releases/download/${MDBOOK_MERMAID_VERSION}/mdbook-mermaid-${MDBOOK_MERMAID_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      # Verified: a broken include exits 0, logs ERROR, and ships the literal
-      # directive into the HTML. Neither half of that is caught by the exit
-      # code, so both halves are checked below.
-      - name: Build
-        run: |
-          set -euo pipefail
-          mdbook build 2>&1 | tee build.log
-
-      - name: Fail on a build error mdBook did not exit on
-        run: |
-          if grep -q '^ERROR' build.log; then
-            grep '^ERROR' build.log
-            echo "::error::mdbook logged an error but exited 0"
-            exit 1
-          fi
-
-      # Deliberately narrower than '{{#': the page documenting this guard
-      # necessarily mentions the directive. A real unexpanded one is always
-      # a word followed by an argument.
-      - name: Fail on unexpanded directives
-        run: |
-          if grep -rEq '\{\{#[a-z_]+ ' book/ --include='*.html'; then
-            grep -rEn '\{\{#[a-z_]+ ' book/ --include='*.html' | head -20
-            echo "::error::unexpanded mdBook directive in build output"
-            exit 1
-          fi
-
-      # mdbook-mermaid only wraps a fence; it never parses the diagram, so a
-      # syntax error builds cleanly and renders as an error box on the page.
-      # This is the only check here that needs node.
       - uses: actions/setup-node@v7.0.0
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: .github/scripts/package-lock.json
+          cache-dependency-path: |
+            docs-site/package-lock.json
+            .github/scripts/package-lock.json
+
+      # The markdown lives in docs/, not in docs-site/src/content — see
+      # docs-site/src/content.config.ts for why and how.
+      - run: npm ci
+        working-directory: docs-site
+
+      - name: Typecheck
+        run: npx astro check
+        working-directory: docs-site
+
+      - name: Build
+        run: npm run build
+        working-directory: docs-site
+
+      # Nimbus's own linter. It is MDX-only and takes no path, so it sees
+      # src/content/partials and nothing under docs/ — the markdown is checked
+      # by check-links.mjs below instead. Kept because the partial is real
+      # content and the frontmatter-shape rule is worth having on it.
+      - name: Lint MDX partials
+        run: npx nimbus-docs lint
+        working-directory: docs-site
+
+      # Nimbus renders `mermaid` as a Shiki *language*, so an untouched fence
+      # ships as a code listing. docs-site/src/plugins/mermaid-passthrough.ts
+      # rewrites it to <pre class="mermaid"> for the client-side renderer —
+      # assert that happened rather than trusting the build's exit code.
+      - name: Every mermaid fence reached the renderer
+        run: |
+          set -euo pipefail
+          # --include='*.html' matters: Nimbus emits an .md and an .mdx
+          # alternate beside every page, so an unrestricted grep counts each
+          # page two or three times and the comparison is meaningless.
+          # `|| true` on each grep: with pipefail a no-match exit 1 would kill
+          # the step before the counts are printed, turning a clear failure into
+          # a silent one.
+          fences=$( { grep -rl '^```mermaid' docs/ || true; } | wc -l)
+          rendered=$( { grep -rl '<pre class="mermaid">' docs-site/dist/ --include='*.html' || true; } | wc -l)
+          echo "pages with a fence: $fences, pages with a rendered block: $rendered"
+          if [ "$fences" -ne "$rendered" ]; then
+            echo "::error::$fences pages carry a mermaid fence but $rendered reached the renderer"
+            exit 1
+          fi
+          # Deliberately narrower than a bare search for the attribute: the page
+          # documenting this guard necessarily quotes it, and a mention inside
+          # <code> is prose, not a failure. `[^>]*` cannot cross a `>`, so this
+          # matches only the attribute sitting in a real element's opening tag —
+          # which is the shape Shiki actually emits.
+          if grep -rEq '<(figure|pre)[^>]*data-nb-lang="mermaid"' docs-site/dist/ --include='*.html'; then
+            grep -rEln '<(figure|pre)[^>]*data-nb-lang="mermaid"' docs-site/dist/ --include='*.html'
+            echo "::error::a mermaid fence shipped as a Shiki code block"
+            exit 1
+          fi
+
+      # mermaid-passthrough only *moves* a fence; it never parses the diagram,
+      # so a syntax error builds cleanly and renders as an error box in the
+      # browser. This is the only check here that reads the source rather than
+      # the output.
       - run: npm ci
         working-directory: .github/scripts
       - run: node .github/scripts/check-mermaid.mjs
 
-      # A record absent from SUMMARY.md is invisible on the site even though the
-      # file is in the repo.
-      - name: Every ADR is in the nav
+      # The only check that resolves relative links in docs/ and README.md.
+      # The Astro build renders a dead link happily, and README.md sits outside
+      # every content pipeline in this repo.
+      - run: node .github/scripts/check-links.mjs
+
+      # A record with no frontmatter is not a page: the content collection
+      # rejects it and the build fails, but a record that builds can still be
+      # missing from the nav ordering, which makes it hard to find on the site.
+      - name: Every ADR is a nav-ordered page
         run: |
           set -euo pipefail
           shopt -s nullglob
           records=(docs/adr/[0-9]*.md)
-          # Without nullglob an unmatched glob expands to the literal, and
-          # `grep -q "[0-9]*.md"` then matches "index.md" as a regex — so the
-          # guard passed on an empty directory. Assert the count, and match the
-          # filename as a fixed string rather than a pattern.
+          # Without nullglob an unmatched glob expands to the literal and the
+          # loop below runs zero times, so the guard passes on an empty
+          # directory. Assert the count first.
           if [ "${#records[@]}" -lt 12 ]; then
             echo "::error::found ${#records[@]} ADRs under docs/adr/, expected at least 12 — did the directory move?"
             exit 1
           fi
           for f in "${records[@]}"; do
-            grep -qF "$(basename "$f")" docs/SUMMARY.md \
-              || { echo "::error::$f missing from docs/SUMMARY.md"; exit 1; }
+            head -6 "$f" | grep -q '^title:' \
+              || { echo "::error::$f has no title in frontmatter"; exit 1; }
+            head -6 "$f" | grep -q '^  order:' \
+              || { echo "::error::$f has no sidebar.order, so it is unplaced in the nav"; exit 1; }
           done
 
       # Nothing is deployed yet: workers.dev URLs are public by default and this
@@ -101,6 +120,6 @@ jobs:
       # See docs/developing/docs.md.
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: book
-          path: book/
+          name: site
+          path: docs-site/dist/
           retention-days: 7

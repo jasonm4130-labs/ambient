@@ -1,3 +1,9 @@
+---
+title: "Commands"
+sidebar:
+  order: 12
+---
+
 # Commands
 
 One binary. Run with no arguments it is the menu bar app; run with arguments it

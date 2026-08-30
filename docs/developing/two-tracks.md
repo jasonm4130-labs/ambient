@@ -1,3 +1,9 @@
+---
+title: "Two tracks, two clocks"
+sidebar:
+  order: 22
+---
+
 # Two tracks, two clocks
 
 Why capture is split across two independent IOProcs, and what that costs in

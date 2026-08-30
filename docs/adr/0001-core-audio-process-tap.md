@@ -1,3 +1,9 @@
+---
+title: "1. Capture call audio with a Core Audio process tap"
+sidebar:
+  order: 41
+---
+
 # 1. Capture call audio with a Core Audio process tap
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

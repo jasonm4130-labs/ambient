@@ -1,3 +1,9 @@
+---
+title: "Getting started"
+sidebar:
+  order: 11
+---
+
 # Getting started
 
 ## What you need first

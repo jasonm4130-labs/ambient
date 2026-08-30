@@ -1,3 +1,9 @@
+---
+title: "10. Store names, never voiceprints"
+sidebar:
+  order: 50
+---
+
 # 10. Store names, never voiceprints
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

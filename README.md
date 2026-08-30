@@ -62,9 +62,10 @@ of that is in this repo.
 
 ## Where the docs are
 
-Everything that used to be in this file now lives in `docs/`, built as an
-mdBook site. `mdbook serve --open` renders it; every page also reads correctly
-on GitHub, diagrams included.
+Everything that used to be in this file now lives in `docs/`. The markdown is
+the source of truth and reads correctly on GitHub, diagrams included;
+`docs-site/` builds it into a Nimbus site themed with Cirrus —
+`cd docs-site && npm ci && npm run dev`.
 
 The split is by what you are doing, not by what the pages are about.
 
@@ -72,7 +73,7 @@ The split is by what you are doing, not by what the pages are about.
 | --- | --- |
 | [docs/using/](docs/using/index.md) | Build it, run it, read the transcript, know what is kept on disk. Start here. |
 | [docs/developing/](docs/developing/index.md) | What the pieces are and why each is shaped that way, plus porting, CI and the docs build. |
-| [docs/adr/](docs/adr/README.md) | Twelve decision records — the alternatives that were live, and the check that fails if the decision drifts. |
+| [docs/adr/](docs/adr/README.md) | Thirteen decision records — the alternatives that were live, and the check that fails if the decision drifts. |
 
 ## Still open
 

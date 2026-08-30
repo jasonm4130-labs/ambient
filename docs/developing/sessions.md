@@ -1,3 +1,9 @@
+---
+title: "Sessions and the edit layer"
+sidebar:
+  order: 26
+---
+
 # Sessions and the edit layer
 
 A session is what `ambient record` leaves on disk: the audio, what the

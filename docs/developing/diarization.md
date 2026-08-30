@@ -1,3 +1,9 @@
+---
+title: "Diarization"
+sidebar:
+  order: 25
+---
+
 # Diarization
 
 Diarization answers "who spoke when" on a session that already has a

@@ -1,3 +1,9 @@
+---
+title: "Capture"
+sidebar:
+  order: 21
+---
+
 # Capture
 
 How `ambient` gets system audio off a Mac, and the two independent ways that

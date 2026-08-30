@@ -1,3 +1,9 @@
+---
+title: "Measurements"
+sidebar:
+  order: 28
+---
+
 # Measurements
 
 Everything below was measured on the home machine — M5 Max, 128 GB,

@@ -1,3 +1,9 @@
+---
+title: "7. Diarization is a separate verb, not part of `record`"
+sidebar:
+  order: 47
+---
+
 # 7. Diarization is a separate verb, not part of `record`
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

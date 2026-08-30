@@ -1,3 +1,9 @@
+---
+title: "Settings and the UI"
+sidebar:
+  order: 27
+---
+
 # Settings and the UI
 
 Ambient's settings live in one JSON file, reachable from a CLI verb and from a

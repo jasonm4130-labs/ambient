@@ -1,3 +1,9 @@
+---
+title: "How we record decisions"
+sidebar:
+  order: 40
+---
+
 # How we record decisions
 
 An architecture decision record exists to stop a settled argument being had
@@ -43,12 +49,13 @@ The date is the date the decision was made. It is never touched afterwards.
 ## Adding one
 
 ```sh
-cp docs/adr/TEMPLATE.md docs/adr/0013-<slug>.md
+cp docs/adr/TEMPLATE.md docs/adr/0014-<slug>.md
 ```
 
-Then add the record to `docs/SUMMARY.md`. CI fails if an ADR is missing from
-the nav, because mdBook builds only what `SUMMARY.md` lists: a record absent
-from it is invisible on the site and might as well not have been written.
+Then give it `title:` and `sidebar.order:` frontmatter, matching the record
+above it. CI fails on a record without both: no frontmatter means the content
+collection rejects the file and the build stops, and no `sidebar.order` means
+the record lands unplaced in the nav, which is nearly as good as unwritten.
 
 ## The records
 

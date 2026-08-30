@@ -4,7 +4,5 @@
 /target
 .DS_Store
 
-# mdBook output
-book/
-
 .github/scripts/node_modules/
+

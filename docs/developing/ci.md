@@ -1,3 +1,9 @@
+---
+title: "What CI checks"
+sidebar:
+  order: 30
+---
+
 # What CI checks
 
 `.github/workflows/ci.yml` runs three jobs on every push to `main` and every

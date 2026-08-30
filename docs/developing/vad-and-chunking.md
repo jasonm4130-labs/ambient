@@ -1,3 +1,9 @@
+---
+title: "Voice activity detection"
+sidebar:
+  order: 23
+---
+
 # Voice activity detection
 
 Voice activity detection sits between capture and the recogniser: it decides

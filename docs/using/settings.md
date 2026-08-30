@@ -1,3 +1,9 @@
+---
+title: "Settings"
+sidebar:
+  order: 13
+---
+
 # Settings
 
 Every setting has code behind it. A stored value that nothing reads is a promise

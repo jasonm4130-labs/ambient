@@ -1,3 +1,9 @@
+---
+title: "How it fits together"
+sidebar:
+  order: 20
+---
+
 # How it fits together
 
 Ambient is one signed macOS app bundle. It records two audio tracks, transcribes

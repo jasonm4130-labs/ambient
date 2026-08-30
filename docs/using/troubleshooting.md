@@ -1,3 +1,9 @@
+---
+title: "When it does not work"
+sidebar:
+  order: 15
+---
+
 # When it does not work
 
 Almost every first-run failure here is the same one wearing different clothes:

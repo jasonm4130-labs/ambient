@@ -1,3 +1,9 @@
+---
+title: "Using ambient"
+sidebar:
+  order: 10
+---
+
 # Using ambient
 
 Five pages, in the order you will want them.

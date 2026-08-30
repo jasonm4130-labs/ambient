@@ -1,3 +1,9 @@
+---
+title: "5. Run ASR on CPU only, with no CoreML execution provider"
+sidebar:
+  order: 45
+---
+
 # 5. Run ASR on CPU only, with no CoreML execution provider
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

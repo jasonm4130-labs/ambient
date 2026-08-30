@@ -1,3 +1,9 @@
+---
+title: "3. Two independent IOProcs, realigned on wall clock"
+sidebar:
+  order: 43
+---
+
 # 3. Two independent IOProcs, realigned on wall clock
 
 **Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —

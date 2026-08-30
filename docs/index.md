@@ -1,3 +1,9 @@
+---
+title: "ambient"
+sidebar:
+  order: 0
+---
+
 # ambient
 
 Local-first ambient capture for macOS: record conversations in the room and on
@@ -39,6 +45,6 @@ transcript, and know what is kept on disk. Start here.
 **[Developing ambient](developing/index.md)** — what the pieces are, why each one
 is shaped the way it is, and what CI enforces. Read this before changing code.
 
-The [decision records](adr/README.md) sit behind both: twelve of them, each
+The [decision records](adr/README.md) sit behind both: thirteen of them, each
 naming a decision, the alternatives that were live at the time, and the check
 that fails if it drifts.
