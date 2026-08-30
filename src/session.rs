@@ -136,6 +136,13 @@ pub fn models_root() -> Result<PathBuf> {
     }
     let mut candidates = vec![PathBuf::from("models")];
     if let Ok(exe) = std::env::current_exe() {
+        // A release bundle ships its models in Contents/Resources/models, which
+        // is a *sibling* of Contents/MacOS — the parent walk below climbs past
+        // it and would never look inside. This is the only candidate that makes
+        // a downloaded .app work with no repo checkout anywhere on the machine.
+        if let Some(macos) = exe.parent() {
+            candidates.push(macos.join("../Resources/models"));
+        }
         let mut dir = exe.parent().map(Path::to_path_buf);
         for _ in 0..5 {
             match dir {

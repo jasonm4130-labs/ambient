@@ -16,18 +16,29 @@ Audio process tap records system audio with nothing joining the call, and that
 audio transcribes correctly. The base M5 with 16 GB is the target and is not yet
 measured — see [porting](developing/porting.md).
 
-There is no packaged release. Running ambient means building it, which is why
-[Getting started](using/getting-started.md) opens with a compiler.
+There is no published release yet. Running ambient still means building it,
+which is why [Getting started](using/getting-started.md) opens with a compiler.
 
-## What a packaged release would take
+## What a packaged release still needs
 
-A Developer ID certificate, notarisation and a stapled artefact built on CI:
-`setup-signing.sh` creates a self-signed certificate and adds it to the login
-keychain as a trusted code-signing root, so the identity it produces is valid on
-this machine and nowhere else, and the repo holds no notarisation tooling and no
-release job at all. Models would also have to be fetched on first run, or the
-default recogniser made smaller, so that 670 MB of ONNX stops being something
-you download by hand before anything works.
+The tooling now exists and the last missing piece is an Apple certificate.
+`release.sh` builds, signs with a Developer ID identity, notarises, staples and
+publishes; `make-app.sh` applies the hardened runtime and the one entitlement
+the microphone needs under it, and bundles the ~671 MB of models the app loads
+so a download works with no `fetch-models.sh` and no repo on the machine.
+
+What is verified: the hardened runtime does not break ONNX Runtime (it is
+statically linked, so no library-validation exemption is needed), the
+microphone records with only `com.apple.security.device.audio-input`, and a
+bundle carrying its own models resolves them from a working directory that has
+none.
+
+What is not: **notarisation has never been run**, because it needs a Developer
+ID Application certificate and none exists yet. The CSR and its private key sit
+in `.signing/`, so the remaining step is uploading that CSR to
+developer.apple.com and importing the certificate that comes back. Until then
+`setup-signing.sh` produces a self-signed identity that is valid on the machine
+that made it and nowhere else.
 
 Even then neither `record` nor `tap` could be run straight from a shell. They
 already are ordinary CLI verbs; the constraint is the launch, not the argument

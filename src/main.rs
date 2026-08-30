@@ -23,6 +23,7 @@ USAGE
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
   ambient vad <a.wav>                  show detected speech segments
+  ambient peak <a.wav>...              per-channel peak level of a wav
 
 Sessions are written to ~/Documents/Ambient (override with AMBIENT_HOME).
 ";
@@ -186,7 +187,11 @@ fn main() -> Result<()> {
             let mut rec = ambient::asr::Recognizer::load(&model)?;
             // Prefer VAD chunking when the model is present; it cuts in silence
             // and skips it entirely.
-            let text = match ambient::vad::Vad::load("models/silero_vad.onnx") {
+            let silero = ambient::session::models_root()
+                .map(|m| m.join("silero_vad.onnx"))
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "models/silero_vad.onnx".into());
+            let text = match ambient::vad::Vad::load(&silero) {
                 Ok(mut vad) => {
                     let chunks = vad.chunks(&samples, 30)?;
                     let speech = chunks.iter().map(|c| c.seconds()).sum::<f64>().max(0.0);
@@ -209,7 +214,8 @@ fn main() -> Result<()> {
                 bail!("{USAGE}");
             }
             let samples = ambient::features::read_wav(&wav)?;
-            let mut vad = ambient::vad::Vad::load("models/silero_vad.onnx")?;
+            let silero = ambient::session::models_root()?.join("silero_vad.onnx");
+            let mut vad = ambient::vad::Vad::load(&silero.display().to_string())?;
             let segs = vad.segments(&samples)?;
             let total = segs.iter().map(|s| s.seconds()).sum::<f64>().max(0.0);
             let dur = samples.len() as f64 / 16_000.0;
@@ -346,6 +352,52 @@ fn main() -> Result<()> {
                 ambient::capture::silent_tap_advice(peak(&call), max_rendering, &bundles)
             {
                 eprintln!("\nWARNING: {advice}\n");
+            }
+            Ok(())
+        }
+        // Reads a file and needs no audio permission, which is the point: the
+        // bundle launch that *does* have the grant is `open -a`, and that
+        // discards stdout — so the only way to see whether a capture actually
+        // produced sound is to inspect the wav afterwards. setup-signing.sh's
+        // verification step depends on this.
+        Some("peak") => {
+            let wavs: Vec<String> = args.collect();
+            if wavs.is_empty() {
+                bail!("{USAGE}");
+            }
+            let mut silent = 0usize;
+            for wav in &wavs {
+                let mut r = hound::WavReader::open(wav)?;
+                let spec = r.spec();
+                let ch = spec.channels.max(1) as usize;
+                let mut peaks = vec![0.0f32; ch];
+                for (i, s) in r.samples::<i16>().enumerate() {
+                    let v = (s? as f32 / 32768.0).abs();
+                    let c = i % ch;
+                    if v > peaks[c] {
+                        peaks[c] = v;
+                    }
+                }
+                let shown = peaks
+                    .iter()
+                    .map(|p| format!("{p:.4}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                // 1e-4 is the same floor capture.rs uses to call a tap silent.
+                let quiet = peaks.iter().all(|p| *p < 1e-4);
+                if quiet {
+                    silent += 1;
+                }
+                println!(
+                    "{wav}: {} Hz, {ch} ch, peak {shown}{}",
+                    spec.sample_rate,
+                    if quiet { "  SILENT" } else { "" }
+                );
+            }
+            // Non-zero exit when every file was silent, so a script can branch
+            // on it without parsing this output.
+            if silent == wavs.len() {
+                bail!("every wav was silent (peak < 1e-4)");
             }
             Ok(())
         }

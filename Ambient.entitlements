@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    The hardened runtime is required for notarization, and it revokes microphone
+    access unless this entitlement is present. The Info.plist usage strings are
+    what TCC shows in the prompt; this is what makes the prompt reachable at all.
+
+    Deliberately minimal. ONNX Runtime is statically linked into the binary
+    (`otool -L` shows no onnx dylib), so none of the usual escape hatches —
+    disable-library-validation, allow-unsigned-executable-memory, allow-jit —
+    are needed. Anything added here is a hole in the runtime protections, so add
+    one only after a real run has failed without it.
+
+    System-audio capture via the Core Audio process tap needs no entitlement:
+    it is gated on TCC plus NSAudioCaptureUsageDescription in the Info.plist.
+  -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>
