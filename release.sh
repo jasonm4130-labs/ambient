@@ -23,7 +23,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+PUBLISH_ONLY=0
+case "${1:-}" in
+  --dry-run)      DRY_RUN=1 ;;
+  --publish-only) PUBLISH_ONLY=1 ;;
+  "")             ;;
+  *) echo "usage: $0 [--dry-run | --publish-only]" >&2; exit 1 ;;
+esac
 
 VERSION=$(cargo metadata --format-version 1 --no-deps \
           | sed -n 's/.*"name":"ambient","version":"\([^"]*\)".*/\1/p')
@@ -31,6 +37,35 @@ VERSION=$(cargo metadata --format-version 1 --no-deps \
 TAG="v$VERSION"
 APP=build/Ambient.app
 ZIP="build/Ambient-$VERSION.zip"
+
+# Tag, push, upload. Separated so --publish-only can reach it without rebuilding.
+# Tags here are signed, so a locked 1Password vault fails this and nothing else —
+# which is worth distinguishing from a bad artefact.
+publish() {
+  echo "==> publishing $TAG"
+  if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+    git tag -a "$TAG" -m "Ambient $VERSION" || {
+      echo >&2
+      echo "could not create the tag. If that says \"failed to fill whole buffer\"," >&2
+      echo "the 1Password vault holding your git signing key is locked — unlock it" >&2
+      echo "and re-run with: $0 --publish-only" >&2
+      echo "The notarised bundle on disk is kept, so this costs no Apple round trip." >&2
+      exit 1
+    }
+  fi
+  git push origin "$TAG"
+  gh release create "$TAG" "$ZIP" \
+    --title "Ambient $VERSION" \
+    --notes "Signed and notarized. Download, unzip, move to /Applications, open.
+
+Models are bundled — no fetch-models.sh, no setup needed.
+
+On first launch macOS asks for System Audio Recording and Microphone. Both are
+required: the first is the meeting audio, the second is you."
+
+  echo
+  echo "done: $(gh release view "$TAG" --json url -q .url)"
+}
 
 echo "==> releasing $TAG"
 
@@ -47,7 +82,9 @@ SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
 }
 echo "    identity: $SIGN_ID"
 
-if [ "$DRY_RUN" = 0 ]; then
+# Credentials are only needed to talk to the notary service. --dry-run stops
+# before that, and --publish-only resumes after it, so neither needs them.
+if [ "$DRY_RUN" = 0 ] && [ "$PUBLISH_ONLY" = 0 ]; then
   # Two ways to authenticate to notarisation, and neither has anything to do
   # with the App Store — App Store Connect is just the identity system Apple
   # reuses for it. Nothing here is ever submitted for review.
@@ -64,8 +101,36 @@ if [ "$DRY_RUN" = 0 ]; then
     exit 1
   fi
   echo "    notarising via: $AUTH_MODE"
+fi
+
+# gh is needed by every path that publishes.
+if [ "$DRY_RUN" = 0 ]; then
   command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 1; }
   gh auth status >/dev/null 2>&1 || { echo "gh is not authenticated — run: gh auth login" >&2; exit 1; }
+fi
+
+# --- publish-only resume ----------------------------------------------------
+# Notarisation is a round trip through Apple's queue that took ~11 minutes for
+# this bundle, and everything after it — tagging, pushing, the release — can
+# fail on its own (a locked signing key did exactly that on the first run).
+# Rebuilding would discard the staple and buy another trip through the queue for
+# nothing, so this resumes from the artefact already on disk. It verifies rather
+# than assumes that artefact is really notarised.
+if [ "$PUBLISH_ONLY" = 1 ]; then
+  echo "==> publish-only: reusing the notarised bundle on disk"
+  [ -f "$ZIP" ] || { echo "no $ZIP — run a full release first" >&2; exit 1; }
+  xcrun stapler validate "$APP" >/dev/null 2>&1 || {
+    echo "$APP is not stapled — it has not been notarised, run a full release" >&2
+    exit 1
+  }
+  SPCTL=$(spctl -a -vvv -t install "$APP" 2>&1) || true
+  case "$SPCTL" in
+    *"source=Notarized Developer ID"*) echo "    Gatekeeper: accepted, notarised" ;;
+    *) echo "Gatekeeper does not accept $APP:" >&2
+       printf '%s\n' "$SPCTL" | sed 's/^/    /' >&2; exit 1 ;;
+  esac
+  publish
+  exit 0
 fi
 
 # --- build ------------------------------------------------------------------
@@ -150,18 +215,4 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 echo "==> Gatekeeper assessment"
 spctl -a -vvv -t install "$APP" 2>&1 | sed 's/^/    /'
 
-# --- publish ----------------------------------------------------------------
-echo "==> publishing $TAG"
-git rev-parse "$TAG" >/dev/null 2>&1 || git tag -a "$TAG" -m "Ambient $VERSION"
-git push origin "$TAG"
-gh release create "$TAG" "$ZIP" \
-  --title "Ambient $VERSION" \
-  --notes "Signed and notarized. Download, unzip, move to /Applications, open.
-
-Models are bundled — no fetch-models.sh, no setup needed.
-
-On first launch macOS asks for System Audio Recording and Microphone. Both are
-required: the first is the meeting audio, the second is you."
-
-echo
-echo "done: $(gh release view "$TAG" --json url -q .url)"
+publish
