@@ -6,7 +6,8 @@
 //! channel, against 0.000 for the launch path that genuinely lacks the grant.
 //!
 //! Nothing here reaches into the capture layer. The worker runs the same
-//! blocking `session::record_into` the CLI's `record` wraps, and the two halves
+//! blocking `session::capture_into` — the first half of what the CLI's `record`
+//! runs; the second half goes to the transcription queue — and the two halves
 //! talk through the `STOP` sentinel and `status` file that already existed for
 //! the detached bundle launch — which turn out to be exactly the interface a
 //! GUI wants.
@@ -110,6 +111,12 @@ struct Ivars {
     /// from the phase on purpose: the phase is `Idle` while this works, which
     /// is what lets the next call be recorded while the last is transcribed.
     queue: RefCell<Queue>,
+    /// A transcript that failed while the phase was busy with something
+    /// else. `Failed` is entered only from `Idle`, and the banner is drawn
+    /// only there, so a failure that lands mid-recording waits here and is
+    /// applied on the first idle tick — rather than being a log line the
+    /// user never sees.
+    pending_failure: RefCell<Option<(PathBuf, anyhow::Error)>>,
     log: PathBuf,
     /// The session browser — and, since the settings page moved into it, the
     /// app's only window. Held across opens so it and the settings bridge
@@ -379,7 +386,7 @@ impl Delegate {
         std::thread::spawn(move || {
             // The same blocking function the CLI runs. ProcessTap is created
             // and dropped on this thread and never moves.
-            tx.send(crate::session::record_into(
+            tx.send(crate::session::capture_into(
                 &worker,
                 None,
                 &[],
@@ -602,12 +609,25 @@ impl Delegate {
                 Ok(_) => self.log(&format!("transcript written: {}", dir.display())),
                 Err(e) => {
                     self.fail(&format!("transcribing {}", dir.display()), &e);
-                    self.ivars()
-                        .phase
-                        .transition(|p| (p.transcript_failed(dir, &e), ()));
+                    // Held rather than applied: the phase may be busy with
+                    // the next recording. The newest failure wins the slot;
+                    // the log and each session's `status` file keep the rest.
+                    *self.ivars().pending_failure.borrow_mut() = Some((dir, e));
                 }
             }
             self.render();
+        }
+
+        // Apply a held failure on the first idle tick, so it is drawn the
+        // way a capture failure is and can be dismissed the same way.
+        if self.ivars().phase.snapshot().kind == PhaseKind::Idle {
+            let held = self.ivars().pending_failure.borrow_mut().take();
+            if let Some((dir, e)) = held {
+                self.ivars()
+                    .phase
+                    .transition(|p| (p.transcript_failed(dir, &e), ()));
+                self.render();
+            }
         }
 
         // A deferred quit is answered once nothing is left to wait for: no
@@ -678,6 +698,7 @@ pub fn run() -> anyhow::Result<()> {
         queue: RefCell::new(Queue::spawn(|dir, meter| {
             crate::session::transcribe_session(dir, None, Some(meter.clone()))
         })),
+        pending_failure: RefCell::new(None),
         // Launched from Finder there is nowhere for stderr to go, so keep our
         // own log — the last failure was invisible for exactly this reason.
         log: log_path(),

@@ -55,13 +55,21 @@ Everything downstream of it can wait.
 - The phase's `Transcribing` variant is now `Stopping`: stop signalled, audio
   still being written, seconds not minutes. Transcription is not a phase.
 - A crash between capture and transcript leaves audio on disk with no
-  transcript. The app re-queues every such session at launch
-  (`captured_awaiting_transcript`), so the state can exist but cannot persist.
+  transcript. The app re-queues every session with `session.json` and no
+  `transcript.md` at launch (`captured_awaiting_transcript`), so the state
+  can exist but cannot persist. That rule ignores `raw.jsonl` on purpose — a
+  transcriber that died after creating it must be re-run, not skipped — and
+  so the one case it gets wrong is a CLI `record` still transcribing in
+  another process at the moment the app launches, which is accepted.
 - Quit waits for the queue as it already waited for the capture. The watcher
   does not start a recording while a quit is pending.
+- A transcript that fails while the app is busy with the next recording is
+  held and applied on the first idle tick, so it is drawn and dismissable
+  like a capture failure; the session's `status` file says `failed: …` from
+  the moment it happens.
 - `transcribe_session` creates `raw.jsonl` before it loads the models, so the
-  window in which a second process could claim the same session is
-  milliseconds rather than the seconds a model load takes.
+  window's "Interrupted" test — which reads its absence — is right within
+  milliseconds of transcription starting rather than after a model load.
 
 ## Confirmation
 

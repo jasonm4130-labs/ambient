@@ -206,7 +206,10 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(5));
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(q.summary().as_deref(), Some("Separating voices a · 2 waiting"));
+        assert_eq!(
+            q.summary().as_deref(),
+            Some("Separating voices a · 2 waiting")
+        );
         gate.send(Ok(())).unwrap();
         let _ = wait(&mut q);
         assert!(q.summary().unwrap().ends_with("b · 1 waiting"));

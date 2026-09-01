@@ -730,6 +730,24 @@ pub fn transcribe_session(
     model_dir: Option<&str>,
     meter: Option<std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
+    let r = transcribe_inner(dir, model_dir, meter.as_ref());
+    if let Err(e) = &r {
+        // The session's own record of what went wrong. The menu bar app may
+        // be recording something else when this lands and have nowhere to
+        // draw it yet; the file is there whenever the session is opened.
+        std::fs::write(dir.join(STATUS_FILE), format!("failed: {e:#}\n")).ok();
+        if let Some(m) = &meter {
+            m.set_phase(MeterPhase::Failed);
+        }
+    }
+    r
+}
+
+fn transcribe_inner(
+    dir: &Path,
+    model_dir: Option<&str>,
+    meter: Option<&std::sync::Arc<Meter>>,
+) -> Result<PathBuf> {
     let (asr_dir, vad_path) = model_paths(model_dir)?;
     let cfg = crate::config::Config::load();
     let audio = dir.join("audio");
@@ -739,11 +757,9 @@ pub fn transcribe_session(
         m.set_phase(MeterPhase::Transcribing);
     }
 
-    // Created before the models load, not after: its existence is what marks
-    // a session as claimed by a transcriber, and the window's "Interrupted"
-    // test and the launch-time re-queue both read its absence. The seconds a
-    // model load takes are a window in which a second process could claim
-    // the same session otherwise.
+    // Created before the models load, not after: its existence is what
+    // separates a session being transcribed from one killed mid-capture in
+    // the window's "Interrupted" test, and a model load takes seconds.
     let raw_path = dir.join("raw.jsonl");
     let mut raw = std::fs::File::create(&raw_path)?;
     let mut lines = 0usize;
@@ -853,18 +869,22 @@ pub fn latest(root: &Path) -> Option<PathBuf> {
 /// first — what a crash mid-queue leaves behind, and what the menu bar app
 /// re-queues at launch.
 ///
-/// The shape is `session.json` present and `raw.jsonl` absent. Only
-/// [`capture_into`] produces it: sessions from before the split wrote
-/// `session.json` after ASR, so they always have both or neither. A native
-/// scratch wav still growing means a capture is in flight in another process
-/// and the session is not ours to touch.
+/// The shape is `session.json` present and `transcript.md` absent, with
+/// audio to transcribe. `raw.jsonl` is deliberately *not* consulted: a crash
+/// after the transcriber created it but before it finished would otherwise
+/// leave the session excluded for ever, and `transcript.md` is the last thing
+/// written — the same test [`sweep_audio`] uses for "finished". Sessions from
+/// before the split wrote `session.json` after ASR, so they qualify only if
+/// they were killed in that window, which is exactly when they should. A
+/// native scratch wav still growing means a capture is in flight in another
+/// process and the session is not ours to touch.
 pub fn captured_awaiting_transcript(root: &Path) -> Vec<PathBuf> {
     list(root)
         .into_iter()
         .filter(|dir| {
             let audio = dir.join("audio");
             dir.join("session.json").is_file()
-                && !dir.join("raw.jsonl").exists()
+                && !dir.join("transcript.md").is_file()
                 && (audio.join("room.wav").is_file() || audio.join("call.wav").is_file())
                 && !is_growing(&audio.join("room.native.wav"))
         })
@@ -1939,10 +1959,27 @@ mod tests {
         };
         // Captured by the new half, never transcribed: the one to re-queue.
         let queued = mk("2026-09-02T0900", &["audio/room.wav", "session.json"]);
-        // Claimed by a transcriber (raw.jsonl exists), whether or not it finished.
-        mk("2026-09-02T1000", &["audio/room.wav", "session.json", "raw.jsonl"]);
-        // Finished long ago, audio swept.
-        mk("2026-09-02T1100", &["session.json", "raw.jsonl", "transcript.md"]);
+        // A transcriber started (raw.jsonl exists) and died before the
+        // transcript: re-queued too, or the session is stuck for ever.
+        let half = mk(
+            "2026-09-02T1000",
+            &["audio/room.wav", "session.json", "raw.jsonl"],
+        );
+        // Finished, audio swept.
+        mk(
+            "2026-09-02T1100",
+            &["session.json", "raw.jsonl", "transcript.md"],
+        );
+        // Finished, audio still present.
+        mk(
+            "2026-09-02T1130",
+            &[
+                "audio/room.wav",
+                "session.json",
+                "raw.jsonl",
+                "transcript.md",
+            ],
+        );
         // Killed mid-capture: no session.json, so not ours to guess about.
         mk("2026-09-02T1200", &["audio/room.wav"]);
         // Still being captured by another process.
@@ -1951,7 +1988,7 @@ mod tests {
             &["audio/room.wav", "audio/room.native.wav", "session.json"],
         );
 
-        assert_eq!(captured_awaiting_transcript(&root), vec![queued]);
+        assert_eq!(captured_awaiting_transcript(&root), vec![queued, half]);
         std::fs::remove_dir_all(&root).ok();
     }
 }
