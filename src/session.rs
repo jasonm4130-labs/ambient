@@ -421,7 +421,13 @@ pub struct TranscribeLock(PathBuf);
 
 impl Drop for TranscribeLock {
     fn drop(&mut self) {
-        std::fs::remove_file(&self.0).ok();
+        // Only a lock that still names this process. If it was ever judged
+        // stale and taken over, the file is somebody else's now.
+        let ours = std::fs::read_to_string(&self.0)
+            .is_ok_and(|s| s.trim() == std::process::id().to_string());
+        if ours {
+            std::fs::remove_file(&self.0).ok();
+        }
     }
 }
 
@@ -441,33 +447,39 @@ fn live_transcriber(dir: &Path) -> Option<u32> {
 
 /// Take the transcription lock for `dir`, or say who holds it. A stale lock
 /// from a dead process is taken over; a live one is refused.
+///
+/// The pid is written to a private file first and hard-linked into place:
+/// `link` fails if the lock exists and otherwise publishes a file that
+/// already holds its contents, so no reader can ever see an empty lock and
+/// mistake a live claim for a stale one.
 pub fn claim_transcription(dir: &Path) -> Result<TranscribeLock> {
     let path = dir.join(TRANSCRIBING_LOCK);
-    for _ in 0..2 {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut f) => {
-                write!(f, "{}", std::process::id())?;
-                return Ok(TranscribeLock(path));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                if let Some(pid) = live_transcriber(dir) {
-                    bail!(
-                        "{} is being transcribed by another process (pid {pid})",
-                        dir.display()
-                    );
+    let pid = std::process::id();
+    let staging = dir.join(format!("{TRANSCRIBING_LOCK}.{pid}"));
+    std::fs::write(&staging, pid.to_string())
+        .with_context(|| format!("writing {}", staging.display()))?;
+    let result = (|| {
+        for _ in 0..2 {
+            match std::fs::hard_link(&staging, &path) {
+                Ok(()) => return Ok(TranscribeLock(path.clone())),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if let Some(holder) = live_transcriber(dir) {
+                        bail!(
+                            "{} is being transcribed by another process (pid {holder})",
+                            dir.display()
+                        );
+                    }
+                    // Dead holder: clear it and try once more. A second
+                    // AlreadyExists means someone else won the retry.
+                    std::fs::remove_file(&path).ok();
                 }
-                // Dead holder: clear it and try once more. A second
-                // AlreadyExists means someone else won the retry.
-                std::fs::remove_file(&path).ok();
+                Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
             }
-            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
         }
-    }
-    bail!("{} was claimed by another transcriber", dir.display())
+        bail!("{} was claimed by another transcriber", dir.display())
+    })();
+    std::fs::remove_file(&staging).ok();
+    result
 }
 
 /// Claim a directory under the sessions folder and record into it.
@@ -2080,10 +2092,27 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let first = claim_transcription(&dir).unwrap();
+        // Published with its contents, and the staging file is gone.
+        assert_eq!(
+            std::fs::read_to_string(dir.join(TRANSCRIBING_LOCK)).unwrap(),
+            std::process::id().to_string()
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let refused = claim_transcription(&dir).unwrap_err().to_string();
         assert!(refused.contains("another process"), "{refused}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         drop(first);
         assert!(!dir.join(TRANSCRIBING_LOCK).exists(), "dropping releases");
+
+        // A lock that was taken over is not ours to remove on drop.
+        std::fs::write(dir.join(TRANSCRIBING_LOCK), "2147483646").unwrap();
+        let mine = TranscribeLock(dir.join(TRANSCRIBING_LOCK));
+        drop(mine);
+        assert!(
+            dir.join(TRANSCRIBING_LOCK).exists(),
+            "drop must not remove a lock naming another pid"
+        );
+        std::fs::remove_file(dir.join(TRANSCRIBING_LOCK)).unwrap();
 
         std::fs::write(dir.join(TRANSCRIBING_LOCK), "2147483646").unwrap();
         let taken = claim_transcription(&dir).expect("a dead holder's lock is stale");
