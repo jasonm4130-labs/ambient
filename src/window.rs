@@ -46,8 +46,8 @@ use objc2_app_kit::{
     NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontWeightMedium,
     NSForegroundColorAttributeName, NSLevelIndicator, NSLevelIndicatorStyle, NSLineBreakMode,
     NSMenu, NSMenuItem, NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSPasteboard,
-    NSPasteboardTypeString, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSSplitView, NSSplitViewDividerStyle, NSTableColumn, NSTableView, NSTableViewDataSource,
+    NSPasteboardTypeString, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl, NSSplitView,
+    NSSplitViewDividerStyle, NSTableColumn, NSTableView, NSTableViewDataSource,
     NSTableViewDelegate, NSTableViewStyle, NSTextField, NSTextView,
     NSUserInterfaceItemIdentification, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     NSWorkspace,
@@ -1123,10 +1123,9 @@ impl SessionList {
                 .borrow()
                 .iter()
                 .position(|r| match (r, &want) {
-                    (
-                        Row::Session { id, .. } | Row::Live { id, .. },
-                        Selection::Session(w),
-                    ) => id == w,
+                    (Row::Session { id, .. } | Row::Live { id, .. }, Selection::Session(w)) => {
+                        id == w
+                    }
                     (Row::Settings, Selection::Settings) => true,
                     _ => false,
                 })
@@ -1373,7 +1372,12 @@ impl SessionList {
             pane.addSubview(&field);
             pane.addSubview(&combo);
             pane.addSubview(&button);
-            rows.push(NamingRow { field, combo, button, label });
+            rows.push(NamingRow {
+                field,
+                combo,
+                button,
+                label,
+            });
         }
         *self.ivars().naming.borrow_mut() = rows;
     }
@@ -1386,7 +1390,9 @@ impl SessionList {
         let v = &self.ivars().views;
         v.separate.setHidden(chosen.is_none());
         v.separate_note.setHidden(true);
-        let Some((dir, _, detail)) = chosen else { return };
+        let Some((dir, _, detail)) = chosen else {
+            return;
+        };
 
         let diarizing = self.ivars().diarizing.borrow();
         let diarizing_this = diarizing.as_ref().is_some_and(|(d, _)| d == dir);
@@ -1399,7 +1405,10 @@ impl SessionList {
         let (enabled, note) = if diarizing_this {
             (false, String::new())
         } else if diarizing_other {
-            (false, "Another session is being processed right now.".to_string())
+            (
+                false,
+                "Another session is being processed right now.".to_string(),
+            )
         } else if swept {
             (
                 false,
@@ -1408,7 +1417,10 @@ impl SessionList {
                     .to_string(),
             )
         } else if !detail.has_transcript {
-            (false, "No transcript to attribute speakers to yet.".to_string())
+            (
+                false,
+                "No transcript to attribute speakers to yet.".to_string(),
+            )
         } else {
             (true, String::new())
         };
@@ -1463,11 +1475,15 @@ impl SessionList {
         self.ivars().laid_out.set(want);
 
         let (w, h) = (b.size.width, b.size.height);
-        v.banner
-            .setFrame(NSRect::new(NSPoint::new(0.0, h - banner_h), NSSize::new(w, banner_h)));
+        v.banner.setFrame(NSRect::new(
+            NSPoint::new(0.0, h - banner_h),
+            NSSize::new(w, banner_h),
+        ));
         let bar_y = h - banner_h - BAR_HEIGHT - INSET / 2.0;
-        v.bar
-            .setFrame(NSRect::new(NSPoint::new(0.0, bar_y), NSSize::new(w, BAR_HEIGHT)));
+        v.bar.setFrame(NSRect::new(
+            NSPoint::new(0.0, bar_y),
+            NSSize::new(w, BAR_HEIGHT),
+        ));
         v.scroll.setFrame(NSRect::new(
             NSPoint::new(0.0, footer_h),
             NSSize::new(w, (bar_y - footer_h).max(0.0)),
@@ -1479,8 +1495,10 @@ impl SessionList {
         // voices.
         v.separate.sizeToFit();
         let sep_w = v.separate.frame().size.width;
-        v.separate
-            .setFrame(NSRect::new(NSPoint::new(INSET, 4.0), NSSize::new(sep_w, BAR_HEIGHT - 8.0)));
+        v.separate.setFrame(NSRect::new(
+            NSPoint::new(INSET, 4.0),
+            NSSize::new(sep_w, BAR_HEIGHT - 8.0),
+        ));
         v.separate_note.setFrame(NSRect::new(
             NSPoint::new(INSET * 2.0 + sep_w, 0.0),
             NSSize::new((w - INSET * 3.0 - sep_w).max(0.0), FOOTER_HEIGHT),
@@ -1515,8 +1533,10 @@ impl SessionList {
         // The live view fills everything under the banner, and stacks its own
         // children downward from the top of that.
         let live_height = (h - banner_h).max(0.0);
-        v.live
-            .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, live_height)));
+        v.live.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(w, live_height),
+        ));
         {
             let inner = w - INSET * 4.0;
             let mut y = live_height - 56.0;
@@ -1630,7 +1650,10 @@ impl MainWindow {
         // --- sidebar ---------------------------------------------------
         let table = NSTableView::initWithFrame(
             NSTableView::alloc(mtm),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDEBAR_WIDTH, content_h)),
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(SIDEBAR_WIDTH, content_h),
+            ),
         );
         let column =
             NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), ns_string!("session"));
@@ -1644,7 +1667,10 @@ impl MainWindow {
 
         let sidebar = NSScrollView::initWithFrame(
             NSScrollView::alloc(mtm),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDEBAR_WIDTH, content_h)),
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(SIDEBAR_WIDTH, content_h),
+            ),
         );
         sidebar.setHasVerticalScroller(true);
         sidebar.setAutohidesScrollers(true);
@@ -1659,7 +1685,9 @@ impl MainWindow {
         let banner = NSTextField::wrappingLabelWithString(ns_string!(""), mtm);
         banner.setSelectable(true);
         banner.setDrawsBackground(true);
-        banner.setBackgroundColor(Some(&NSColor::systemYellowColor().colorWithAlphaComponent(0.22)));
+        banner.setBackgroundColor(Some(
+            &NSColor::systemYellowColor().colorWithAlphaComponent(0.22),
+        ));
         banner.setTextColor(Some(&NSColor::labelColor()));
         banner.setMaximumNumberOfLines(3);
         banner.setHidden(true);
@@ -2139,7 +2167,11 @@ fn menu_item(
     i
 }
 
-fn submenu(mtm: MainThreadMarker, title: &str, items: Vec<Retained<NSMenuItem>>) -> Retained<NSMenu> {
+fn submenu(
+    mtm: MainThreadMarker,
+    title: &str,
+    items: Vec<Retained<NSMenuItem>>,
+) -> Retained<NSMenu> {
     let m = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title));
     for i in items {
         m.addItem(&i);
@@ -2168,13 +2200,31 @@ pub fn install_main_menu(mtm: MainThreadMarker) {
         mtm,
         "Ambient",
         vec![
-            menu_item(mtm, "About Ambient", Some(sel!(orderFrontStandardAboutPanel:)), "", None),
+            menu_item(
+                mtm,
+                "About Ambient",
+                Some(sel!(orderFrontStandardAboutPanel:)),
+                "",
+                None,
+            ),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, "Settings…", Some(sel!(openSettings:)), ",", None),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, "Hide Ambient", Some(sel!(hide:)), "h", None),
-            menu_item(mtm, "Hide Others", Some(sel!(hideOtherApplications:)), "h", Some(cmd_opt)),
-            menu_item(mtm, "Show All", Some(sel!(unhideAllApplications:)), "", None),
+            menu_item(
+                mtm,
+                "Hide Others",
+                Some(sel!(hideOtherApplications:)),
+                "h",
+                Some(cmd_opt),
+            ),
+            menu_item(
+                mtm,
+                "Show All",
+                Some(sel!(unhideAllApplications:)),
+                "",
+                None,
+            ),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, "Quit Ambient", Some(sel!(terminate:)), "q", None),
         ],
@@ -2199,8 +2249,20 @@ pub fn install_main_menu(mtm: MainThreadMarker) {
         mtm,
         "File",
         vec![
-            menu_item(mtm, "Copy Markdown", Some(sel!(copyMarkdown:)), "c", Some(cmd_shift)),
-            menu_item(mtm, "Reveal in Finder", Some(sel!(revealInFinder:)), "r", Some(cmd_shift)),
+            menu_item(
+                mtm,
+                "Copy Markdown",
+                Some(sel!(copyMarkdown:)),
+                "c",
+                Some(cmd_shift),
+            ),
+            menu_item(
+                mtm,
+                "Reveal in Finder",
+                Some(sel!(revealInFinder:)),
+                "r",
+                Some(cmd_shift),
+            ),
             NSMenuItem::separatorItem(mtm),
             menu_item(mtm, "Close", Some(sel!(performClose:)), "w", None),
         ],
@@ -2213,7 +2275,13 @@ pub fn install_main_menu(mtm: MainThreadMarker) {
             menu_item(mtm, "Minimize", Some(sel!(performMiniaturize:)), "m", None),
             menu_item(mtm, "Zoom", Some(sel!(performZoom:)), "", None),
             NSMenuItem::separatorItem(mtm),
-            menu_item(mtm, "Bring All to Front", Some(sel!(arrangeInFront:)), "", None),
+            menu_item(
+                mtm,
+                "Bring All to Front",
+                Some(sel!(arrangeInFront:)),
+                "",
+                None,
+            ),
         ],
     );
 
@@ -2341,7 +2409,11 @@ mod tests {
         assert!(!d.interrupted, "subtitle was {}", d.subtitle);
         assert!(d.completed);
         assert!(!d.queued);
-        assert!(d.subtitle.contains("no speech recognised"), "{}", d.subtitle);
+        assert!(
+            d.subtitle.contains("no speech recognised"),
+            "{}",
+            d.subtitle
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -2362,7 +2434,11 @@ mod tests {
         assert!(d.queued);
         assert!(!d.interrupted, "subtitle was {}", d.subtitle);
         assert!(!d.completed);
-        assert!(d.subtitle.contains("waiting to transcribe"), "{}", d.subtitle);
+        assert!(
+            d.subtitle.contains("waiting to transcribe"),
+            "{}",
+            d.subtitle
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -2417,7 +2493,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("edits.jsonl"), b"a\n").unwrap();
         let before = stamp_of(&dir);
-        filetime_set(&dir.join("edits.jsonl"), std::time::SystemTime::now() + std::time::Duration::from_secs(5));
+        filetime_set(
+            &dir.join("edits.jsonl"),
+            std::time::SystemTime::now() + std::time::Duration::from_secs(5),
+        );
         assert!(stamp_of(&dir) > before);
         std::fs::remove_dir_all(&root).ok();
     }
@@ -2488,8 +2567,14 @@ mod tests {
         assert_eq!(shot.clock(), "01:05");
         assert!((shot.room - 0.31).abs() < 1e-9, "room: {}", shot.room);
         assert!((shot.call - 0.87).abs() < 1e-9, "call: {}", shot.call);
-        assert!(shot.stoppable, "a Recording phase is the one Stop is legal in");
-        assert_eq!(shot.id, live.dir.path().file_name().unwrap().to_string_lossy());
+        assert!(
+            shot.stoppable,
+            "a Recording phase is the one Stop is legal in"
+        );
+        assert_eq!(
+            shot.id,
+            live.dir.path().file_name().unwrap().to_string_lossy()
+        );
 
         // A mic that goes quiet falls back within a second, because the worker
         // resets the interval peak every time it writes one. Reading the

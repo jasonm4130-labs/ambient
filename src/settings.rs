@@ -390,8 +390,7 @@ impl SettingsPane {
     pub fn describe(&self) -> String {
         let f = self.web.frame();
         // Both are plain property reads on a view this thread owns.
-        let (progress, loading) =
-            unsafe { (self.web.estimatedProgress(), self.web.isLoading()) };
+        let (progress, loading) = unsafe { (self.web.estimatedProgress(), self.web.isLoading()) };
         format!(
             "{}x{} loaded {:.0}%{}",
             f.size.width as i64,

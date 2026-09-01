@@ -24,8 +24,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -203,7 +203,9 @@ fn main() {
             8 => {
                 println!("\n-- recording A finished --");
                 let f = live.borrow_mut().take().expect("a recording is running");
-                f.meter.phase.store(MeterPhase::Done as u8, Ordering::Relaxed);
+                f.meter
+                    .phase
+                    .store(MeterPhase::Done as u8, Ordering::Relaxed);
                 *phase.borrow_mut() = f.phase.finished(Ok(PathBuf::from("/dev/null")));
             }
             9 => {
