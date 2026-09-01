@@ -169,7 +169,6 @@ fn main() -> Result<()> {
         }
         Some("probe") => {
             ambient::probe::run()?;
-            ambient::probe::probe_ort();
             Ok(())
         }
         Some("transcribe") => {
