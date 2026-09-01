@@ -43,8 +43,20 @@ returns to `Idle` the moment capture finishes, and the session goes onto
 through the delegate's tick. One transcription at a time, never blocking a new
 recording.
 
+Be precise about what that guarantees. During back-to-back meetings one ASR
+pass *does* run beside the live tap; the serial queue rules out two. What
+protects the capture is the ring and the scheduler, not the queue: the tap's
+ring holds 30 s of mic and 60 s of call audio before anything is overwritten,
+the drain loop wakes every 200 ms, and the queue thread runs at background
+QoS so the drain loop wins every contest for a core. Measured on the M5 with
+`drainbench` — the same 200 ms loop, with Parakeet decoding in a loop on a
+background-QoS thread: worst overshoot 5.15 ms under ASR against 5.02 ms
+idle, p99 5.11 ms against 5.02 ms, while ASR still ran at 37× realtime. The
+budget is 30 000 ms. That is three orders of magnitude of headroom, which is
+why the queue is not paused during capture.
+
 The one fact that decided it: the tap is the only thing that cannot be redone.
-Everything downstream of it can wait.
+Everything downstream of it can wait — and, measured, it does not even need to.
 
 ## Consequences
 
@@ -80,6 +92,8 @@ Everything downstream of it can wait.
 failure reporting, and a dead worker. `state::tests` cover the quit table with
 a busy queue and where a failed transcript may enter `Failed`.
 `menubar::tests::a_session_being_transcribed_does_not_deafen_the_watcher` is
-the issue itself. `windowcheck` still walks a recording through Stop. What no
-check covers is two real recordings back to back in the bundle; that is a
-person with Zoom open.
+the issue itself. `windowcheck` still walks a recording through Stop.
+`cargo run --release --bin drainbench` re-measures the drain loop under ASR
+and fails if the worst overshoot approaches the ring; run it on a new machine
+or after changing the queue thread's QoS. What no check covers is two real
+recordings back to back in the bundle; that is a person with Zoom open.

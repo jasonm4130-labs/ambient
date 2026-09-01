@@ -57,6 +57,14 @@ impl Queue {
         let (tx, rx) = channel::<Job>();
         let (done_tx, done) = channel::<Outcome>();
         std::thread::spawn(move || {
+            // Background QoS: during back-to-back meetings this thread runs
+            // ASR beside a live capture, and the capture's drain loop must
+            // win every contest for a core. `drainbench` measures what the
+            // loop actually loses with this set.
+            #[cfg(target_os = "macos")]
+            unsafe {
+                libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
+            }
             while let Ok(job) = rx.recv() {
                 let r = work(&job.dir, &job.meter);
                 if done_tx.send((job.dir, r)).is_err() {
