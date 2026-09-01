@@ -73,3 +73,6 @@ the record lands unplaced in the nav, which is nearly as good as unwritten.
 | 0010 | [Store names, never voiceprints](0010-names-not-voiceprints.md) |
 | 0011 | [Sweep track audio after 7 days](0011-audio-retention-sweep.md) |
 | 0012 | [CI verifies assembly; behaviour is verified by dedicated binaries](0012-ci-verifies-assembly.md) |
+| 0013 | [Nimbus and Cirrus, not mdBook](0013-nimbus-over-mdbook.md) |
+| 0014 | [Developer ID and notarisation, not a self-signed identity](0014-developer-id-and-notarization.md) |
+| 0015 | [Capture and transcription are separate work, joined by a serial queue](0015-capture-and-transcription-are-separate.md) |

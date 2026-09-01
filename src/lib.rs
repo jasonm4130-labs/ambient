@@ -6,6 +6,7 @@ pub mod fbank;
 pub mod features;
 pub mod menubar;
 pub mod probe;
+pub mod queue;
 pub mod resample;
 pub mod roster;
 pub mod session;

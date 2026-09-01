@@ -81,7 +81,7 @@ The split is by what you are doing, not by what the pages are about.
 | --- | --- |
 | [docs/using/](docs/using/index.md) | Build it, run it, read the transcript, know what is kept on disk. Start here. |
 | [docs/developing/](docs/developing/index.md) | What the pieces are and why each is shaped that way, plus porting, CI and the docs build. |
-| [docs/adr/](docs/adr/README.md) | Thirteen decision records — the alternatives that were live, and the check that fails if the decision drifts. |
+| [docs/adr/](docs/adr/README.md) | Fifteen decision records — the alternatives that were live, and the check that fails if the decision drifts. |
 
 ## Still open
 

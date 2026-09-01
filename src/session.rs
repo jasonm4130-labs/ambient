@@ -276,7 +276,7 @@ impl Meter {
         MeterPhase::from_u8(self.phase.load(Ordering::Relaxed))
     }
 
-    fn set_phase(&self, p: MeterPhase) {
+    pub(crate) fn set_phase(&self, p: MeterPhase) {
         self.phase.store(p as u8, Ordering::Relaxed);
     }
 
@@ -419,14 +419,15 @@ pub fn record(
     record_into(&dir, name, bundles, model_dir, seconds, None)
 }
 
-/// Record into a directory that has already been claimed. This creates no
-/// session directory of its own, so "record a second session into an occupied
-/// one" is not expressible by any caller, present or future.
+/// Record into a directory that has already been claimed, then transcribe
+/// it, blocking for both. This creates no session directory of its own, so
+/// "record a second session into an occupied one" is not expressible by any
+/// caller, present or future.
 ///
-/// `name` is the human title stored in `session.json`; the id is the claimed
-/// directory's own name and comes from `dir`. `meter`, when given, is written
-/// alongside the status file for a live UI to read without touching the
-/// filesystem.
+/// The two halves are [`capture_into`] and [`transcribe_session`]. The CLI
+/// runs them back to back through this; the menu bar app runs the first on
+/// the capture thread and hands the second to its transcription queue, so a
+/// new recording can start while the last one is still being transcribed.
 pub fn record_into(
     dir: &SessionDir,
     name: Option<&str>,
@@ -435,9 +436,14 @@ pub fn record_into(
     seconds: Option<u64>,
     meter: Option<std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
-    let mut guard = ClaimGuard(Some(dir.path()));
-    let id = dir.id();
-    let dir = dir.path();
+    let path = capture_into(dir, name, bundles, model_dir, seconds, meter.clone())?;
+    transcribe_session(&path, model_dir, meter)
+}
+
+/// Where the ASR and VAD models are, checked to exist. Called by both halves:
+/// the capture half so a missing model fails before the tap starts, and the
+/// transcription half because it is the one that loads them.
+fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
     let models = models_root()?;
     let asr_dir = match model_dir {
         Some(d) => PathBuf::from(d),
@@ -453,6 +459,29 @@ pub fn record_into(
     if !vad_path.is_file() {
         bail!("no VAD model at {}", vad_path.display());
     }
+    Ok((asr_dir, vad_path))
+}
+
+/// Capture into a claimed directory until stopped, and leave the audio on
+/// disk ready to transcribe: 16 kHz `audio/room.wav` and `audio/call.wav`,
+/// `session.json`, and `status` reading `captured`.
+///
+/// `name` is the human title stored in `session.json`; the id is the claimed
+/// directory's own name and comes from `dir`. `meter`, when given, is written
+/// alongside the status file for a live UI to read without touching the
+/// filesystem.
+pub fn capture_into(
+    dir: &SessionDir,
+    name: Option<&str>,
+    bundles: &[String],
+    model_dir: Option<&str>,
+    seconds: Option<u64>,
+    meter: Option<std::sync::Arc<Meter>>,
+) -> Result<PathBuf> {
+    let mut guard = ClaimGuard(Some(dir.path()));
+    let id = dir.id();
+    let dir = dir.path();
+    let (asr_dir, _) = model_paths(model_dir)?;
 
     // A `--app` on the command line beats the stored setting; with no flag the
     // settings window decides.
@@ -600,13 +629,17 @@ pub fn record_into(
     let (mic_real, _, call_real, call_total) = tap.real_seconds(&drain);
     drop(tap);
     std::fs::remove_file(&stop_file).ok();
-    std::fs::write(&status_file, "transcribing\n").ok();
+    // `Done` here means the *capture* is done: the tap is gone and the only
+    // work left on this thread is writing what it heard. The window draws it
+    // as "Finishing", which is the honest word for the seconds of resampling
+    // that follow a Stop.
+    std::fs::write(&status_file, "finishing\n").ok();
     if let Some(m) = &meter {
-        m.set_phase(MeterPhase::Transcribing);
+        m.set_phase(MeterPhase::Done);
     }
     let ended = chrono::Local::now();
     let duration_s = frames as f64 / mic_hz.max(call_hz).max(1) as f64;
-    eprintln!("\n  stopped after {duration_s:.1}s — transcribing");
+    eprintln!("\n  stopped after {duration_s:.1}s — writing audio");
     if call_total - call_real > 1.0 {
         eprintln!(
             "  the call track was idle for {:.1}s of that — padded with silence to stay \
@@ -656,16 +689,71 @@ pub fn record_into(
         std::fs::remove_file(native).ok();
     }
 
+    // Written here, at the end of the capture, rather than after ASR: the
+    // session is complete as a *recording* now, and a transcript that never
+    // arrives must not leave it looking like a capture that was killed.
+    let meta = SessionMeta {
+        id: id.clone(),
+        name: name.map(str::to_string),
+        started_at: started.to_rfc3339(),
+        ended_at: ended.to_rfc3339(),
+        duration_s,
+        device_hz: call_hz,
+        mic_hz,
+        channels: call_ch,
+        mic_channels: mic_ch,
+        apps: bundles.to_vec(),
+        model: asr_dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        warnings,
+    };
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&meta)?,
+    )?;
+    // `captured` is the one status only this half writes, and the one
+    // `captured_awaiting_transcript` looks for after a crash.
+    std::fs::write(&status_file, "captured\n").ok();
+    eprintln!("  audio written — {:.1}s", duration_s);
+    Ok(dir.to_path_buf())
+}
+
+/// Transcribe a session whose audio [`capture_into`] has already written:
+/// ASR over both tracks into `raw.jsonl`, diarisation if configured, and
+/// `transcript.md`. Runs on whichever thread calls it — the CLI's, or the
+/// menu bar app's serial transcription queue — and never beside a tap this
+/// process owns.
+pub fn transcribe_session(
+    dir: &Path,
+    model_dir: Option<&str>,
+    meter: Option<std::sync::Arc<Meter>>,
+) -> Result<PathBuf> {
+    let (asr_dir, vad_path) = model_paths(model_dir)?;
+    let cfg = crate::config::Config::load();
+    let audio = dir.join("audio");
+    let status_file = dir.join(STATUS_FILE);
+    std::fs::write(&status_file, "transcribing\n").ok();
+    if let Some(m) = &meter {
+        m.set_phase(MeterPhase::Transcribing);
+    }
+
+    // Created before the models load, not after: its existence is what marks
+    // a session as claimed by a transcriber, and the window's "Interrupted"
+    // test and the launch-time re-queue both read its absence. The seconds a
+    // model load takes are a window in which a second process could claim
+    // the same session otherwise.
+    let raw_path = dir.join("raw.jsonl");
+    let mut raw = std::fs::File::create(&raw_path)?;
+    let mut lines = 0usize;
+
     let mut vad = crate::vad::Vad::load(vad_path.to_str().unwrap())?;
     let mut rec = crate::asr::Recognizer::load(
         asr_dir
             .to_str()
             .ok_or_else(|| anyhow!("model path is not valid UTF-8"))?,
     )?;
-
-    let raw_path = dir.join("raw.jsonl");
-    let mut raw = std::fs::File::create(&raw_path)?;
-    let mut lines = 0usize;
 
     for (track, wav) in [
         (Track::Room, audio.join("room.wav")),
@@ -699,28 +787,6 @@ pub fn record_into(
     if !edits_path.exists() {
         std::fs::File::create(&edits_path)?;
     }
-
-    let meta = SessionMeta {
-        id: id.clone(),
-        name: name.map(str::to_string),
-        started_at: started.to_rfc3339(),
-        ended_at: ended.to_rfc3339(),
-        duration_s,
-        device_hz: call_hz,
-        mic_hz,
-        channels: call_ch,
-        mic_channels: mic_ch,
-        apps: bundles.to_vec(),
-        model: asr_dir
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        warnings,
-    };
-    std::fs::write(
-        dir.join("session.json"),
-        serde_json::to_string_pretty(&meta)?,
-    )?;
 
     if cfg.diarize && lines > 0 {
         std::fs::write(dir.join(STATUS_FILE), "separating voices\n").ok();
@@ -781,6 +847,28 @@ pub fn list(root: &Path) -> Vec<PathBuf> {
 /// cannot drift from the first.
 pub fn latest(root: &Path) -> Option<PathBuf> {
     list(root).pop()
+}
+
+/// Sessions whose audio was written and whose transcript never was, oldest
+/// first — what a crash mid-queue leaves behind, and what the menu bar app
+/// re-queues at launch.
+///
+/// The shape is `session.json` present and `raw.jsonl` absent. Only
+/// [`capture_into`] produces it: sessions from before the split wrote
+/// `session.json` after ASR, so they always have both or neither. A native
+/// scratch wav still growing means a capture is in flight in another process
+/// and the session is not ours to touch.
+pub fn captured_awaiting_transcript(root: &Path) -> Vec<PathBuf> {
+    list(root)
+        .into_iter()
+        .filter(|dir| {
+            let audio = dir.join("audio");
+            dir.join("session.json").is_file()
+                && !dir.join("raw.jsonl").exists()
+                && (audio.join("room.wav").is_file() || audio.join("call.wav").is_file())
+                && !is_growing(&audio.join("room.native.wav"))
+        })
+        .collect()
 }
 
 /// Delete track audio older than the retention window, leaving every transcript
@@ -1831,5 +1919,39 @@ mod tests {
     fn containment_ignores_case_and_punctuation() {
         assert!((containment("Retry-storm, gone!", "retry storm gone") - 1.0).abs() < 1e-6);
         assert!(containment("completely different words here", "retry storm gone") < 0.2);
+    }
+
+    /// What the menu bar app re-queues at launch: captured, never
+    /// transcribed, and not being written by anyone. Everything else in the
+    /// folder — finished, mid-transcription, killed mid-capture, or still
+    /// recording in another process — is left alone.
+    #[test]
+    fn only_captured_untranscribed_sessions_are_awaiting_transcript() {
+        let root = std::env::temp_dir().join(format!("ambient-awaiting-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let mk = |id: &str, files: &[&str]| {
+            let d = root.join(id);
+            std::fs::create_dir_all(d.join("audio")).unwrap();
+            for f in files {
+                std::fs::write(d.join(f), b"x").unwrap();
+            }
+            d
+        };
+        // Captured by the new half, never transcribed: the one to re-queue.
+        let queued = mk("2026-09-02T0900", &["audio/room.wav", "session.json"]);
+        // Claimed by a transcriber (raw.jsonl exists), whether or not it finished.
+        mk("2026-09-02T1000", &["audio/room.wav", "session.json", "raw.jsonl"]);
+        // Finished long ago, audio swept.
+        mk("2026-09-02T1100", &["session.json", "raw.jsonl", "transcript.md"]);
+        // Killed mid-capture: no session.json, so not ours to guess about.
+        mk("2026-09-02T1200", &["audio/room.wav"]);
+        // Still being captured by another process.
+        mk(
+            "2026-09-02T1300",
+            &["audio/room.wav", "audio/room.native.wav", "session.json"],
+        );
+
+        assert_eq!(captured_awaiting_transcript(&root), vec![queued]);
+        std::fs::remove_dir_all(&root).ok();
     }
 }

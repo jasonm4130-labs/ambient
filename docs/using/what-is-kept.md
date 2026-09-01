@@ -25,27 +25,34 @@ stateDiagram-v2
     Armed --> Recording: Start Recording, from the menu
     Idle --> Recording: Start Recording, from the menu
     Idle --> Recording: a watched app starts audio<br/>and ask_before_recording is off
-    Recording --> Transcribing: Stop
+    Recording --> Stopping: Stop
     Recording --> Recording: Stop failed
-    Transcribing --> Idle: finished, transcript written
-    Transcribing --> Failed: finished with an error
+    Stopping --> Idle: audio written, transcript queued
+    Stopping --> Failed: the capture failed
     Failed --> Idle: dismissed
     Failed --> Armed: a watched app starts audio
 
     note right of Armed
         An empty apps list arms on nothing.
-        Quit from Recording or Transcribing
-        is deferred, not refused: the app
-        finishes the transcript and then quits.
+        Quit from Recording or Stopping, or
+        with transcripts still queued, is
+        deferred, not refused: the app finishes
+        the outstanding work and then quits.
     end note
 ```
 
-Two of those edges are worth reading twice. A **stop that fails** leaves the
+Three of those edges are worth reading twice. A **stop that fails** leaves the
 phase at `Recording`, because that is the honest state — the worker really is
 still recording, so Stop stays enabled and Start stays disabled rather than the
-app advancing past a capture it never stopped. And `Failed` is watched exactly
+app advancing past a capture it never stopped. `Failed` is watched exactly
 like `Idle`: a failure nobody has dismissed does not stop the next call being
-noticed.
+noticed. And **transcription is not a state at all**. `Stopping` lasts the
+seconds it takes to write the audio; the transcript is then written by a
+queue, one session at a time, while the app sits at `Idle` — so the next call
+can be recorded while the last is still being transcribed, which is what
+back-to-back meetings need. The menu shows what the queue is doing and how
+many sessions are waiting, and the icon is an hourglass until it is empty
+([ADR-0015](../adr/0015-capture-and-transcription-are-separate.md)).
 
 ## Consent: the armed state
 

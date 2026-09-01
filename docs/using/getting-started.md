@@ -108,9 +108,10 @@ kept](what-is-kept.md).
 ## The window
 
 The menu bar item is one of two surfaces and it is the smaller one. It carries
-the state — idle, armed, recording, transcribing, failed — and the consent
-items, and it is answerable without raising anything: *Record this call* and
-*Not this one* are both a click away in the menu.
+the state — idle, armed, recording, stopping, failed — a line for the
+transcription queue when one is working, and the consent items, and it is
+answerable without raising anything: *Record this call* and *Not this one* are
+both a click away in the menu.
 
 *Open Ambient*, key equivalent `0`, opens the other one. A sidebar of sessions
 newest first, a transcript beside it, and a *Tidied*/*Verbatim* toggle that

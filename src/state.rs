@@ -3,7 +3,7 @@
 //! Every transition consumes the phase and hands back the next one, so a
 //! recording cannot be left behind by a state change: either the `Live` moves
 //! into the new phase or it moves back into the old one. The two witness types
-//! from [`crate::session`] do the rest — a `Transcribing` phase cannot be
+//! from [`crate::session`] do the rest — a `Stopping` phase cannot be
 //! built without a [`StopSignalled`], and a `StopSignalled` cannot be built
 //! without having written the sentinel into a directory this process claimed.
 //!
@@ -90,16 +90,21 @@ pub enum Phase {
         live: Live,
         declined: Declined,
     },
-    /// Reachable only through [`Phase::stop`], because `StopSignalled` has no
-    /// other producer.
-    Transcribing {
+    /// Stop has been signalled and the capture worker is still finalising
+    /// the audio — seconds, not minutes. Transcription is not a phase at
+    /// all: it belongs to [`crate::queue::Queue`], so the app is `Idle` and
+    /// free to record again while it runs. Reachable only through
+    /// [`Phase::stop`], because `StopSignalled` has no other producer.
+    Stopping {
         live: Live,
         stopped: StopSignalled,
         declined: Declined,
     },
-    /// A worker came back with an error. Entered from nowhere else — a failed
-    /// *stop* stays `Recording`, because the worker really is still recording.
-    /// Left by [`Phase::dismiss`], or implicitly by arming or starting.
+    /// A worker came back with an error: the capture's, through
+    /// [`Phase::finished`], or the transcription queue's, through
+    /// [`Phase::transcript_failed`]. A failed *stop* stays `Recording`,
+    /// because the worker really is still recording. Left by
+    /// [`Phase::dismiss`], or implicitly by arming or starting.
     Failed {
         dir: Option<PathBuf>,
         error: String,
@@ -115,7 +120,7 @@ pub enum PhaseKind {
     Idle,
     Armed,
     Recording,
-    Transcribing,
+    Stopping,
     Failed,
 }
 
@@ -128,7 +133,7 @@ impl PhaseKind {
         PhaseKind::Idle,
         PhaseKind::Armed,
         PhaseKind::Recording,
-        PhaseKind::Transcribing,
+        PhaseKind::Stopping,
         PhaseKind::Failed,
     ];
 
@@ -140,7 +145,7 @@ impl PhaseKind {
             PhaseKind::Idle => "waveform",
             PhaseKind::Armed => "waveform.badge.exclamationmark",
             PhaseKind::Recording => "waveform.circle.fill",
-            PhaseKind::Transcribing => "hourglass",
+            PhaseKind::Stopping => "hourglass",
             PhaseKind::Failed => "exclamationmark.triangle",
         }
     }
@@ -182,17 +187,18 @@ pub enum Quit {
     Cancel(anyhow::Error),
 }
 
-/// The only producer of [`Quit::Later`].
-fn defer(phase: Phase) -> (Phase, Quit) {
-    match phase.live() {
-        Some(_) => {
-            let q = Quit::Later(Deferred(()));
-            (phase, q)
-        }
+/// The only producer of [`Quit::Later`]. Two things can answer a deferred
+/// quit: the capture worker this phase holds, or the transcription queue's
+/// worker when `queue_busy` says it has jobs.
+fn defer(phase: Phase, queue_busy: bool) -> (Phase, Quit) {
+    if phase.live().is_some() || queue_busy {
+        let q = Quit::Later(Deferred(()));
+        (phase, q)
+    } else {
         // Unreachable by construction, and the safe answer if it ever is not:
         // deferring with nothing to reply with is the hang this change exists
         // to remove.
-        None => (phase, Quit::Now),
+        (phase, Quit::Now)
     }
 }
 
@@ -208,7 +214,7 @@ impl Phase {
             Phase::Idle { .. } => PhaseKind::Idle,
             Phase::Armed { .. } => PhaseKind::Armed,
             Phase::Recording { .. } => PhaseKind::Recording,
-            Phase::Transcribing { .. } => PhaseKind::Transcribing,
+            Phase::Stopping { .. } => PhaseKind::Stopping,
             Phase::Failed { .. } => PhaseKind::Failed,
         }
     }
@@ -222,7 +228,7 @@ impl Phase {
 
     pub fn live(&self) -> Option<&Live> {
         match self {
-            Phase::Recording { live, .. } | Phase::Transcribing { live, .. } => Some(live),
+            Phase::Recording { live, .. } | Phase::Stopping { live, .. } => Some(live),
             _ => None,
         }
     }
@@ -232,7 +238,7 @@ impl Phase {
             Phase::Idle { declined }
             | Phase::Armed { declined, .. }
             | Phase::Recording { declined, .. }
-            | Phase::Transcribing { declined, .. }
+            | Phase::Stopping { declined, .. }
             | Phase::Failed { declined, .. } => declined,
         }
     }
@@ -242,7 +248,7 @@ impl Phase {
             Phase::Idle { declined }
             | Phase::Armed { declined, .. }
             | Phase::Recording { declined, .. }
-            | Phase::Transcribing { declined, .. }
+            | Phase::Stopping { declined, .. }
             | Phase::Failed { declined, .. } => declined,
         }
     }
@@ -251,7 +257,7 @@ impl Phase {
     pub fn app(&self) -> Option<String> {
         match self {
             Phase::Armed { app, .. } => Some(app.clone()),
-            Phase::Recording { live, .. } | Phase::Transcribing { live, .. } => live.app.clone(),
+            Phase::Recording { live, .. } | Phase::Stopping { live, .. } => live.app.clone(),
             _ => None,
         }
     }
@@ -272,7 +278,7 @@ impl Phase {
     pub fn stop(self) -> Result<Phase, (Phase, anyhow::Error)> {
         match self {
             Phase::Recording { live, declined } => match session::signal_stop(&live.dir) {
-                Ok(stopped) => Ok(Phase::Transcribing {
+                Ok(stopped) => Ok(Phase::Stopping {
                     live,
                     stopped,
                     declined,
@@ -288,7 +294,7 @@ impl Phase {
     /// and no transcript stops being drawn as "nothing happened".
     pub fn finished(self, r: anyhow::Result<PathBuf>) -> Phase {
         let (dir, declined) = match self {
-            Phase::Recording { live, declined } | Phase::Transcribing { live, declined, .. } => {
+            Phase::Recording { live, declined } | Phase::Stopping { live, declined, .. } => {
                 (Some(live.dir.path().to_path_buf()), declined)
             }
             // A result arriving in a phase that owns no worker is a caller
@@ -303,6 +309,23 @@ impl Phase {
                 at: Local::now(),
                 declined,
             },
+        }
+    }
+
+    /// The transcription queue failed a session. `Idle` becomes `Failed` so
+    /// the failure is drawn where a capture failure would be; any other phase
+    /// is left alone — a recording in progress or a call being asked about
+    /// must not be interrupted by old news, and the delegate's banner still
+    /// carries the message.
+    pub fn transcript_failed(self, dir: PathBuf, error: &anyhow::Error) -> Phase {
+        match self {
+            Phase::Idle { declined } => Phase::Failed {
+                dir: Some(dir),
+                error: format!("{error:#}"),
+                at: Local::now(),
+                declined,
+            },
+            other => other,
         }
     }
 
@@ -364,16 +387,23 @@ impl Phase {
     ///
     /// | Phase | Reply |
     /// |---|---|
-    /// | `Idle`, `Armed`, `Failed` | `NSTerminateNow` — no receiver exists to defer for |
-    /// | `Recording`, stop succeeds | → `Transcribing`, `NSTerminateLater` |
+    /// | `Idle`, `Armed`, `Failed`, queue idle | `NSTerminateNow` — nothing exists to defer for |
+    /// | `Idle`, `Armed`, `Failed`, queue busy | `NSTerminateLater` — the queue's worker answers |
+    /// | `Recording`, stop succeeds | → `Stopping`, `NSTerminateLater` |
     /// | `Recording`, stop fails | `NSTerminateCancel` — the capture keeps running |
-    /// | `Transcribing` | `NSTerminateLater` — it owns the receiver by construction |
-    pub fn on_quit(self) -> (Phase, Quit) {
+    /// | `Stopping` | `NSTerminateLater` — it owns the receiver by construction |
+    ///
+    /// `queue_busy` is whether the transcription queue still holds a job.
+    /// Quitting mid-queue finishes the outstanding work rather than
+    /// abandoning it, exactly as quitting mid-recording does.
+    pub fn on_quit(self, queue_busy: bool) -> (Phase, Quit) {
         match self {
-            Phase::Idle { .. } | Phase::Armed { .. } | Phase::Failed { .. } => (self, Quit::Now),
-            Phase::Transcribing { .. } => defer(self),
+            Phase::Idle { .. } | Phase::Armed { .. } | Phase::Failed { .. } => {
+                defer(self, queue_busy)
+            }
+            Phase::Stopping { .. } => defer(self, queue_busy),
             Phase::Recording { .. } => match self.stop() {
-                Ok(next) => defer(next),
+                Ok(next) => defer(next, queue_busy),
                 Err((back, e)) => (back, Quit::Cancel(e)),
             },
         }
@@ -505,7 +535,7 @@ mod tests {
         let next = phase
             .stop()
             .unwrap_or_else(|(_, e)| panic!("stop failed: {e}"));
-        assert_eq!(next.kind(), PhaseKind::Transcribing);
+        assert_eq!(next.kind(), PhaseKind::Stopping);
         assert!(dir.join(session::STOP_FILE).is_file());
         std::fs::remove_dir_all(&root).ok();
     }
@@ -526,7 +556,7 @@ mod tests {
                 declined: Declined::default(),
             },
         ] {
-            let (after, q) = phase.on_quit();
+            let (after, q) = phase.on_quit(false);
             assert!(
                 matches!(q, Quit::Now),
                 "{:?} has no worker, so nothing can be deferred for",
@@ -537,20 +567,20 @@ mod tests {
         // Recording, stop succeeds: deferred, and the phase that answers owns
         // the receiver.
         let (phase, _tx) = recording(&root, None, Declined::default());
-        let (after, q) = phase.on_quit();
+        let (after, q) = phase.on_quit(false);
         assert!(matches!(q, Quit::Later(_)));
-        assert_eq!(after.kind(), PhaseKind::Transcribing);
+        assert_eq!(after.kind(), PhaseKind::Stopping);
         assert!(after.live().is_some());
 
-        // Transcribing: deferred by construction.
-        let (after, q) = after.on_quit();
+        // Stopping: deferred by construction.
+        let (after, q) = after.on_quit(false);
         assert!(matches!(q, Quit::Later(_)));
         assert!(after.live().is_some());
 
         // Recording, stop fails: refused, and still recording.
         let (phase, _tx) = recording(&root, None, Declined::default());
         std::fs::remove_dir_all(phase.live().unwrap().dir.path()).unwrap();
-        let (after, q) = phase.on_quit();
+        let (after, q) = phase.on_quit(false);
         assert!(
             matches!(q, Quit::Cancel(_)),
             "abandoning a running capture is the failure the deferred quit exists to prevent"
@@ -649,5 +679,65 @@ mod tests {
         assert_eq!(armed, PhaseKind::Armed);
         assert_eq!(cell.snapshot().kind, PhaseKind::Armed);
         assert!(!cell.snapshot().has_worker);
+    }
+
+    /// The half of issue #5 the quit table has to carry: with no capture
+    /// running but a transcript still being written, quitting waits for the
+    /// queue rather than abandoning it.
+    #[test]
+    fn a_busy_queue_defers_a_quit_from_every_workerless_phase() {
+        let root = scratch("quitqueue");
+        for phase in [
+            Phase::idle(),
+            Phase::idle().arm("us.zoom.xos".into()),
+            Phase::Failed {
+                dir: None,
+                error: "boom".into(),
+                at: Local::now(),
+                declined: Declined::default(),
+            },
+        ] {
+            let kind = phase.kind();
+            let (after, q) = phase.on_quit(true);
+            assert!(
+                matches!(q, Quit::Later(_)),
+                "{kind:?} with a busy queue must wait for it"
+            );
+            assert_eq!(after.kind(), kind, "the phase itself does not move");
+        }
+        // And with a capture running too, the answer is the same one as before.
+        let (phase, _tx) = recording(&root, None, Declined::default());
+        let (after, q) = phase.on_quit(true);
+        assert!(matches!(q, Quit::Later(_)));
+        assert_eq!(after.kind(), PhaseKind::Stopping);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A transcript failing is drawn like any other failure when the app is
+    /// idle, and stays out of the way when it is not.
+    #[test]
+    fn a_failed_transcript_enters_failed_only_from_idle() {
+        let root = scratch("transcriptfailed");
+        let e = anyhow!("the models did not load");
+        let dir = PathBuf::from("/s/2026-09-02T0900");
+
+        let failed = Phase::idle().transcript_failed(dir.clone(), &e);
+        assert_eq!(failed.kind(), PhaseKind::Failed);
+        assert!(matches!(&failed, Phase::Failed { dir: Some(d), .. } if *d == dir));
+        assert_eq!(failed.failure(), Some("the models did not load"));
+
+        let armed = Phase::idle().arm("us.zoom.xos".into());
+        assert_eq!(
+            armed.transcript_failed(dir.clone(), &e).kind(),
+            PhaseKind::Armed,
+            "a call being asked about is not interrupted by old news"
+        );
+        let (rec, _tx) = recording(&root, None, Declined::default());
+        assert_eq!(
+            rec.transcript_failed(dir, &e).kind(),
+            PhaseKind::Recording,
+            "a recording in progress is not interrupted either"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -31,8 +31,20 @@ use objc2_foundation::{
     NSTimer,
 };
 
+use crate::queue::Queue;
 use crate::session::SessionDir;
 use crate::state::{Live, Phase, PhaseCell, PhaseKind, Quit};
+
+/// Which icon the status item shows. The phase's own symbol, except that an
+/// `Idle` app with transcripts still being written is not idle to look at:
+/// the hourglass says work is happening without the menu being opened.
+fn symbol_for(kind: PhaseKind, transcribing: bool) -> &'static str {
+    if kind == PhaseKind::Idle && transcribing {
+        PhaseKind::Stopping.symbol()
+    } else {
+        kind.symbol()
+    }
+}
 
 /// What the watcher should do about what is currently playing.
 #[derive(Debug, PartialEq)]
@@ -94,6 +106,10 @@ struct Ivars {
     /// banner reads this; until then the menu's status line does.
     banner: RefCell<Option<String>>,
     quitting: Cell<bool>,
+    /// Sessions whose audio is written and whose transcript is not. Separate
+    /// from the phase on purpose: the phase is `Idle` while this works, which
+    /// is what lets the next call be recorded while the last is transcribed.
+    queue: RefCell<Queue>,
     log: PathBuf,
     /// The session browser — and, since the settings page moved into it, the
     /// app's only window. Held across opens so it and the settings bridge
@@ -103,6 +119,9 @@ struct Ivars {
     start_item: RefCell<Option<Retained<NSMenuItem>>>,
     stop_item: RefCell<Option<Retained<NSMenuItem>>>,
     level_item: RefCell<Option<Retained<NSMenuItem>>>,
+    /// What the transcription queue is doing, under the level line. Hidden
+    /// when the queue is empty.
+    queue_item: RefCell<Option<Retained<NSMenuItem>>>,
     record_call_item: RefCell<Option<Retained<NSMenuItem>>>,
     decline_item: RefCell<Option<Retained<NSMenuItem>>>,
     /// The refresh timer runs at 2 Hz for the level meter; watching for calls
@@ -130,7 +149,10 @@ define_class!(
             // unconstructible outside a variant that owns the receiver which
             // will answer it, so the pairing bug 1 needed — a deferred quit
             // with nothing alive to reply — cannot be expressed here.
-            let reply = self.ivars().phase.transition(|p| p.on_quit());
+            // Read before the transition: the closure is pure, and the queue
+            // is a second thing that can answer a deferred quit.
+            let queue_busy = !self.ivars().queue.borrow().is_empty();
+            let reply = self.ivars().phase.transition(|p| p.on_quit(queue_busy));
             self.render();
             match reply {
                 Quit::Now => NSApplicationTerminateReply::TerminateNow,
@@ -423,10 +445,11 @@ impl Delegate {
     /// but here is a future desync.
     fn render(&self) {
         let view = self.ivars().phase.snapshot();
+        let queue_line = self.ivars().queue.borrow().summary();
         let mtm = MainThreadMarker::from(self);
         {
             if let Some(button) = self.ivars().status_item.button(mtm) {
-                let name = NSString::from_str(view.kind.symbol());
+                let name = NSString::from_str(symbol_for(view.kind, queue_line.is_some()));
                 let desc = NSString::from_str("Ambient");
                 if let Some(img) =
                     NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, Some(&desc))
@@ -475,6 +498,15 @@ impl Delegate {
                 i.setTitle(&NSString::from_str(&text));
             }
         }
+        if let Some(i) = self.ivars().queue_item.borrow().as_ref() {
+            match &queue_line {
+                Some(text) => {
+                    i.setTitle(&NSString::from_str(text));
+                    i.setHidden(false);
+                }
+                None => i.setHidden(true),
+            }
+        }
         // The consent pair is the whole menu when it is showing: hidden the
         // rest of the time so the ordinary menu is not cluttered by a choice
         // nobody is being asked to make.
@@ -512,7 +544,10 @@ impl Delegate {
         // changes when a human joins a call.
         let n = self.ivars().ticks.get().wrapping_add(1);
         self.ivars().ticks.set(n);
-        if n % 8 == 0 && view.kind.is_watching() {
+        // Not while a quit is waiting on the queue: the phase is `Idle` then,
+        // and a call starting must not begin a recording under an app that
+        // has been asked to leave.
+        if n % 8 == 0 && view.kind.is_watching() && !self.ivars().quitting.get() {
             self.poll_for_calls();
         }
 
@@ -542,16 +577,50 @@ impl Delegate {
             })
         });
         if let Some(result) = finished {
-            match &result {
-                Ok(dir) => self.log(&format!("session written: {}", dir.display())),
-                Err(e) => self.fail("recording", e),
-            }
+            let captured = match &result {
+                Ok(dir) => {
+                    self.log(&format!("audio written: {}", dir.display()));
+                    Some(dir.clone())
+                }
+                Err(e) => {
+                    self.fail("recording", e);
+                    None
+                }
+            };
+            // The phase is `Idle` from here: Start and the watcher both work
+            // again while the transcript is written on the queue's thread.
             self.ivars().phase.transition(|p| (p.finished(result), ()));
-            self.render();
-            if self.ivars().quitting.get() {
-                let mtm = MainThreadMarker::from(self);
-                NSApplication::sharedApplication(mtm).replyToApplicationShouldTerminate(true);
+            if let Some(dir) = captured {
+                self.ivars().queue.borrow_mut().push(dir);
             }
+            self.render();
+        }
+
+        let done = self.ivars().queue.borrow_mut().poll();
+        if let Some((dir, result)) = done {
+            match result {
+                Ok(_) => self.log(&format!("transcript written: {}", dir.display())),
+                Err(e) => {
+                    self.fail(&format!("transcribing {}", dir.display()), &e);
+                    self.ivars()
+                        .phase
+                        .transition(|p| (p.transcript_failed(dir, &e), ()));
+                }
+            }
+            self.render();
+        }
+
+        // A deferred quit is answered once nothing is left to wait for: no
+        // capture worker, and nothing on the queue. Checked every tick rather
+        // than only when something finishes, so the order the two empty in
+        // does not matter.
+        if self.ivars().quitting.get()
+            && !self.ivars().phase.snapshot().has_worker
+            && self.ivars().queue.borrow().is_empty()
+        {
+            self.ivars().quitting.set(false);
+            let mtm = MainThreadMarker::from(self);
+            NSApplication::sharedApplication(mtm).replyToApplicationShouldTerminate(true);
         }
     }
 }
@@ -604,6 +673,11 @@ pub fn run() -> anyhow::Result<()> {
         phase: PhaseCell::new(Phase::idle()),
         banner: RefCell::new(None),
         quitting: Cell::new(false),
+        // One worker thread for the life of the app. The default model, as
+        // the CLI's `record` uses; there is no flag to pass here.
+        queue: RefCell::new(Queue::spawn(|dir, meter| {
+            crate::session::transcribe_session(dir, None, Some(meter.clone()))
+        })),
         // Launched from Finder there is nowhere for stderr to go, so keep our
         // own log — the last failure was invisible for exactly this reason.
         log: log_path(),
@@ -611,6 +685,7 @@ pub fn run() -> anyhow::Result<()> {
         start_item: RefCell::new(None),
         stop_item: RefCell::new(None),
         level_item: RefCell::new(None),
+        queue_item: RefCell::new(None),
         record_call_item: RefCell::new(None),
         decline_item: RefCell::new(None),
         ticks: Cell::new(0),
@@ -623,6 +698,7 @@ pub fn run() -> anyhow::Result<()> {
     let start = item(mtm, "Start Recording", Some(sel!(startRecording:)), "r");
     let stop = item(mtm, "Stop Recording", Some(sel!(stopRecording:)), "s");
     let level = item(mtm, "", None, "");
+    let queue_line = item(mtm, "", None, "");
     let settings = item(mtm, "Settings…", Some(sel!(openSettings:)), ",");
     let open = item(mtm, "Open Ambient", Some(sel!(openWindow:)), "0");
     let quit = item(mtm, "Quit Ambient", Some(sel!(terminate:)), "q");
@@ -633,6 +709,8 @@ pub fn run() -> anyhow::Result<()> {
     {
         level.setEnabled(false);
         level.setHidden(true);
+        queue_line.setEnabled(false);
+        queue_line.setHidden(true);
         // Above Start, because when they are showing they are the decision the
         // menu was opened to make.
         record_call.setHidden(true);
@@ -643,6 +721,7 @@ pub fn run() -> anyhow::Result<()> {
         menu.addItem(&stop);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&level);
+        menu.addItem(&queue_line);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&open);
         menu.addItem(&settings);
@@ -654,8 +733,16 @@ pub fn run() -> anyhow::Result<()> {
     *delegate.ivars().start_item.borrow_mut() = Some(start);
     *delegate.ivars().stop_item.borrow_mut() = Some(stop);
     *delegate.ivars().level_item.borrow_mut() = Some(level);
+    *delegate.ivars().queue_item.borrow_mut() = Some(queue_line);
     *delegate.ivars().record_call_item.borrow_mut() = Some(record_call);
     *delegate.ivars().decline_item.borrow_mut() = Some(decline);
+    // Anything a crash left captured but untranscribed goes straight back on
+    // the queue: the split means that state can exist, so the app must be
+    // able to finish it, and the audio is already on disk waiting.
+    for dir in crate::session::captured_awaiting_transcript(&crate::session::home()) {
+        delegate.log(&format!("re-queued for transcription: {}", dir.display()));
+        delegate.ivars().queue.borrow_mut().push(dir);
+    }
     delegate.render();
     // The status item is the whole app; say plainly whether the system gave us
     // one rather than leaving an empty menu bar to be interpreted.
@@ -823,21 +910,55 @@ mod tests {
         );
     }
 
-    /// A recording in progress must never be disturbed by the watcher.
+    /// A recording in progress must never be disturbed by the watcher, and
+    /// nor must one still writing its audio after Stop.
     #[test]
-    fn recording_and_transcribing_are_left_alone() {
+    fn recording_and_stopping_are_left_alone() {
         let root = scratch("watcher-busy");
         let live = vec!["us.zoom.xos".to_string()];
 
         let (rec, _tx) = recording(&root, Some("us.zoom.xos"), Declined::default());
-        let transcribing = {
+        let stopping = {
             let (r, _tx2) = recording(&root, Some("us.zoom.xos"), Declined::default());
             r.stop().unwrap_or_else(|(_, e)| panic!("{e}"))
         };
-        for phase in [rec, transcribing, armed("us.zoom.xos", Declined::default())] {
+        for phase in [rec, stopping, armed("us.zoom.xos", Declined::default())] {
             assert_eq!(next(&phase, &apps(), &live, true), Tick::Nothing);
         }
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Issue #5's other half: once the audio is written the phase is `Idle`,
+    /// and the watcher must notice the next call even though the last one is
+    /// still being transcribed. Transcription is the queue's business, not
+    /// the phase's, so `next` cannot even see it.
+    #[test]
+    fn a_session_being_transcribed_does_not_deafen_the_watcher() {
+        let root = scratch("watcher-queue");
+        let live = vec!["us.zoom.xos".to_string()];
+        let (rec, _tx) = recording(&root, Some("us.zoom.xos"), Declined::default());
+        let idle = rec
+            .stop()
+            .unwrap_or_else(|(_, e)| panic!("{e}"))
+            .finished(Ok(root.join("2026-09-02T0900")));
+        assert_eq!(idle.kind(), PhaseKind::Idle);
+        assert_eq!(
+            next(&idle, &apps(), &live, true),
+            Tick::Arm("us.zoom.xos".into())
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The icon says work is happening while the menu is closed.
+    #[test]
+    fn an_idle_app_with_a_busy_queue_shows_the_hourglass() {
+        assert_eq!(symbol_for(PhaseKind::Idle, true), "hourglass");
+        assert_eq!(symbol_for(PhaseKind::Idle, false), "waveform");
+        // Every other state keeps its own icon: a call being asked about or
+        // recorded is more important to show than a transcript being written.
+        for kind in [PhaseKind::Armed, PhaseKind::Recording, PhaseKind::Failed] {
+            assert_eq!(symbol_for(kind, true), kind.symbol());
+        }
     }
 
     /// `Failed` is watched exactly like `Idle`, or an undismissed failure

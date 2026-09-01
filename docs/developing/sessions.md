@@ -17,14 +17,26 @@ until stopped, then resamples, transcribes and writes a session under
 
 ```
 2026-08-29T1101-smoke/
-  session.json     metadata
+  session.json     metadata, written when the capture ends
   raw.jsonl        what the recogniser heard — never rewritten
   edits.jsonl      repairs, speaker names, reverts — append-only
   transcript.md    the export, regenerated on every change
-  status           live level meter while recording
+  status           live level meter while recording, then the stage
   audio/room.wav   mono 16 kHz, mic
   audio/call.wav   mono 16 kHz, tap
 ```
+
+The work is two halves, `capture_into` and `transcribe_session`, and `record`
+is their composition. The capture half owns the tap and ends with the 16 kHz
+wavs and `session.json` on disk; the transcription half turns those into
+`raw.jsonl` and `transcript.md`. The CLI runs them back to back on one
+thread. The menu bar app runs the second on a serial queue instead, so a new
+recording can start while the last one is still being transcribed
+([ADR-0015](../adr/0015-capture-and-transcription-are-separate.md)). `status`
+records the stage: `recording …` with the level meter, then `finishing`,
+`captured`, `transcribing`, `separating voices`, `done` — or `failed: …`.
+A session showing `captured` with the app not running is waiting on a queue
+that no longer exists; the app re-queues it at its next launch.
 
 Two append-only logs and one derived file, folded on read:
 
