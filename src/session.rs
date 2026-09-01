@@ -408,6 +408,68 @@ impl Drop for ClaimGuard<'_> {
     }
 }
 
+/// Held by whichever process is transcribing a session. Two transcribers on
+/// one directory would race to truncate `raw.jsonl`, and the launch-time
+/// re-queue cannot otherwise tell a transcriber that is running from one
+/// that died.
+pub const TRANSCRIBING_LOCK: &str = "transcribing.lock";
+
+/// Proof that this process holds the transcription lock for a session, for
+/// as long as it lives. Only [`claim_transcription`] makes one.
+#[derive(Debug)]
+pub struct TranscribeLock(PathBuf);
+
+impl Drop for TranscribeLock {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).ok();
+    }
+}
+
+/// The pid written into a lock file, if the file names a live process. A pid
+/// that no longer answers `kill(pid, 0)` is a crash's leftovers, and the
+/// lock is stale.
+fn live_transcriber(dir: &Path) -> Option<u32> {
+    let pid: u32 = std::fs::read_to_string(dir.join(TRANSCRIBING_LOCK))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    // Signal 0 delivers nothing and only reports whether the pid exists.
+    // Safe: no memory is involved and a wrong pid is answered, not acted on.
+    (unsafe { libc::kill(pid as libc::pid_t, 0) } == 0).then_some(pid)
+}
+
+/// Take the transcription lock for `dir`, or say who holds it. A stale lock
+/// from a dead process is taken over; a live one is refused.
+pub fn claim_transcription(dir: &Path) -> Result<TranscribeLock> {
+    let path = dir.join(TRANSCRIBING_LOCK);
+    for _ in 0..2 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                write!(f, "{}", std::process::id())?;
+                return Ok(TranscribeLock(path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Some(pid) = live_transcriber(dir) {
+                    bail!(
+                        "{} is being transcribed by another process (pid {pid})",
+                        dir.display()
+                    );
+                }
+                // Dead holder: clear it and try once more. A second
+                // AlreadyExists means someone else won the retry.
+                std::fs::remove_file(&path).ok();
+            }
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        }
+    }
+    bail!("{} was claimed by another transcriber", dir.display())
+}
+
 /// Claim a directory under the sessions folder and record into it.
 pub fn record(
     name: Option<&str>,
@@ -748,6 +810,10 @@ fn transcribe_inner(
     model_dir: Option<&str>,
     meter: Option<&std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
+    // Taken before anything is written, held until the transcript is. A
+    // second transcriber — the CLI and the app on the same session — is
+    // refused here rather than racing it for `raw.jsonl`.
+    let _lock = claim_transcription(dir)?;
     let (asr_dir, vad_path) = model_paths(model_dir)?;
     let cfg = crate::config::Config::load();
     let audio = dir.join("audio");
@@ -877,7 +943,8 @@ pub fn latest(root: &Path) -> Option<PathBuf> {
 /// before the split wrote `session.json` after ASR, so they qualify only if
 /// they were killed in that window, which is exactly when they should. A
 /// native scratch wav still growing means a capture is in flight in another
-/// process and the session is not ours to touch.
+/// process, and a [`TRANSCRIBING_LOCK`] naming a live pid means a transcriber
+/// is; neither session is ours to touch.
 pub fn captured_awaiting_transcript(root: &Path) -> Vec<PathBuf> {
     list(root)
         .into_iter()
@@ -887,6 +954,7 @@ pub fn captured_awaiting_transcript(root: &Path) -> Vec<PathBuf> {
                 && !dir.join("transcript.md").is_file()
                 && (audio.join("room.wav").is_file() || audio.join("call.wav").is_file())
                 && !is_growing(&audio.join("room.native.wav"))
+                && live_transcriber(dir).is_none()
         })
         .collect()
 }
@@ -1987,8 +2055,43 @@ mod tests {
             "2026-09-02T1300",
             &["audio/room.wav", "audio/room.native.wav", "session.json"],
         );
+        // Being transcribed by a live process — this one — right now.
+        let busy = mk("2026-09-02T1400", &["audio/room.wav", "session.json"]);
+        std::fs::write(busy.join(TRANSCRIBING_LOCK), std::process::id().to_string()).unwrap();
+        // A transcriber that died holding the lock: the pid is gone, so the
+        // lock is stale and the session is re-queued.
+        let stale = mk("2026-09-02T1500", &["audio/room.wav", "session.json"]);
+        std::fs::write(stale.join(TRANSCRIBING_LOCK), "2147483646").unwrap();
 
-        assert_eq!(captured_awaiting_transcript(&root), vec![queued, half]);
+        assert_eq!(
+            captured_awaiting_transcript(&root),
+            vec![queued, half, stale]
+        );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Two transcribers on one session would race to truncate `raw.jsonl`.
+    /// The lock refuses the second while the first is alive, and takes over
+    /// from one that died.
+    #[test]
+    fn the_transcription_lock_refuses_a_live_holder_and_replaces_a_dead_one() {
+        let dir = std::env::temp_dir().join(format!("ambient-lock-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let first = claim_transcription(&dir).unwrap();
+        let refused = claim_transcription(&dir).unwrap_err().to_string();
+        assert!(refused.contains("another process"), "{refused}");
+        drop(first);
+        assert!(!dir.join(TRANSCRIBING_LOCK).exists(), "dropping releases");
+
+        std::fs::write(dir.join(TRANSCRIBING_LOCK), "2147483646").unwrap();
+        let taken = claim_transcription(&dir).expect("a dead holder's lock is stale");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(TRANSCRIBING_LOCK)).unwrap(),
+            std::process::id().to_string()
+        );
+        drop(taken);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

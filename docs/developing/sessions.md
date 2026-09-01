@@ -35,8 +35,11 @@ recording can start while the last one is still being transcribed
 ([ADR-0015](../adr/0015-capture-and-transcription-are-separate.md)). `status`
 records the stage: `recording …` with the level meter, then `finishing`,
 `captured`, `transcribing`, `separating voices`, `done` — or `failed: …`.
-A session showing `captured` with the app not running is waiting on a queue
-that no longer exists; the app re-queues it at its next launch.
+A session with `session.json` and no `transcript.md` when the app is not
+running is waiting on a queue that no longer exists; the app re-queues it at
+its next launch. While a transcriber is working it holds `transcribing.lock`,
+a file naming its pid, so the CLI and the app cannot both transcribe one
+session; a lock whose pid is dead is a crash's leftovers and is taken over.
 
 Two append-only logs and one derived file, folded on read:
 

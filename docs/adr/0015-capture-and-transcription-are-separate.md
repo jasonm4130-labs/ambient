@@ -58,9 +58,12 @@ Everything downstream of it can wait.
   transcript. The app re-queues every session with `session.json` and no
   `transcript.md` at launch (`captured_awaiting_transcript`), so the state
   can exist but cannot persist. That rule ignores `raw.jsonl` on purpose — a
-  transcriber that died after creating it must be re-run, not skipped — and
-  so the one case it gets wrong is a CLI `record` still transcribing in
-  another process at the moment the app launches, which is accepted.
+  transcriber that died after creating it must be re-run, not skipped. What
+  separates a dead transcriber from a live one is `transcribing.lock`, a
+  file holding the transcriber's pid: `transcribe_session` takes it before
+  writing anything and refuses a session whose holder is alive, and the
+  launch scan skips those too. A lock naming a dead pid is a crash's
+  leftovers and is taken over.
 - Quit waits for the queue as it already waited for the capture. The watcher
   does not start a recording while a quit is pending.
 - A transcript that fails while the app is busy with the next recording is
