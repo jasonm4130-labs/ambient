@@ -24,6 +24,22 @@ two jobs were deliberately kept off it. `cargo-deny` resolves the dependency
 graph from `Cargo.lock` without invoking rustc, so it reads the macOS-only
 dependencies rather than building them, and runs on Linux.
 
+## Before CI: the format gate runs at commit time
+
+`cargo fmt --check` is the first step of the `rust` job, and it stayed red on
+`main` for six pushes before anyone looked: pushes go straight to `main`, the
+repo's plan has no branch protection, and nothing on the machine watches CI.
+So the check that matters runs before the commit exists. `.githooks/pre-commit`
+refuses a commit whose *staged* Rust files rustfmt would change — staged
+content, not the working tree, so formatting after `git add` does not slip
+through — and says which files and what to run. Only staged files are checked,
+so drift elsewhere never blocks an unrelated commit. There is no bypass flag.
+
+The global `core.hooksPath` would normally hide a repo's own hooks; the global
+`pre-commit` dispatches to `.githooks/pre-commit` when it is executable, so
+this works for every clone on a machine with that config and is a no-op
+elsewhere. CI remains the check of record for anyone without the hook.
+
 That split is a cost decision. Blacksmith's Linux runner is $0.004/min against
 `macos-latest` at $0.062/min, roughly fifteen times cheaper, and the two jobs
 that do not need a Mac are most of the wall clock. The `rust` job measured

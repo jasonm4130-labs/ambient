@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Refuse a commit whose staged Rust files are not rustfmt-clean.
+#
+# CI has always run `cargo fmt --check`, and it went red on main for six
+# pushes before anyone looked. A push is cheap to make and nothing here
+# watches CI, so the check has to happen before the commit exists.
+#
+# Only the staged files are checked, so drift elsewhere in the tree — or in
+# the unstaged half of a partially staged file — does not block an unrelated
+# commit. Run `cargo fmt` to fix; there is no bypass flag on purpose.
+#
+# The global hooks path (`core.hooksPath`) dispatches here when this file is
+# executable; see docs/developing/ci.md.
+set -euo pipefail
+
+if ! command -v rustfmt >/dev/null 2>&1; then
+  echo "⚠ rustfmt not installed — skipping format check"
+  exit 0
+fi
+
+staged=()
+while IFS= read -r -d '' f; do
+  staged+=("$f")
+done < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.rs')
+
+if [ "${#staged[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+# Check the staged *content*, not the working tree: a file formatted after
+# `git add` would otherwise pass here and fail in CI.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+bad=()
+for f in "${staged[@]}"; do
+  mkdir -p "$tmp/$(dirname "$f")"
+  git show ":$f" > "$tmp/$f"
+  if ! rustfmt --check --edition 2021 "$tmp/$f" >/dev/null 2>&1; then
+    bad+=("$f")
+  fi
+done
+
+if [ "${#bad[@]}" -gt 0 ]; then
+  echo ""
+  echo "❌ rustfmt would change staged file(s):"
+  printf '   %s\n' "${bad[@]}"
+  echo "   Run: cargo fmt && git add ${bad[*]}"
+  exit 1
+fi
