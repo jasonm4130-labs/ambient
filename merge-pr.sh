@@ -36,17 +36,35 @@ if [ "$base_ref" != "main" ]; then
 fi
 
 echo "PR #$pr: $head_ref → main. Waiting for checks…"
-# --fail-fast stops on the first failure; a PR with no checks at all is also
-# a failure, because a merge nothing verified is the thing this script exists
-# to prevent.
+# The checks this repo runs on every PR. `gh pr checks --watch` only waits
+# for checks that have already been registered, and a check appears some
+# seconds after the push — so a watch started straight after `gh pr create`
+# sees only the instant-skip app check, returns, and the PR merges with CI
+# still queued. That happened on PR #8. So: wait until every expected check
+# has reported, then require each to have passed.
+expected=(hygiene ui rust build)
+for _ in $(seq 1 60); do
+  names=$(gh pr checks "$pr" --json name --jq '.[].name' 2>/dev/null || true)
+  missing=()
+  for want in "${expected[@]}"; do
+    grep -qx "$want" <<<"$names" || missing+=("$want")
+  done
+  [ "${#missing[@]}" -eq 0 ] && break
+  sleep 5
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  echo "checks never appeared on PR #$pr: ${missing[*]} — not merging." >&2
+  exit 1
+fi
+# --fail-fast stops on the first failure.
 if ! gh pr checks "$pr" --watch --fail-fast; then
   echo "" >&2
   echo "checks did not pass on PR #$pr — not merging. See: gh pr checks $pr" >&2
   exit 1
 fi
-count=$(gh pr checks "$pr" --json name --jq 'length')
-if [ "$count" -eq 0 ]; then
-  echo "PR #$pr has no checks — not merging." >&2
+failed=$(gh pr checks "$pr" --json name,bucket --jq '.[] | select(.bucket != "pass" and .bucket != "skipping") | .name')
+if [ -n "$failed" ]; then
+  echo "checks not passing on PR #$pr: $(tr '\n' ' ' <<<"$failed")— not merging." >&2
   exit 1
 fi
 
