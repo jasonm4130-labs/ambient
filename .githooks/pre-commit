@@ -1,17 +1,28 @@
 #!/usr/bin/env bash
-# Refuse a commit whose staged Rust files are not rustfmt-clean.
+# Two refusals, both for things CI checks too late to matter.
 #
-# CI has always run `cargo fmt --check`, and it went red on main for six
-# pushes before anyone looked. A push is cheap to make and nothing here
-# watches CI, so the check has to happen before the commit exists.
+#   1. No commits on main. Changes reach main through a pull request whose CI
+#      is green, merged with a merge commit by ./merge-pr.sh. The plan this
+#      repo is on has no branch protection, so the rule lives here.
+#   2. Staged Rust must be rustfmt-clean. `cargo fmt --check` has always been
+#      the rust job's first step, and it stayed red on main for six pushes
+#      before anyone looked.
 #
 # Only the staged files are checked, so drift elsewhere in the tree — or in
 # the unstaged half of a partially staged file — does not block an unrelated
 # commit. Run `cargo fmt` to fix; there is no bypass flag on purpose.
 #
 # The global hooks path (`core.hooksPath`) dispatches here when this file is
-# executable; see docs/developing/ci.md.
+# executable; see docs/developing/branching.md.
 set -euo pipefail
+
+branch=$(git symbolic-ref --short -q HEAD || true)
+if [ "$branch" = "main" ]; then
+  echo ""
+  echo "❌ no commits on main."
+  echo "   git switch -c <topic>    then open a PR and merge it with ./merge-pr.sh"
+  exit 1
+fi
 
 if ! command -v rustfmt >/dev/null 2>&1; then
   echo "⚠ rustfmt not installed — skipping format check"

@@ -38,7 +38,9 @@ so drift elsewhere never blocks an unrelated commit. There is no bypass flag.
 The global `core.hooksPath` would normally hide a repo's own hooks; the global
 `pre-commit` dispatches to `.githooks/pre-commit` when it is executable, so
 this works for every clone on a machine with that config and is a no-op
-elsewhere. CI remains the check of record for anyone without the hook.
+elsewhere. CI remains the check of record for anyone without the hook. The
+same hook refuses a commit on `main`; the path a change takes instead is
+[how changes reach main](branching.md).
 
 That split is a cost decision. Blacksmith's Linux runner is $0.004/min against
 `macos-latest` at $0.062/min, roughly fifteen times cheaper, and the two jobs
