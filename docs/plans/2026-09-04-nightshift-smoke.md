@@ -14,25 +14,32 @@ task. Landed tasks are the merge commits on `main` naming
 # Task 1: The docs say notarisation has never run, and it has
 
 `docs/index.md` and `docs/adr/0014-developer-id-and-notarization.md` both
-state that notarisation has never been run. Release v0.0.2 was notarised:
-`gh release view v0.0.2` shows notes that begin "Signed and notarized", and
-`release.sh` only publishes a bundle that passes `xcrun stapler validate`.
+state that notarisation has never been run, and `docs/index.md` also says
+there is no published release. Both releases so far were notarised: v0.0.1
+(2026-08-30, 07:03 UTC) and v0.0.2 (the same day, 13:05 UTC). Their notes
+begin "Signed and notarized", and `release.sh` only publishes a bundle that
+passes `xcrun stapler validate`.
 
-Confirm that with `gh release view v0.0.2 --json body -q .body` before editing
-anything. Then:
+Confirm that with `gh release view v0.0.1 --json body,publishedAt` and the
+same for v0.0.2 before editing anything. Then:
 
-1. In `docs/index.md`, replace the sentence that says notarisation has never
-   been run with one that says it first ran for v0.0.2 and what that took
-   (`release.sh` records the round trip as about eleven minutes). Keep the
-   surrounding paragraph's point, which is what the release script does and
-   does not prove.
+1. In `docs/index.md`, replace every sentence that says there is no release
+   or that notarisation has never run (the "no published release yet"
+   sentence near the top, the "last missing piece is an Apple certificate"
+   sentence, and the "notarisation has never been run" paragraph) with the
+   state today: two releases published from `release.sh`, signed, notarised
+   and stapled, the first being v0.0.1. Building from source stays the
+   documented path. Keep each paragraph's original point, which is what the
+   release script does and does not prove.
 2. In the ADR, the "Not yet exercised" paragraph becomes a record of the first
-   exercise: v0.0.2, notarised and stapled, published from `release.sh`. An ADR
-   is history, so leave the decision and its alternatives untouched and change
+   exercise: v0.0.1, notarised and stapled, published from `release.sh`, with
+   v0.0.2 following the same day. Do not attribute a duration to it unless
+   the release script's own comment states one for that bundle. An ADR is
+   history, so leave the decision and its alternatives untouched and change
    only the paragraph that made a claim about the future.
 3. Search `docs/` and `README.md` for any other sentence that says notarisation
-   is untested or has not run, and fix each the same way. If there are none,
-   say so in your report.
+   is untested, has not run, or that no release exists, and fix each the same
+   way. If there are none, say so in your report.
 
 Do not touch `release.sh`. Do not add a section; the change is a few
 sentences. `scripts/check` does not build the docs, so also run
