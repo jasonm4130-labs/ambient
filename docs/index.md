@@ -28,11 +28,11 @@ the whole surface for scripting and debugging.
 
 ## What a packaged release still needs
 
-The tooling now exists and the last missing piece is an Apple certificate.
-`release.sh` builds, signs with a Developer ID identity, notarises, staples and
-publishes; `make-app.sh` applies the hardened runtime and the one entitlement
-the microphone needs under it, and bundles the ~671 MB of models the app loads
-so a download works with no `fetch-models.sh` and no repo on the machine.
+The tooling exists and v0.0.2 went out through it. `release.sh` builds, signs
+with a Developer ID identity, notarises, staples and publishes; `make-app.sh`
+applies the hardened runtime and the one entitlement the microphone needs under
+it, and bundles the ~671 MB of models the app loads so a download works with no
+`fetch-models.sh` and no repo on the machine.
 
 What is verified: the hardened runtime does not break ONNX Runtime (it is
 statically linked, so no library-validation exemption is needed), the
@@ -40,12 +40,12 @@ microphone records with only `com.apple.security.device.audio-input`, and a
 bundle carrying its own models resolves them from a working directory that has
 none.
 
-What is not: **notarisation has never been run**, because it needs a Developer
-ID Application certificate and none exists yet. The CSR and its private key sit
-in `.signing/`, so the remaining step is uploading that CSR to
-developer.apple.com and importing the certificate that comes back. Until then
-`setup-signing.sh` produces a self-signed identity that is valid on the machine
-that made it and nowhere else.
+What is not: that a downloader gets a clean open. **Notarisation first ran for
+v0.0.2** — an ~11-minute round trip through Apple's queue, stapled and
+published by `release.sh`, which will not publish a bundle that fails `stapler
+validate` — so Apple has issued a ticket and the bundle carries it. Whether a
+zip pulled from a browser, quarantine attribute and all, opens with no
+Gatekeeper dialog is still checked by hand.
 
 Even then neither `record` nor `tap` could be run straight from a shell. They
 already are ordinary CLI verbs; the constraint is the launch, not the argument
