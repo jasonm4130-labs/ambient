@@ -86,9 +86,11 @@ Changing signing identity changes the designated requirement, so the existing
 TCC grant is orphaned exactly once on the machine that had one. That is the
 same mechanism ADR-0002 describes, arriving one final time.
 
-**Not yet exercised: notarisation has never run**, because no Developer ID
-certificate exists yet. Everything up to it is verified; the submission,
-stapling and Gatekeeper assessment are not.
+**First exercised on 2026-08-30**: v0.0.1 was notarised, stapled and published
+by `release.sh`, and v0.0.2 followed the same day by the same path. The round
+trip through Apple's queue took ~11 minutes for this bundle. What `release.sh`
+still cannot exercise is the hand check below — the assessment of a downloaded,
+quarantined copy on a machine that did not build it.
 
 ## Confirmation
 
