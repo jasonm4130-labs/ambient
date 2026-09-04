@@ -24,7 +24,10 @@ says where it stopped.
    budget-capped `claude -p` in auto mode with `loop/PROMPT.md`. The generator
    commits and never pushes. Only the repository's own `.claude/settings.json`
    loads, so the allow rules and the two hooks under `.claude/hooks/` are the
-   whole permission surface.
+   whole permission surface. Its commits are unsigned: signing goes through
+   the 1Password SSH agent, which does not answer while the app is locked,
+   and at 02:00 it is. The merge commit is GitHub's and the PR is the audit
+   trail.
 3. `scripts/check` must end with `CHECK OK`. Then a read-only `claude -p` with
    `loop/SKEPTIC.md` reads the diff and the task and ends with `VERDICT: OK` or
    `VERDICT: REFUTED`.
@@ -100,6 +103,12 @@ night is capped at `MAX` tasks. CI cost is the usual per-PR run.
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.nightshift.ambient.plist
    launchctl kickstart gui/$(id -u)/dev.nightshift.ambient   # run it now, once
    ```
+
+   A free proof that the launchd environment works: add `MAX` set to `0`
+   under `EnvironmentVariables` in the installed plist, kickstart, and read
+   `launchd.log` in the state directory. It should fetch, check the switch,
+   and stop with `0 task(s) landed` in a few seconds. Remove the key and
+   reload before the night.
 
    The Mac must be logged in: `claude` and `gh` use this user's credentials,
    and `caffeinate -i` only holds off idle sleep.
