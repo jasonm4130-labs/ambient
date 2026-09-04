@@ -6,23 +6,36 @@ sidebar:
 
 # What CI checks
 
-`.github/workflows/ci.yml` runs three jobs on every push to `main` and every
-pull request. It is worth being explicit about the split, because the most
-important thing this project does is the one thing CI cannot test.
+`.github/workflows/ci.yml` runs on every push to `main` and every pull
+request: a `changes` job decides which of four jobs the change needs, and a
+`gate` job at the end passes only when every job succeeded or was skipped.
+`gate` is the one check anything waits on — `merge-pr.sh` and the landing
+loop's merge workflow both read it. It is worth being explicit about the
+split, because the most important thing this project does is the one thing
+CI cannot test.
 
-## The three jobs
+## The jobs
 
-| Job | Runner | What it does |
-| --- | --- | --- |
-| `hygiene` | `blacksmith-4vcpu-ubuntu-2404` | `typos`, and `cargo-deny check` |
-| `ui` | `blacksmith-4vcpu-ubuntu-2404` | `tsc`, `oxlint`, `vite build`, and a drift check on the committed bundle |
-| `rust` | `macos-latest` | `fmt`, `clippy -D warnings`, `test --all-targets`, `symbolcheck`, and `make-app.sh` |
+| Job | Runner | Runs when | What it does |
+| --- | --- | --- | --- |
+| `hygiene` | `blacksmith-4vcpu-ubuntu-2404` | always | `typos`, and `cargo-deny check` |
+| `ui` | `blacksmith-4vcpu-ubuntu-2404` | `ui/**` or the bundle changed | `tsc`, `oxlint`, `vite build`, and a drift check on the committed bundle |
+| `rust` | `macos-latest` | code changed | `fmt`, `clippy -D warnings`, `test --all-targets`, `symbolcheck`, and `make-app.sh` |
+| `docs` | `blacksmith-4vcpu-ubuntu-2404` | `docs/**`, `docs-site/**` or `README.md` changed | the site build and its six guards — see [docs](docs.md) |
+| `gate` | `blacksmith-4vcpu-ubuntu-2404` | always | fails unless every job above succeeded or was skipped |
 
 Only `rust` needs macOS. The crate does not compile anywhere else — process
 taps, `objc2-app-kit` and `objc2-web-kit` have no other target — so the other
-two jobs were deliberately kept off it. `cargo-deny` resolves the dependency
+jobs were deliberately kept off it. `cargo-deny` resolves the dependency
 graph from `Cargo.lock` without invoking rustc, so it reads the macOS-only
 dependencies rather than building them, and runs on Linux.
+
+`changes` is `dorny/paths-filter`, pinned by commit. Until 2026-09-04 the
+docs build was its own workflow with a `paths:` filter, because filters are
+per-workflow; the cost is that no single workflow's conclusion then covered a
+change, and `merge-pr.sh` waited on a docs check that a code-only pull
+request never registers. One workflow with a skip-aware `gate` keeps the
+macOS saving and removes that failure.
 
 ## Before CI: the format gate runs at commit time
 
