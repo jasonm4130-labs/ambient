@@ -59,7 +59,7 @@ human-closed PR on any task stops the plan until someone acts.
 | --- | --- | --- |
 | `LANDING_STATE` is not `run` | `gh variable set LANDING_STATE --body frozen` | setting it back to `run` |
 | `land:blocked` draft PR on a task | the loop, on a second red or a refutation | a human fixing or closing the PR |
-| A closed, unmerged PR on a task | a human | deleting it from the plan or reopening |
+| A closed, unmerged PR on a task | a human | labelling that PR `land:retry` (run it again from scratch) or removing the task from the plan |
 | `MAX` tasks, or `DEADLINE` | `loop/config` | the next night |
 | Budget | `--max-budget-usd` on each `claude -p` | nothing; a task that runs out of money produces no commits and the night stops |
 

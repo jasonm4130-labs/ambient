@@ -48,6 +48,7 @@ repo=$(cd "$here/.." && pwd)
 : "${BRANCH_PREFIX:=land}"
 : "${LABEL:=land}"
 : "${BLOCKED_LABEL:=land:blocked}"
+: "${RETRY_LABEL:=land:retry}"
 : "${STATE_VAR:=LANDING_STATE}"
 : "${SETTING_SOURCES:=project}"
 : "${WORKTREE:=$repo/../$(basename "$repo")-nightshift}"
@@ -113,9 +114,11 @@ open_pr() {
   gh pr list --state open --head "$(branch_for "$1")" --base "$BASE" \
     --json number,isDraft,labels --jq '.[] | "\(.number)\t\(.isDraft)\t\([.labels[].name] | join(","))"' 2>/dev/null | head -1
 }
+# A closed, unmerged PR means a human declined the task, unless they labelled
+# it with the retry label, which says "run it again from scratch".
 closed_unmerged_pr() {
   gh pr list --state closed --head "$(branch_for "$1")" --base "$BASE" \
-    --json number,mergedAt --jq '.[] | select(.mergedAt == null) | .number' 2>/dev/null | head -1
+    --json number,mergedAt,labels --jq ".[] | select(.mergedAt == null) | select([.labels[].name] | index(\"$RETRY_LABEL\") | not) | .number" 2>/dev/null | head -1
 }
 
 fill() { # fill <template-file> KEY=VALUE...  ({{KEY}} → VALUE, values may be multi-line)
@@ -171,6 +174,15 @@ run_check() { # run_check <round>: 0 if CHECK_CMD ends with CHECK OK
   local logf=$run_dir/check-$1.log
   (cd "$WORKTREE" && bounded "$CHECK_TIMEOUT" bash -c "$CHECK_CMD") >"$logf" 2>&1
   [ "$(tail -1 "$logf")" = "CHECK OK" ]
+}
+
+# gh pr create prints the PR's URL and has no --json; the number is the last
+# path segment. Falls back to looking the branch up, for a PR that already
+# exists from a killed run.
+open_pr_number() { # open_pr_number <gh pr create flags...>
+  local url
+  url=$(gh pr create --base "$BASE" --head "$branch" "$@" 2>&1 | grep -oE 'https://[^ ]+/pull/[0-9]+' | tail -1)
+  if [ -n "$url" ]; then echo "${url##*/}"; else gh pr view "$branch" --json number --jq .number; fi
 }
 
 pr_body() { # pr_body <n> <title> <status-line>
@@ -274,9 +286,8 @@ $(tail -60 "$run_dir/check-$round.log")"
     fi
     if [ "$round" -ge "$REPAIR_ROUNDS" ]; then
       gw push -q -u origin "$branch" || die "push failed"
-      pr=$(gh pr create --draft --base "$BASE" --head "$branch" --label "$BLOCKED_LABEL" \
-        --title "[task $n] $title" --body "$(pr_body "$n" "$title" "blocked: $( [ -z "$verdict" ] && echo "verifier red" || echo "$verdict")")" \
-        --json number --jq .number 2>/dev/null || gh pr view "$branch" --json number --jq .number)
+      pr=$(open_pr_number --draft --label "$BLOCKED_LABEL" --title "[task $n] $title" \
+        --body "$(pr_body "$n" "$title" "blocked: $( [ -z "$verdict" ] && echo "verifier red" || echo "$verdict")")")
       log "task $n: blocked after $((round + 1)) round(s); draft PR #$pr carries the evidence"
       return 1
     fi
@@ -284,9 +295,7 @@ $(tail -60 "$run_dir/check-$round.log")"
   done
 
   gw push -q -u origin "$branch" || die "push failed"
-  pr=$(gh pr create --base "$BASE" --head "$branch" --label "$LABEL" \
-    --title "[task $n] $title" --body "$(pr_body "$n" "$title" "$verdict")" \
-    --json number --jq .number 2>/dev/null || gh pr view "$branch" --json number --jq .number)
+  pr=$(open_pr_number --label "$LABEL" --title "[task $n] $title" --body "$(pr_body "$n" "$title" "$verdict")")
   log "task $n: PR #$pr open, handing to the gate"
   land_pr "$n" "$pr"
 }
