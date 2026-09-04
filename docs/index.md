@@ -16,7 +16,8 @@ Audio process tap records system audio with nothing joining the call, and that
 audio transcribes correctly. The base M5 with 16 GB is the target and is not yet
 measured — see [porting](developing/porting.md).
 
-There is no published release yet. Running ambient still means building it,
+v0.0.2 is published: a signed and notarised `Ambient-0.0.2.zip` on the
+releases page. Building from source is still the path this documentation takes,
 which is why [Getting started](using/getting-started.md) opens with a compiler.
 
 What you get once it runs is a menu bar item and a window. The menu bar item is
