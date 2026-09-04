@@ -58,6 +58,11 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+      # The PreToolUse guards the landing loop runs under; see docs/developing/landing.md.
+      - run: node --test ".claude/hooks/*.test.mjs"
       - uses: crate-ci/typos@v1.50.0
       - uses: EmbarkStudios/cargo-deny-action@v2.1.1
         with:
