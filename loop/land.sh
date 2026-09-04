@@ -106,7 +106,7 @@ plan_tasks() {
 # Task N is done when a merge commit on origin/<base> names its branch.
 task_done() {
   git -C "$repo" log "origin/$BASE" --merges --format=%s%n%b \
-    | grep -qE "(^|[^A-Za-z0-9/])$(branch_for "$1")([^A-Za-z0-9-]|$)"
+    | grep -E "(^|[^A-Za-z0-9-])$(branch_for "$1")([^A-Za-z0-9-]|$)" >/dev/null # not -q: with pipefail, grep quitting early fails the pipeline
 }
 
 # The open PR on task N's branch: "number<TAB>draft<TAB>labels" or nothing.
@@ -134,6 +134,10 @@ fill() { # fill <template-file> KEY=VALUE...  ({{KEY}} → VALUE, values may be 
 # loop must behave the same from launchd, a terminal, or a session, so those
 # variables are dropped for the child. --add-dir lets it read the brief, which
 # lives outside the worktree on purpose.
+# Commits here are signed through the 1Password SSH agent, which answers only
+# while the app is unlocked, and at 02:00 it is not. The generator's commits go
+# unsigned; the merge commit is GitHub's and the PR is the audit trail.
+unsigned=(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false)
 scrub=(-u CLAUDECODE -u CLAUDE_CODE_SUBPROCESS_ENV_SCRUB -u CLAUDE_CODE_CHILD_SESSION
   -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET
   -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_PID -u CLAUDE_EFFORT)
@@ -144,7 +148,7 @@ scrub=(-u CLAUDECODE -u CLAUDE_CODE_SUBPROCESS_ENV_SCRUB -u CLAUDE_CODE_CHILD_SE
 ask() { # ask <name> <permission-mode> <budget> <timeout> <prompt>
   local name=$1 mode=$2 budget=$3 t=$4 prompt=$5
   local out=$run_dir/$name.json
-  (cd "$WORKTREE" && bounded "$t" env "${scrub[@]}" claude -p "$prompt" \
+  (cd "$WORKTREE" && bounded "$t" env "${scrub[@]}" "${unsigned[@]}" claude -p "$prompt" \
       --permission-mode "$mode" --permission-prompts none --add-dir "$run_dir" \
       --setting-sources "$SETTING_SOURCES" --no-session-persistence \
       --max-budget-usd "$budget" --model "$MODEL" --output-format json) >"$out" 2>"$run_dir/$name.stderr" || true
@@ -167,6 +171,14 @@ ensure_worktree() {
 fresh_branch() { # fresh_branch <branch>: the branch at origin/<base>, no leftovers
   gw switch -q --detach "origin/$BASE"
   gw branch -q -D "$1" 2>/dev/null || true
+  # A retry after a closed PR finds the old branch still on the remote (GitHub
+  # deletes only on merge) and the push is refused as non-fast-forward. This is
+  # only reached when no PR is open on the branch, so the remote copy belongs
+  # to a closed PR, which keeps its own commits.
+  if gw ls-remote --exit-code --heads origin "$1" >/dev/null 2>&1; then
+    log "  deleting stale remote branch $1"
+    gw push -q origin --delete "$1" || die "cannot delete stale remote branch $1"
+  fi
   gw switch -q -c "$1" "origin/$BASE"
 }
 
