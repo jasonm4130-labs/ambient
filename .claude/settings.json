@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/check:*)",
+      "Bash(./scripts/check:*)",
+      "Bash(./merge-pr.sh:*)",
+      "Bash(loop/task-brief:*)",
+      "Bash(./loop/task-brief:*)",
+      "Bash(cargo:*)",
+      "Bash(git:*)",
+      "Bash(gh:*)"
+    ],
+    "deny": [
+      "Bash(gh pr merge:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)"
+    ]
+  }
+}
