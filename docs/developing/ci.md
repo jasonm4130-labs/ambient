@@ -53,7 +53,7 @@ that do not need a Mac are most of the wall clock. The `rust` job measured
 warnings`, `test --all-targets`, `symbolcheck` — and prints one `✓` line per
 step and `CHECK OK` last. On the first failure it prints `ERROR <step>`, then
 that step's full output, and exits 1. Quiet on success on purpose: the
-unattended landing loop (`docs/developing/landing.md`, arriving with the loop) runs it before every commit and
+unattended landing loop ([landing](landing.md)) runs it before every commit and
 again afterwards, and reads only the last line. It is narrower than CI by
 design; `typos`, `cargo-deny`, the `ui` job and `make-app.sh` still run only on
 the pull request, which is the cheap form of a holdout suite.

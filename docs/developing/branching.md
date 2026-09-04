@@ -26,6 +26,9 @@ the four expected checks to register first, then refuses a PR where any of them
 fails or never appears. Passing a number merges a PR other than the current
 branch's — a dependabot bump, for instance.
 
+The same path is what the overnight loop walks without anyone at the keyboard;
+see [landing work overnight](landing.md).
+
 ## Why it is enforced locally
 
 The repository is private on a plan without branch protection, so GitHub

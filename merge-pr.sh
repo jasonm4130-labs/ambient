@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Merge a pull request into main the one way this repo allows.
 #
-#   ./merge-pr.sh [<pr-number>]      defaults to the PR for the current branch
+#   ./merge-pr.sh [--stay] [<pr-number>]   defaults to the PR for the current branch
 #
 # Waits for every CI check on the PR to pass, merges with a merge commit,
 # lets GitHub delete the branch, then puts the working tree back on an
@@ -15,6 +15,8 @@
 # nothing else, so the PR's history survives as it was reviewed.
 set -euo pipefail
 
+stay=0
+if [ "${1:-}" = "--stay" ]; then stay=1; shift; fi
 pr="${1:-}"
 if [ -z "$pr" ]; then
   pr=$(gh pr view --json number --jq .number 2>/dev/null || true)
@@ -70,6 +72,10 @@ fi
 
 gh pr merge "$pr" --merge --delete-branch=false
 echo "merged PR #$pr with a merge commit"
+
+# --stay: merge and stop. The landing loop runs this from its own worktree,
+# where main is not checkable-out and the caller does its own tidying.
+if [ "$stay" = 1 ]; then exit 0; fi
 
 # Back to an up-to-date main. `--ff-only` so a local main that has somehow
 # diverged is reported, not silently merged.
