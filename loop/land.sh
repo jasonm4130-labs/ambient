@@ -125,14 +125,24 @@ fill() { # fill <template-file> KEY=VALUE...  ({{KEY}} → VALUE, values may be 
   printf '%s\n' "$text"
 }
 
+# A claude launched from inside another Claude Code session inherits that
+# session's environment, and the CLI then forces default permission mode as a
+# hardening step, which turns every edit into a prompt nobody can answer. The
+# loop must behave the same from launchd, a terminal, or a session, so those
+# variables are dropped for the child. --add-dir lets it read the brief, which
+# lives outside the worktree on purpose.
+scrub=(-u CLAUDECODE -u CLAUDE_CODE_SUBPROCESS_ENV_SCRUB -u CLAUDE_CODE_CHILD_SESSION
+  -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET
+  -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_PID -u CLAUDE_EFFORT)
+
 # One claude -p call. Writes the JSON envelope and the text result to run_dir,
 # logs the cost, and prints the result text. Never fails the script: the caller
 # judges by what is in git, not by the exit code.
 ask() { # ask <name> <permission-mode> <budget> <timeout> <prompt>
   local name=$1 mode=$2 budget=$3 t=$4 prompt=$5
   local out=$run_dir/$name.json
-  (cd "$WORKTREE" && bounded "$t" claude -p "$prompt" \
-      --permission-mode "$mode" --permission-prompts none \
+  (cd "$WORKTREE" && bounded "$t" env "${scrub[@]}" claude -p "$prompt" \
+      --permission-mode "$mode" --permission-prompts none --add-dir "$run_dir" \
       --setting-sources "$SETTING_SOURCES" --no-session-persistence \
       --max-budget-usd "$budget" --model "$MODEL" --output-format json) >"$out" 2>"$run_dir/$name.stderr" || true
   jq -r '.result // empty' "$out" 2>/dev/null >"$run_dir/$name.md" || true
