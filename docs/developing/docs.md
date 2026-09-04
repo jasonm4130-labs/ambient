@@ -109,7 +109,7 @@ may change.
 
 ## The build guards
 
-`docs.yml` runs six checks, and each one exists because something got through
+The `docs` job in `ci.yml` runs six checks, and each one exists because something got through
 without it.
 
 **Every mermaid fence reached the renderer.** Counts pages with a fence in
@@ -194,7 +194,7 @@ Two things must be settled before it is turned on:
    `CLOUDFLARE_ACCOUNT_ID` — get seeded from 1Password rather than pasted:
    `op read 'op://…/CLOUDFLARE_API_TOKEN' | gh secret set CLOUDFLARE_API_TOKEN`.
 
-Until then `docs.yml` builds and verifies the site on every change and uploads
+Until then the `docs` job builds and verifies the site on every change and uploads
 the result as an artifact. The `site` value in `docs-site/astro.config.ts` is a
 placeholder, and canonical URLs, the sitemap, `robots.txt` and the links in
 `/llms.txt` are all wrong until the Worker exists and that value is corrected.

@@ -30,7 +30,7 @@ that renders but reaches nothing.
 CI verifies that the thing assembles, and dedicated binaries assert on what
 macOS actually resolves and what actually reaches the WKWebView bridge.
 
-`.github/workflows/ci.yml` has three jobs. `hygiene` and `ui` run on Linux
+`.github/workflows/ci.yml` had three jobs when this was written (a `docs` job and a `gate` joined them on 2026-09-04). `hygiene` and `ui` run on Linux
 (`blacksmith-4vcpu-ubuntu-2404`, $0.004/min): typos and cargo-deny never
 invoke rustc, and `ui/` is plain TypeScript — `pnpm check`, `lint`, `build`,
 then `git diff --exit-code assets/settings.html` to catch a committed bundle

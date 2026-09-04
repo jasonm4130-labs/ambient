@@ -74,7 +74,7 @@ is acceptable.
 
 ## Confirmation
 
-`.github/workflows/docs.yml`. Three of its checks fail if this decision drifts:
+the `docs` job of `.github/workflows/ci.yml` (its own workflow, `docs.yml`, until 2026-09-04). Three of its checks fail if this decision drifts:
 
 - **Every mermaid fence reached the renderer** compares fence count in `docs/`
   against `<pre class="mermaid">` count in `dist/`, and fails outright if a

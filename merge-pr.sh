@@ -38,13 +38,16 @@ if [ "$base_ref" != "main" ]; then
 fi
 
 echo "PR #$pr: $head_ref → main. Waiting for checks…"
-# The checks this repo runs on every PR. `gh pr checks --watch` only waits
-# for checks that have already been registered, and a check appears some
-# seconds after the push — so a watch started straight after `gh pr create`
-# sees only the instant-skip app check, returns, and the PR merges with CI
-# still queued. That happened on PR #8. So: wait until every expected check
-# has reported, then require each to have passed.
-expected=(hygiene ui rust build)
+# `gate` is ci.yml's last job: it needs every other job and passes only when
+# each succeeded or was skipped by the paths filter. `gh pr checks --watch`
+# only waits for checks that have already been registered, and a check
+# appears some seconds after the push — so a watch started straight after
+# `gh pr create` sees only the instant-skip app check, returns, and the PR
+# merges with CI still queued. That happened on PR #8. So: wait until gate
+# has registered, then require every check to have passed. (Until 2026-09-04
+# this listed four job names, one of them `build` from a paths-filtered docs
+# workflow — a src-only PR would have waited five minutes and been refused.)
+expected=(gate)
 for _ in $(seq 1 60); do
   names=$(gh pr checks "$pr" --json name --jq '.[].name' 2>/dev/null || true)
   missing=()
