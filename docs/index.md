@@ -16,8 +16,10 @@ Audio process tap records system audio with nothing joining the call, and that
 audio transcribes correctly. The base M5 with 16 GB is the target and is not yet
 measured — see [porting](developing/porting.md).
 
-There is no published release yet. Running ambient still means building it,
-which is why [Getting started](using/getting-started.md) opens with a compiler.
+Two releases are published, v0.0.1 and v0.0.2, both built by `release.sh` and
+both signed, notarised and stapled. Running ambient from source is still the
+documented path, which is why [Getting started](using/getting-started.md) opens
+with a compiler.
 
 What you get once it runs is a menu bar item and a window. The menu bar item is
 the consent surface — it arms when a watched app starts audio and is answerable
@@ -26,12 +28,12 @@ the sessions are: a list, a transcript, the recording in flight pinned at the
 top of it, and the warnings a capture stored about itself. The CLI verbs remain
 the whole surface for scripting and debugging.
 
-## What a packaged release still needs
+## What the release script proves, and what it does not
 
-The tooling now exists and the last missing piece is an Apple certificate.
-`release.sh` builds, signs with a Developer ID identity, notarises, staples and
-publishes; `make-app.sh` applies the hardened runtime and the one entitlement
-the microphone needs under it, and bundles the ~671 MB of models the app loads
+The tooling exists and two releases have come out of it. `release.sh` builds,
+signs with a Developer ID identity, notarises, staples and publishes;
+`make-app.sh` applies the hardened runtime and the one entitlement the
+microphone needs under it, and bundles the ~671 MB of models the app loads
 so a download works with no `fetch-models.sh` and no repo on the machine.
 
 What is verified: the hardened runtime does not break ONNX Runtime (it is
@@ -40,16 +42,17 @@ microphone records with only `com.apple.security.device.audio-input`, and a
 bundle carrying its own models resolves them from a working directory that has
 none.
 
-What is not: **notarisation has never been run**, because it needs a Developer
-ID Application certificate and none exists yet. The CSR and its private key sit
-in `.signing/`, so the remaining step is uploading that CSR to
-developer.apple.com and importing the certificate that comes back. Until then
-`setup-signing.sh` produces a self-signed identity that is valid on the machine
-that made it and nowhere else.
+What is not: **what a downloader sees**. Notarisation has run twice —
+`release.sh` submitted, stapled and published v0.0.1 and v0.0.2, and it refuses
+to publish a bundle that fails `xcrun stapler validate` — but that check and
+`spctl` both run on the machine that built the bundle. Confirming the release
+opens with no Gatekeeper dialog means fetching the published asset in a browser
+and opening it, by hand. `setup-signing.sh` still produces a self-signed
+identity for local builds, valid on the machine that made it and nowhere else.
 
-Even then neither `record` nor `tap` could be run straight from a shell. They
-already are ordinary CLI verbs; the constraint is the launch, not the argument
-parsing. The truth table in [when it does not
+Even with the releases out, neither `record` nor `tap` can be run straight from
+a shell. They already are ordinary CLI verbs; the constraint is the launch, not
+the argument parsing. The truth table in [when it does not
 work](using/troubleshooting.md) holds that a shell launch leaves the call track
 silent regardless of how the app is signed, because TCC attributes the request
 to the terminal — so both have to be started through LaunchServices, `open -a …
