@@ -22,8 +22,8 @@ gh pr create --fill
 
 `merge-pr.sh` waits for every check on the PR to pass, merges with a merge
 commit, and puts the working tree back on an up-to-date `main`. It waits for
-the four expected checks to register first, then refuses a PR where any of them
-fails or never appears. Passing a number merges a PR other than the current
+the `gate` check to register first, then refuses a PR where any check fails
+or never appears. Passing a number merges a PR other than the current
 branch's — a dependabot bump, for instance.
 
 The same path is what the overnight loop walks without anyone at the keyboard;
