@@ -111,6 +111,38 @@ front.
 A noise prefix does not merely add junk; it derails the decode into a different
 sentence outright.
 
+## Fixtures
+
+Word error rate is measured against LibriSpeech test-clean (CC BY 4.0,
+[openslr.org/12](https://www.openslr.org/12)). Build it with:
+
+```sh
+scripts/fetch-fixtures            # cached after the first run
+scripts/fetch-fixtures --force    # rebuild the stitched fixture
+```
+
+Everything lands in `~/.cache/ambient/`, never in the repo: the archive is
+330 MB and the licence is the corpus's, not ours. The archive caches at
+`~/.cache/ambient/librispeech/`; the fixture the harness reads is
+`~/.cache/ambient/fixtures/wer/`, holding a wav and a reference transcript per
+speaker and a `manifest.json` naming both.
+
+The three speakers are the first three directories of `test-clean` in sorted
+order, each one's first chapter — which audio this scores is a property of the
+corpus, not a list someone typed. A speaker's utterances are concatenated in id
+order with 700 ms of silence between them, so the fixture is one long track of
+the kind `ambient record` sees and the gaps give the VAD turn boundaries to
+find.
+
+| Speaker | Utterances | Seconds |
+| --- | ---: | ---: |
+| 1089 | 38 | 302.11 |
+| 1188 | 45 | 522.73 |
+| 121 | 15 | 88.89 |
+
+A second run does no network and rewrites nothing; `--force` restitches from
+the extracted corpus without re-downloading it.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
