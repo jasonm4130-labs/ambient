@@ -23,6 +23,7 @@ USAGE
   ambient config [<key> <value>]       show or change settings
   ambient roster [add|rm <name>]       the people you record with
   ambient probe                        check this machine is viable
+  ambient mcp                          serve sessions to an MCP client on stdio
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
   ambient vad <a.wav>                  show detected speech segments
@@ -538,6 +539,11 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("mcp") => ambient::mcp::serve(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+            &ambient::session::home(),
+        ),
         _ => {
             print!("{USAGE}");
             Ok(())
