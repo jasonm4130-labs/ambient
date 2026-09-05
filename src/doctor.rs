@@ -44,7 +44,19 @@ pub fn run(models: Result<PathBuf>, config_file: &Path, sessions: &Path) -> Vec<
 
     match &models {
         Ok(root) => {
-            out.push(check("models/root", true, root.display().to_string()));
+            // `AMBIENT_MODELS` can name a directory that is not there; the
+            // root is only ok when it exists, or every model check below
+            // fails for a reason this line has just called fine.
+            let there = root.is_dir();
+            out.push(check(
+                "models/root",
+                there,
+                if there {
+                    root.display().to_string()
+                } else {
+                    format!("{} does not exist", root.display())
+                },
+            ));
             let f = session::model_files(root);
             // The ASR model is a directory of tensors and configs; the other
             // three are single files.
@@ -276,6 +288,18 @@ mod tests {
     /// No models directory at all: every model check fails for the one reason,
     /// and the sessions half of the report still runs — the whole point of a
     /// doctor is that one broken thing does not hide the others.
+    /// `AMBIENT_MODELS` pointing at nothing must not read as a root that is
+    /// present: the verb exists to say what is missing.
+    #[test]
+    fn a_models_root_that_does_not_exist_is_not_ok() {
+        let (_, config_file, sessions) = fixture("absent-root");
+        let missing = scratch("absent-root-models").join("nowhere");
+        let checks = run(Ok(missing.clone()), &config_file, &sessions);
+        assert!(!ok(&checks, "models/root"));
+        assert!(detail(&checks, "models/root").contains("does not exist"));
+        assert!(!ok(&checks, "models/asr"));
+    }
+
     #[test]
     fn a_missing_models_root_fails_all_four_and_still_checks_sessions() {
         let (models, config, sessions) = fixture("noroot");
