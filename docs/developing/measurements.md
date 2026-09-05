@@ -243,6 +243,125 @@ with no `--model` — because switching spends 1.1 GB of headroom on a machine
 nobody has run this on to buy half a point of word error rate. Measure the port
 first; the table says which way it should then go.
 
+## Diarization error rate on the fixture
+
+`cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
+[--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
+`ambient record` runs for a finished session — the model resolution of
+`session::diarize_session`, the same pyannote segmentation and WeSpeaker
+embedding, `Diarizer::diarize` at the shipped 0.5 threshold — so these are the
+numbers a user gets. Scored at the conventional 0.25 s collar; `--collar 0`
+scores every frame instead.
+
+| Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER | Run |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 300.00 | 3 | 6 | 9.65 s | 4.49 s | 2.61 s | 0.1279 | 1.90 s |
+| IS1009a | 300.00 | 4 | 7 | 4.80 s | 8.21 s | 17.23 s | 0.2058 | 2.21 s |
+| TS3003a | 300.00 | 4 | 6 | 15.69 s | 2.27 s | 7.08 s | 0.1116 | 2.67 s |
+| **total** | 900.00 | 11 | 19 | 30.14 s | 14.97 s | 26.92 s | **0.1434** | 6.77 s |
+
+The total is computed over the summed error seconds rather than averaged over
+the rows, so a meeting with less speech in it cannot outvote a talkative one.
+Speaker counts sum rather than dedupe: speaker 0 of one meeting is not speaker
+0 of the next.
+
+Every meeting over-clusters: 19 hypothesis speakers against 11 in the
+reference, and IS1009a pays for it with 17.23 s of confusion and a DER nearly
+double the other two. Missed speech is still the largest component at 30.14 s
+across the three, ahead of confusion at 26.92 s, so the shipped threshold is
+not the only thing between this fixture and a lower number. What the threshold
+alone can reach is the next task's sweep, scored on this same harness.
+
+`--json` writes the same rows, the total among them with
+`speaker` reading `total`.
+
+## The two shipped models on the same fixture
+
+Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the
+only difference — on 2026-09-05, this machine. Three runs of each, interleaved
+so both models see the same machine load; the table is each model's median run
+by total decode.
+
+| Model | Speaker | Seconds | Ref words | S | I | D | WER | Decode | Realtime |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| v3 int8 | 1089 | 302.11 | 721 | 3 | 0 | 0 | 0.0042 | 7.73 s | 39x |
+| v3 int8 | 1188 | 522.73 | 1296 | 29 | 2 | 4 | 0.0270 | 12.69 s | 41x |
+| v3 int8 | 121 | 88.89 | 135 | 7 | 1 | 1 | 0.0667 | 2.16 s | 41x |
+| **v3 int8** | **total** | 913.74 | 2152 | 39 | 3 | 5 | **0.0218** | **22.58 s** | **40x** |
+| v2 fp16 | 1089 | 302.11 | 721 | 1 | 0 | 0 | 0.0014 | 6.50 s | 46x |
+| v2 fp16 | 1188 | 522.73 | 1296 | 26 | 1 | 1 | 0.0216 | 14.84 s | 35x |
+| v2 fp16 | 121 | 88.89 | 135 | 4 | 1 | 1 | 0.0444 | 3.50 s | 25x |
+| **v2 fp16** | **total** | 913.74 | 2152 | 31 | 2 | 2 | **0.0163** | **24.84 s** | **37x** |
+
+The two columns are not equally trustworthy, and the runs say which is which.
+Every run of a model returned the same counts to the last substitution — v3 at
+39/3/5 and v2 at 31/2/2, v3's reproducing `quality/wer.json` exactly — so the
+accuracy gap is a property of the models: 0.0163 against 0.0218, half a point
+of word error rate, and v2 fp16 wins on each speaker individually rather than
+on one fixture carrying it.
+
+Decode seconds are the opposite. Across the three runs the total moved between
+21.59 s and 27.44 s for v3 and between 20.80 s and 26.15 s for v2 — ranges that
+overlap for most of their length, on a machine with other work on it. The
+19.77 s recorded for v3 in the section above is a further run of the same
+binary on the same fixture, and it sits below all three here. So this fixture
+on this machine does not separate the two models on speed at all, and any
+decode figure quoted from a single run, including the ones in the table above,
+is worth roughly ±3 s. That is why `scripts/quality` gates the counts and not
+the timings.
+
+Accuracy and speed are not the whole decision, and here only accuracy is
+measured well. The Phase 0 table above puts v2 fp16 at 3745 MB peak against v3
+int8's 2594 MB for the same 60 s of audio, and the 16 GB target is still
+[unmeasured](porting.md). The default stays v3 int8 — `session::model_paths`
+with no `--model` — because switching spends 1.1 GB of headroom on a machine
+nobody has run this on to buy half a point of word error rate. Measure the port
+first; the table says which way it should then go.
+
+## Diarization error rate on the fixture
+
+`cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
+[--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
+`ambient record` runs for a finished session — the model resolution of
+`session::diarize_session`, the same pyannote segmentation and WeSpeaker
+embedding, `Diarizer::diarize` at the shipped 0.5 threshold — so these are the
+numbers a user gets. Scored at the conventional 0.25 s collar; `--collar 0`
+scores every frame instead.
+
+| Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER | Run |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 300.00 | 3 | 6 | 9.65 s | 4.49 s | 2.61 s | 0.1279 | 1.90 s |
+| IS1009a | 300.00 | 4 | 7 | 4.80 s | 8.21 s | 17.23 s | 0.2058 | 2.21 s |
+| TS3003a | 300.00 | 4 | 6 | 15.69 s | 2.27 s | 7.08 s | 0.1116 | 2.67 s |
+| **total** | 900.00 | 11 | 19 | 30.14 s | 14.97 s | 26.92 s | **0.1434** | 6.77 s |
+
+The total is computed over the summed error seconds rather than averaged over
+the rows, so a meeting with less speech in it cannot outvote a talkative one.
+Speaker counts sum rather than dedupe: speaker 0 of one meeting is not speaker
+0 of the next.
+
+Every meeting over-clusters — 19 hypothesis speakers against 11 in the
+reference — and IS1009a pays for it with 17.23 s of confusion and a DER nearly
+double the other two. It is still not where most of the error is. Missed
+speech is the largest single component at 30.14 s, and `--threshold` cannot
+touch it: swept from 0.4 to 0.9 it leaves missed and false alarm at exactly
+30.14 s and 14.97 s while confusion ranges from 16.00 s to 58.71 s.
+`Diarizer::diarize` takes one winning speaker per frame, so relabelling
+clusters cannot change how many speakers are heard at once — and the
+references carry 21.5 s of overlapping speech that a single-label output has
+no way to attribute. Those 45.11 s put a floor of 0.090 under the DER on this
+fixture that no clustering change reaches; the rest is segmentation.
+
+The threshold does move confusion, and not monotonically: 0.6 scores 0.1217
+against the shipped 0.5's 0.1434, and 0.7 gives 0.1375 back. Three meetings is
+not a holdout to move the default on. Speed is not the constraint: 900 s of
+audio separated in 6.77 s.
+
+`--json` writes the same rows as
+`{"meeting", "seconds", "reference_speakers", "hypothesis_speakers",
+"missed_s", "false_alarm_s", "confusion_s", "der", "run_s"}`, the total among
+them with `meeting` reading `total`.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
