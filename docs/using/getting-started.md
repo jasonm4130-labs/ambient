@@ -171,8 +171,9 @@ launched the way the section above insists on; the flags are in
 strip under the transcript, or `ambient name <dir> call-1 Priya`; either way
 every line carrying that label moves. It appends one edit per line rather than
 overwriting anything, so the raw transcript survives and re-running `diarize`
-will not turn the name back. Getting the name back is `ambient undo <dir>`,
-which reverts that whole batch of edits and puts the old label back. Getting the markdown out needs
+will not turn the name back. Taking a name back is `ambient undo <dir>`, which
+reverts that whole batch of edits — see [commands](commands.md) for what
+surfaces underneath. Getting the markdown out needs
 nothing at all: `record` writes `transcript.md` into the session directory
 itself, *Copy Markdown* puts it on the clipboard, and
 [export](commands.md) exists to regenerate it or put a copy

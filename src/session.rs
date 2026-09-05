@@ -1541,10 +1541,13 @@ fn append_reverts(dir: &Path, seqs: &[usize]) -> Result<()> {
 /// [`name_speaker`] appends one edit per line, all carrying the same `at`, so
 /// the thing a person means by "the last name I set" is that whole batch and
 /// not its final line. Undoing appends like every other change here —
-/// `edits.jsonl` only grows — and the label underneath, usually diarization's,
-/// comes back because its own edit was never touched. Only `user` edits are
-/// candidates: reverting diarization's labels is what re-running `diarize`
-/// does, and it is not what somebody asking to undo a naming means.
+/// `edits.jsonl` only grows — and whatever speaker edit is still live for the
+/// line surfaces again. That is usually diarization's, but a `diarize` re-run
+/// reverts its own previous labels and writes no replacement for a line
+/// somebody has named, so after a retune a line can come back with no speaker
+/// until `diarize` runs again. Only `user` edits are candidates: reverting
+/// diarization's labels is what re-running `diarize` does, and it is not what
+/// somebody asking to undo a naming means.
 pub fn undo_last_naming(dir: &Path) -> Result<usize> {
     let edits = read_edits(dir)?;
     let reverted = reverted_seqs(&edits);
