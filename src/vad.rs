@@ -170,11 +170,13 @@ impl Vad {
         let probs = self.probabilities(samples)?;
         let rms = Self::frame_rms(samples);
         let floor = Self::speech_floor(&rms);
-        let segs = Self::trim_quiet(self.segments_from(&probs, samples.len()), &rms, floor);
+        let segs = Self::trim_quiet(Self::segments_from(&probs, samples.len()), &rms, floor);
         Ok((probs, segs))
     }
 
-    fn segments_from(&self, probs: &[f32], n_samples: usize) -> Vec<Segment> {
+    /// Hysteresis over the per-frame probabilities. No model and no audio,
+    /// so it is testable on its own.
+    fn segments_from(probs: &[f32], n_samples: usize) -> Vec<Segment> {
         let samples_len = n_samples;
         let ms = |n: usize| n * SR / 1000;
         let min_speech = ms(MIN_SPEECH_MS);
@@ -187,6 +189,10 @@ impl Vad {
         let mut silence_run = 0usize;
 
         for (i, &p) in probs.iter().enumerate() {
+            // NaN and the infinities compare false against both thresholds, so
+            // an unguarded one holds a segment open to the end of the
+            // recording. Read it as silence and let the hysteresis decide.
+            let p = if p.is_finite() { p } else { 0.0 };
             let at = i * FRAME;
             if !in_speech {
                 if p >= ON {
@@ -364,5 +370,124 @@ mod tests {
             floor,
         );
         assert_eq!(segs.len(), 1);
+    }
+}
+
+/// The hysteresis is a pure function of the per-frame probabilities, so it is
+/// exercised without a model: `cargo test vad::segments`. Its own module so
+/// that filter selects exactly these.
+#[cfg(test)]
+mod segments {
+    use super::*;
+
+    const PAD: usize = PAD_MS * SR / 1000;
+
+    /// Frames on the production grid: each `(value, ms)` contributes as many
+    /// frames as that much audio would, rounding up the way `probabilities`
+    /// does when it zero-pads the tail frame.
+    fn probs(pattern: &[(f32, u32)]) -> Vec<f32> {
+        pattern
+            .iter()
+            .flat_map(|&(v, ms)| std::iter::repeat_n(v, (ms as usize * SR / 1000).div_ceil(FRAME)))
+            .collect()
+    }
+
+    /// Samples a probability array implies.
+    fn samples(p: &[f32]) -> usize {
+        p.len() * FRAME
+    }
+
+    fn run(p: &[f32]) -> Vec<Segment> {
+        Vad::segments_from(p, samples(p))
+    }
+
+    #[test]
+    fn silence_yields_nothing() {
+        assert!(run(&probs(&[(0.0, 2000)])).is_empty());
+    }
+
+    #[test]
+    fn a_turn_is_padded_either_side() {
+        let p = probs(&[(0.0, 1000), (1.0, 1000), (0.0, 1000)]);
+        let lead = samples(&probs(&[(0.0, 1000)]));
+        let speech_end = lead + samples(&probs(&[(1.0, 1000)]));
+        let segs = run(&p);
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert!(
+            segs[0].start.abs_diff(lead - PAD) < FRAME,
+            "start {} is not PAD_MS before {lead}",
+            segs[0].start
+        );
+        assert!(
+            segs[0].end.abs_diff(speech_end + PAD) < FRAME,
+            "end {} is not PAD_MS after {speech_end}",
+            segs[0].end
+        );
+    }
+
+    #[test]
+    fn a_turn_shorter_than_min_speech_is_dropped() {
+        assert!(run(&probs(&[(0.0, 500), (1.0, 100), (0.0, 1000)])).is_empty());
+    }
+
+    #[test]
+    fn a_gap_under_min_silence_does_not_split() {
+        let segs = run(&probs(&[(1.0, 500), (0.0, 200), (1.0, 500)]));
+        assert_eq!(segs.len(), 1, "{segs:?}");
+    }
+
+    #[test]
+    fn a_gap_over_min_silence_splits() {
+        let segs = run(&probs(&[(1.0, 500), (0.0, 600), (1.0, 500)]));
+        assert_eq!(segs.len(), 2, "{segs:?}");
+    }
+
+    #[test]
+    fn a_gap_of_exactly_min_silence_splits() {
+        // The rule, as the code has it: MIN_SILENCE_MS is inclusive, and the
+        // silence run is counted in whole frames, so 400 ms of gap becomes 13
+        // frames (6656 samples) against a 6400-sample threshold and closes the
+        // segment. A gap at the boundary splits.
+        let segs = run(&probs(&[(1.0, 500), (0.0, 400), (1.0, 500)]));
+        assert_eq!(segs.len(), 2, "{segs:?}");
+    }
+
+    #[test]
+    fn probabilities_below_on_never_open_a_turn() {
+        assert!(run(&probs(&[(0.45, 1000)])).is_empty());
+    }
+
+    #[test]
+    fn a_turn_continues_through_probabilities_above_off() {
+        let p = probs(&[(1.0, 500), (0.40, 1000)]);
+        let segs = run(&p);
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].end, samples(&p), "the 0.40 run is still the turn");
+    }
+
+    #[test]
+    fn a_turn_running_to_the_end_stops_at_the_last_sample() {
+        let p = probs(&[(0.0, 500), (1.0, 1000)]);
+        let segs = run(&p);
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].end, samples(&p));
+
+        // And never past the recording when it does not fill its last frame.
+        let ragged = samples(&p) - 300;
+        let segs = Vad::segments_from(&p, ragged);
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].end, ragged);
+    }
+
+    #[test]
+    fn a_non_finite_probability_reads_as_silence() {
+        // NaN compares false against both thresholds, so left alone it neither
+        // opens nor closes a turn — it holds one open to the end of the
+        // recording, swallowing the silence after it.
+        let p = probs(&[(1.0, 500), (f32::NAN, 1000), (0.0, 1000)]);
+        let speech_end = samples(&probs(&[(1.0, 500)]));
+        let segs = run(&p);
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].end, speech_end + PAD);
     }
 }
