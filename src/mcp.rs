@@ -5,10 +5,11 @@
 //! runtime and no MCP SDK, because the protocol that matters here is four
 //! methods wide and an SDK would be more code than the server.
 //!
-//! The loop never dies on input. Every way a line can be wrong becomes an
-//! error *response*, so a client that sends one bad line keeps its session.
-//! [`serve`] takes its reader, writer and sessions folder as arguments so the
-//! tests drive exactly what `main` drives, with buffers in place of pipes.
+//! The loop never dies on input. Every way a line can be wrong — down to
+//! bytes that are not UTF-8 — becomes an error *response*, so a client that
+//! sends one bad line keeps its session. [`serve`] takes its reader, writer
+//! and sessions folder as arguments so the tests drive exactly what `main`
+//! drives, with buffers in place of pipes.
 
 use crate::session;
 use anyhow::Result;
@@ -16,14 +17,12 @@ use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-/// The newest revision this server implements. The 2026-07-28 revision retired
-/// the `initialize` handshake and is deliberately not claimed.
+/// The revision this server implements, and the only one it claims. A client
+/// offering any other gets this back rather than its own version, which is
+/// what the lifecycle spec asks of a server that does not speak what it was
+/// offered. Claiming a revision means implementing all of it, and one is what
+/// this loop has been written and tested against.
 const PROTOCOL: &str = "2025-11-25";
-
-/// The revisions we will answer in the client's own terms. Anything else gets
-/// [`PROTOCOL`], which is what the lifecycle spec asks of a server that does
-/// not speak the version it was offered.
-const SUPPORTED: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -33,9 +32,18 @@ const INVALID_PARAMS: i64 = -32602;
 /// Read requests from `reader` until EOF, writing one response line each to
 /// `writer`. Returns `Ok(())` at EOF; only a broken pipe or unreadable stdin
 /// is an error, since everything else is answered on the wire.
-pub fn serve<R: BufRead, W: Write>(reader: R, mut writer: W, root: &Path) -> Result<()> {
-    for line in reader.lines() {
-        let line = line?;
+pub fn serve<R: BufRead, W: Write>(mut reader: R, mut writer: W, root: &Path) -> Result<()> {
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        // Bytes rather than `lines()`, which turns a line that is not UTF-8
+        // into an `Err` and so takes the whole stream down with it. Lossy
+        // decoding leaves such a line as a parse error the client is told
+        // about, and the requests after it are still answered.
+        if reader.read_until(b'\n', &mut buffer)? == 0 {
+            return Ok(());
+        }
+        let line = String::from_utf8_lossy(&buffer);
         if line.trim().is_empty() {
             continue;
         }
@@ -46,7 +54,6 @@ pub fn serve<R: BufRead, W: Write>(reader: R, mut writer: W, root: &Path) -> Res
             writer.flush()?;
         }
     }
-    Ok(())
 }
 
 /// One request line to its response, or `None` for a notification — which has
@@ -68,7 +75,7 @@ pub fn handle(line: &str, root: &Path) -> Option<Value> {
     };
     let params = object.get("params");
     let answered = match method {
-        "initialize" => Ok(initialize(params)),
+        "initialize" => Ok(initialize()),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
         "tools/call" => call(params, root),
@@ -102,18 +109,9 @@ fn failure(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn initialize(params: Option<&Value>) -> Value {
-    let asked = params
-        .and_then(|p| p.get("protocolVersion"))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let version = if SUPPORTED.contains(&asked) {
-        asked
-    } else {
-        PROTOCOL
-    };
+fn initialize() -> Value {
     json!({
-        "protocolVersion": version,
+        "protocolVersion": PROTOCOL,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "ambient", "version": env!("CARGO_PKG_VERSION")},
     })
@@ -180,12 +178,31 @@ fn content(value: &Value, is_error: bool) -> Value {
     json!({"content": [{"type": "text", "text": text}], "isError": is_error})
 }
 
+/// Every field of `status` is drawn from [`session_dirs`], and none of them
+/// from anywhere else.
+///
+/// `session::live_session_in` and `session::captured_awaiting_transcript` both
+/// enumerate the root with `is_dir`, which follows a symlink: left to
+/// themselves they will happily report a directory somewhere else on disk as a
+/// session of this machine. `live` repeats `live_session_in`'s rule here — the
+/// last id whose native scratch wav is still growing — rather than filtering
+/// its answer, because a link sorting after the real live session would
+/// otherwise not merely be excluded but hide it.
 fn status(root: &Path) -> Value {
+    let dirs = session_dirs(root);
+    let live = dirs
+        .iter()
+        .rev()
+        .find(|d| session::is_growing(&d.join("audio").join("room.native.wav")))
+        .and_then(|d| d.file_name().map(|n| json!({"id": n.to_string_lossy()})));
+    let awaiting = session::captured_awaiting_transcript(root)
+        .into_iter()
+        .filter(|d| dirs.contains(d))
+        .count();
     json!({
-        "live": session::live_session_in(root)
-            .and_then(|d| d.file_name().map(|n| json!({"id": n.to_string_lossy()}))),
-        "awaiting_transcript": session::captured_awaiting_transcript(root).len(),
-        "sessions": session_dirs(root).len(),
+        "live": live,
+        "awaiting_transcript": awaiting,
+        "sessions": dirs.len(),
     })
 }
 
@@ -194,9 +211,10 @@ fn status(root: &Path) -> Value {
 /// A directory counts when it holds a `session.json` or a growing native
 /// scratch wav — the two ends of a recording's life — which is what keeps a
 /// stray `notes` folder out of the count. Unlike [`session::list`] the test is
-/// `symlink_metadata`, so a link is never followed: nothing outside the
-/// sessions folder is enumerated, whatever a link in it points at. Both
-/// `sessions` and `status.sessions` count this set, so they cannot disagree.
+/// `symlink_metadata`, so a link in the sessions folder is not a session
+/// whatever it points at. This is the server's containment, which is why
+/// [`status`] answers every one of its fields from this set, and why both
+/// `sessions` and `status.sessions` count it and so cannot disagree.
 fn session_dirs(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -312,8 +330,15 @@ mod tests {
     }
 
     /// `status` counts the directories that are sessions, and only those: a
-    /// stray folder is not one, and a symlink is never followed out of the
-    /// root — which is the whole of this server's containment.
+    /// stray folder is not one, and no field is answered from behind a symlink
+    /// out of the root.
+    ///
+    /// The two links here are shaped to be caught by each of the fields that
+    /// does not do its own walking: `outside` is what
+    /// `session::captured_awaiting_transcript` counts, `outside-live` is what
+    /// `session::live_session_in` would name — and it sorts after the real
+    /// live session, so a filter applied to that function's answer rather than
+    /// to the set it picks from would report no live session at all.
     #[test]
     fn status_counts_the_session_directories_and_names_the_live_one() {
         let root = scratch("status");
@@ -323,8 +348,18 @@ mod tests {
         std::fs::write(done.join("transcript.md"), "# transcript\n").unwrap();
         std::fs::create_dir_all(root.join("notes")).unwrap();
         let outside = scratch("status-outside");
+        std::fs::create_dir_all(outside.join("audio")).unwrap();
         std::fs::write(outside.join("session.json"), "{}").unwrap();
+        std::fs::write(outside.join("audio").join("room.wav"), b"RIFF....").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("outside")).unwrap();
+        let outside_live = scratch("status-outside-live");
+        std::fs::create_dir_all(outside_live.join("audio")).unwrap();
+        std::fs::write(
+            outside_live.join("audio").join("room.native.wav"),
+            b"RIFF....",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside_live, root.join("outside-live")).unwrap();
         let live = root.join("live");
         std::fs::create_dir_all(live.join("audio")).unwrap();
         std::fs::write(live.join("audio").join("room.native.wav"), b"RIFF....").unwrap();
@@ -385,6 +420,30 @@ mod tests {
         assert_eq!(got[2]["error"]["code"], -32600);
         assert_eq!(got[3]["error"]["code"], -32601);
         assert_eq!(got[4]["result"], json!({}));
+    }
+
+    /// A line of bytes that is not UTF-8 is a bad request like any other. It
+    /// arrives from a pipe, not from a well-behaved client, and taking the
+    /// rest of the stream down with it would drop requests that were fine.
+    #[test]
+    fn a_line_that_is_not_utf8_does_not_end_the_session() {
+        let root = scratch("bytes");
+        let mut out: Vec<u8> = Vec::new();
+        serve(
+            &b"\xff\xfe garbage\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n"[..],
+            &mut out,
+            &root,
+        )
+        .expect("serve reached EOF");
+        let got: Vec<Value> = String::from_utf8(out)
+            .expect("utf-8 output")
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("a JSON line"))
+            .collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0]["error"]["code"], -32700);
+        assert_eq!(got[1]["id"], 1);
+        assert_eq!(got[1]["result"], json!({}));
     }
 
     /// Task 2 fills these in. Until then they answer, so a client sees a tool
