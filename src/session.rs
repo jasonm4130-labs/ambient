@@ -1369,6 +1369,9 @@ pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Hit>> {
         };
         for (index, line) in lines.iter().enumerate() {
             if line.text.to_lowercase().contains(&needle) {
+                if hits.len() >= limit {
+                    break 'sessions;
+                }
                 hits.push(Hit {
                     session: id.clone(),
                     index,
@@ -1377,9 +1380,6 @@ pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Hit>> {
                     speaker: line.speaker.clone(),
                     text: line.text.clone(),
                 });
-                if hits.len() >= limit {
-                    break 'sessions;
-                }
             }
         }
     }

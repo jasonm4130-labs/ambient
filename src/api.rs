@@ -472,6 +472,24 @@ mod tests {
         );
     }
 
+    /// `limit: 0` must ask for no hits, not one — the truncation check has
+    /// to precede the push in `session::search` rather than follow it.
+    #[test]
+    fn search_with_limit_zero_returns_no_hits() {
+        let (paths, root) = temp_paths("search-limit-zero");
+        let dir = root.join("2026-09-05-1200");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("raw.jsonl"),
+            r#"{"track":"room","start_ms":5000,"end_ms":6000,"text":"the budget review is at noon","confidence":0.9}
+"#,
+        )
+        .unwrap();
+
+        let got = call("search", &json!({"query": "the", "limit": 0}), &paths).unwrap();
+        assert_eq!(got, json!([]));
+    }
+
     #[test]
     fn search_query_must_be_a_string() {
         let (paths, _root) = temp_paths("search-query-type");

@@ -166,6 +166,9 @@ fn call(params: Option<&Value>, root: &Path) -> Result<Value, Refusal> {
     }
     let empty = json!({});
     let arguments = params.get("arguments").unwrap_or(&empty);
+    if !MCP_TOOLS.contains(&name) {
+        return Err(invalid_params(format!("no such tool {name:?}")));
+    }
     let paths = Paths {
         config_file: config::path(),
         roster_file: roster::path(),
@@ -547,6 +550,17 @@ mod tests {
             let got = call_tool(&root, "transcript", args);
             assert_eq!(got["error"]["code"], -32602, "{args} -> {got}");
         }
+    }
+
+    /// `search` answers `api::call` but is not one of the three tools
+    /// `tools/list` advertises, so `tools/call` must refuse it rather than
+    /// routing it through anyway.
+    #[test]
+    fn an_unlisted_method_is_not_a_tool() {
+        let root = scratch("unlisted");
+        let got = call_tool(&root, "search", r#"{"query":"the"}"#);
+        assert_eq!(got["error"]["code"], -32602, "{got}");
+        assert_eq!(got["error"]["message"], "no such tool \"search\"", "{got}");
     }
 
     /// An id that is not one path segment inside the root never reaches the
