@@ -149,6 +149,26 @@ impl Config {
     }
 }
 
+/// Refuse a setting change that a running capture would make incoherent.
+///
+/// Only `sessions_dir` is at stake, and only while something is recording:
+/// moving it then splits one conversation across two folders for nothing, since
+/// the capture keeps writing into the directory it claimed at the start. The
+/// window already said no; saying it here too means the CLI cannot walk past a
+/// rule the GUI enforces.
+pub fn refuse_while_live(key: &str, live: Option<&Path>) -> Result<()> {
+    if key == "sessions_dir" {
+        if let Some(dir) = live {
+            anyhow::bail!(
+                "a recording is in progress in {}; stop it before moving the \
+                 sessions directory",
+                dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Parse a boolean setting, refusing anything it does not recognise.
 ///
 /// Treating every unrecognised word as `false` would mean `config diarize maybe`
@@ -248,6 +268,16 @@ mod tests {
         assert_eq!(c.audio_retention_days, None);
         c.set("audio_retention_days", "0").unwrap();
         assert_eq!(c.audio_retention_days, Some(0));
+    }
+
+    #[test]
+    fn moving_the_sessions_folder_mid_recording_is_refused() {
+        let e = refuse_while_live("sessions_dir", Some(Path::new("/x"))).unwrap_err();
+        assert!(e.to_string().contains("/x"), "{e}");
+        // Nothing is recording, and every other setting is free to change
+        // either way: only the folder the capture is writing into is at stake.
+        assert!(refuse_while_live("sessions_dir", None).is_ok());
+        assert!(refuse_while_live("diarize", Some(Path::new("/x"))).is_ok());
     }
 
     #[test]
