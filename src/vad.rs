@@ -170,11 +170,11 @@ impl Vad {
         let probs = self.probabilities(samples)?;
         let rms = Self::frame_rms(samples);
         let floor = Self::speech_floor(&rms);
-        let segs = Self::trim_quiet(self.segments_from(&probs, samples.len()), &rms, floor);
+        let segs = Self::trim_quiet(Self::segments_from(&probs, samples.len()), &rms, floor);
         Ok((probs, segs))
     }
 
-    fn segments_from(&self, probs: &[f32], n_samples: usize) -> Vec<Segment> {
+    fn segments_from(probs: &[f32], n_samples: usize) -> Vec<Segment> {
         let samples_len = n_samples;
         let ms = |n: usize| n * SR / 1000;
         let min_speech = ms(MIN_SPEECH_MS);
@@ -187,6 +187,10 @@ impl Vad {
         let mut silence_run = 0usize;
 
         for (i, &p) in probs.iter().enumerate() {
+            // A NaN or infinity compares false against both thresholds, which
+            // would silently hold a turn open to the end of the recording.
+            // Read it as silence: it is not evidence of speech.
+            let p = if p.is_finite() { p } else { 0.0 };
             let at = i * FRAME;
             if !in_speech {
                 if p >= ON {
@@ -364,5 +368,108 @@ mod tests {
             floor,
         );
         assert_eq!(segs.len(), 1);
+    }
+}
+
+/// The hysteresis state machine on its own: no model, no audio, just a
+/// probability track and the segments it should imply.
+#[cfg(test)]
+mod segments {
+    use super::*;
+
+    /// One entry per `(value, ms)`, expanded onto the frame grid production
+    /// uses — `div_ceil`, so a run keeps its partial tail frame.
+    fn probs(pattern: &[(f32, u32)]) -> Vec<f32> {
+        pattern
+            .iter()
+            .flat_map(|&(v, ms)| std::iter::repeat_n(v, (ms as usize * SR / 1000).div_ceil(FRAME)))
+            .collect()
+    }
+
+    /// The recording is exactly as long as the frames it was cut into.
+    fn run(pattern: &[(f32, u32)]) -> Vec<Segment> {
+        let p = probs(pattern);
+        Vad::segments_from(&p, p.len() * FRAME)
+    }
+
+    /// 1000 ms of probabilities, in frames.
+    const SECOND: usize = 32;
+    const PAD: usize = PAD_MS * SR / 1000;
+
+    #[test]
+    fn silence_throughout_is_no_speech_at_all() {
+        assert!(run(&[(0.0, 2000)]).is_empty());
+    }
+
+    #[test]
+    fn a_turn_carries_pad_ms_either_side() {
+        let segs = run(&[(0.0, 1000), (1.0, 1000), (0.0, 1000)]);
+        assert_eq!(segs.len(), 1);
+        let (start, end) = (segs[0].start, segs[0].end);
+        assert!(
+            start.abs_diff(SECOND * FRAME - PAD) <= FRAME,
+            "start was {start}"
+        );
+        assert!(
+            end.abs_diff(2 * SECOND * FRAME + PAD) <= FRAME,
+            "end was {end}"
+        );
+    }
+
+    #[test]
+    fn a_burst_shorter_than_min_speech_is_dropped() {
+        assert!(run(&[(0.0, 500), (1.0, 100), (0.0, 1000)]).is_empty());
+    }
+
+    #[test]
+    fn a_gap_under_min_silence_does_not_split_a_turn() {
+        assert_eq!(run(&[(1.0, 500), (0.0, 200), (1.0, 500)]).len(), 1);
+    }
+
+    #[test]
+    fn a_gap_over_min_silence_splits_a_turn() {
+        assert_eq!(run(&[(1.0, 500), (0.0, 600), (1.0, 500)]).len(), 2);
+    }
+
+    #[test]
+    fn a_gap_of_exactly_min_silence_splits() {
+        // The rule, as the code has it: silence is counted in whole frames, and
+        // MIN_SILENCE_MS lands mid-frame (6400 samples, 12.5 frames), so the
+        // frame that completes the gap carries it past the threshold. Exactly
+        // MIN_SILENCE_MS therefore closes the turn rather than continuing it.
+        assert_eq!(run(&[(1.0, 500), (0.0, 400), (1.0, 500)]).len(), 2);
+    }
+
+    #[test]
+    fn probabilities_that_never_reach_on_open_nothing() {
+        assert!(run(&[(0.45, 1000)]).is_empty());
+    }
+
+    #[test]
+    fn a_dip_that_stays_above_off_keeps_the_turn_open() {
+        let pattern = [(1.0, 500), (0.40, 1000)];
+        let n_samples = probs(&pattern).len() * FRAME;
+        let segs = run(&pattern);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].end, n_samples, "the 0.40 run ended the turn early");
+    }
+
+    #[test]
+    fn a_turn_running_to_the_last_frame_ends_at_the_recording() {
+        let pattern = [(0.0, 500), (1.0, 1000)];
+        let n_samples = probs(&pattern).len() * FRAME;
+        let segs = run(&pattern);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].end, n_samples);
+    }
+
+    #[test]
+    fn a_non_finite_probability_reads_as_silence() {
+        // A NaN is not speech and not a reason to hold a turn open to the end
+        // of the recording; it closes the turn like any unvoiced frame.
+        let segs = run(&[(1.0, 500), (f32::NAN, 1000), (0.0, 1000)]);
+        assert_eq!(segs.len(), 1);
+        let speech_end = (500 * SR / 1000usize).div_ceil(FRAME) * FRAME;
+        assert_eq!(segs[0].end, speech_end + PAD);
     }
 }
