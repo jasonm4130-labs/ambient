@@ -470,6 +470,10 @@ fn main() -> Result<()> {
             let mut cfg = ambient::config::Config::load();
             match (key, args.next()) {
                 (Some(k), Some(v)) => {
+                    ambient::config::refuse_while_live(
+                        &k,
+                        ambient::session::live_session().as_deref(),
+                    )?;
                     cfg.set(&k, &v)?;
                     cfg.save()?;
                     println!("{} = {}", k, v);

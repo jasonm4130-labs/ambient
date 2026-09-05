@@ -43,7 +43,9 @@ recording is running splits one conversation across two folders for nothing —
 the capture itself is safe either way, because it writes into the directory it
 claimed at the start rather than into whatever `sessions_dir` says now — so the
 settings page says no, in an alert naming the reason, rather than accepting a
-click and appearing to have done nothing. The CLI does not guard it.
+click and appearing to have done nothing. `ambient config sessions_dir <path>`
+refuses the same change for the same reason, naming the directory being
+recorded into, so the CLI cannot walk past the rule the window enforces.
 
 The file is `~/Library/Application Support/Ambient/config.json` — deliberately
 not under the sessions folder, since that folder is itself a setting, and a
