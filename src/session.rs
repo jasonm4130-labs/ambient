@@ -175,10 +175,14 @@ pub fn models_root() -> Result<PathBuf> {
     )
 }
 
-/// A model path as the sherpa-onnx bindings want it. They take `&str`, and a
-/// path that is not UTF-8 has no `&str` form — so the failure is the user's
-/// directory naming, not a bug, and the message has to name the path or there
-/// is nothing to go and rename.
+/// A model path as this crate's loaders want it. `Vad::load` and
+/// `Diarizer::load` take `&str` — a narrowing this crate chose, since the `ort`
+/// session builder underneath accepts any `AsRef<Path>` — so until those
+/// signatures widen, a path whose bytes are not UTF-8 cannot reach them. The
+/// error names the path because the reader cannot otherwise tell which one it
+/// is: `models_root` derives candidates from `AMBIENT_MODELS` and from the
+/// executable's own parents, so the offending bytes need not be anything the
+/// user typed.
 pub fn utf8_path(p: &Path) -> Result<&str> {
     p.to_str()
         .ok_or_else(|| anyhow!("path is not UTF-8: {}", p.display()))
