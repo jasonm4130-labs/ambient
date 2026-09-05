@@ -94,8 +94,10 @@ and the room-silent warning above it — are written into the session's own
 over the transcript, so the news reaches the place you go to read the
 recording. And the menu bar keeps its own log at
 `~/Library/Logs/Ambient/app.log`; only what it routes through `log` lands
-there, and a recording that completes is logged as `session written:` whether
-the call track held anything or not.
+there, and a recording that completes is logged twice: `audio written: <dir>`
+when the wav files are closed, then `transcript written: <dir>` when the
+transcript is exported. Both lines appear whether the call track held anything
+or not.
 
 A session recorded before the `warnings` array existed simply has none, and
 parses as it always did.
@@ -200,13 +202,15 @@ Launched as a bundle you will see none of that, because stderr has nowhere to
 go. The menu bar writes its own log to `~/Library/Logs/Ambient/app.log` — a
 fixed path, unaffected by `sessions_dir` and `AMBIENT_HOME`, and deliberately
 outside the sessions folder, which should hold only sessions. A recording that
-fails appends one line there: `recording FAILED:` and the
-outermost message only, since it formats the error with `Display` rather than
-the `{e:#}` that would carry the causes. The full chain goes to stderr, which
-is exactly where a bundle launch cannot show it. That line is no longer the
-only sight of a failure — the window shows the failure in its banner, and the
-menu bar sits in a `Failed` state until it is dismissed — but it is still the
-first file to open when a recording ends with no transcript.
+fails appends one line there: `FAILED — <context>: <error>`, where the context
+names what was being attempted — `recording` when the capture fails,
+`transcribing <dir>` when the transcript does — and the error is formatted with
+`{e:#}`, so the whole cause chain is in that line and not just its outermost
+message. It has to be: stderr, where you would otherwise read the chain, is
+exactly what a bundle launch cannot show you. That line is no longer the only
+sight of a failure — the window shows the failure in its banner, and the menu
+bar sits in a `Failed` state until it is dismissed — but it is still the first
+file to open when a recording ends with no transcript.
 
 None of this weakens the append-only guarantee. `raw.jsonl` is created after the
 capture loop, after both `finalize()` calls and after the resample, and
