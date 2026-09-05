@@ -1,4 +1,10 @@
-# 0017. The window is one web page; Rust keeps the menu bar, the bridge and the state
+---
+title: "17. The window is one web page; Rust keeps the menu bar, the bridge and the state"
+sidebar:
+  order: 57
+---
+
+# 17. The window is one web page; Rust keeps the menu bar, the bridge and the state
 
 **Status:** accepted · **Date:** 2026-09-05 · **Supersedes:** —
 
