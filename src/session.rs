@@ -2546,4 +2546,67 @@ mod tests {
         }
         std::fs::remove_dir_all(&root).ok();
     }
+
+    #[test]
+    fn slugify_keeps_only_ascii_alphanumerics() {
+        assert_eq!(
+            slugify("Hello, World!"),
+            "hello-world",
+            "punctuation separates"
+        );
+        assert_eq!(slugify("  --x--  "), "x", "no leading or trailing dash");
+        assert_eq!(slugify(""), "", "nothing in, nothing out");
+        // Non-ASCII letters are dropped like any other non-alphanumeric, which
+        // means they *separate* too: the "ï" in "Ünïcode" leaves a dash behind
+        // exactly as the comma in "Hello, World!" does. A leading "Ü" drops
+        // without a dash only because the output is still empty.
+        assert_eq!(
+            slugify("Ünïcode ok"),
+            "n-code-ok",
+            "only ASCII alphanumerics survive"
+        );
+    }
+
+    #[test]
+    fn mmss_is_whole_seconds_and_never_wraps() {
+        assert_eq!(mmss(0), "00:00");
+        assert_eq!(mmss(61_000), "01:01");
+        assert_eq!(
+            mmss(3_600_000),
+            "60:00",
+            "an hour is 60 minutes, not 01:00:00"
+        );
+        assert_eq!(mmss(999), "00:00", "sub-second remainders truncate");
+    }
+
+    /// The menu bar parses these strings, so the exact bytes are the contract:
+    /// a change here is a change to what the user sees.
+    #[test]
+    fn status_line_pins_the_string_each_phase_shows() {
+        let m = Meter::default();
+        m.elapsed_ms.store(61_000, Ordering::Relaxed);
+        assert_eq!(
+            m.status_line(),
+            "01:01  no audio arriving",
+            "capturing with nothing arriving: two spaces, no levels"
+        );
+
+        m.audio_arriving.store(true, Ordering::Relaxed);
+        m.room_peak_milli.store(500, Ordering::Relaxed);
+        m.call_peak_milli.store(1_234, Ordering::Relaxed);
+        assert_eq!(
+            m.status_line(),
+            "01:01 · room 0.50 · call 1.23",
+            "capturing with audio: peaks are thousandths shown to two places"
+        );
+
+        m.set_phase(MeterPhase::Transcribing);
+        assert_eq!(m.status_line(), "transcribing…");
+        m.set_phase(MeterPhase::Diarizing);
+        assert_eq!(m.status_line(), "separating voices…");
+        m.set_phase(MeterPhase::Done);
+        assert_eq!(m.status_line(), "done");
+        m.set_phase(MeterPhase::Failed);
+        assert_eq!(m.status_line(), "failed");
+    }
 }
