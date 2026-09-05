@@ -146,7 +146,7 @@ the extracted corpus without re-downloading it.
 ## Word error rate on the fixture
 
 `cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
-[--model <dir>] [--via <hz>]`, on 2026-09-05. The harness runs what `ambient record` runs
+[--model <dir>] [--via <hz>] [--via-ffmpeg]`, on 2026-09-05. The harness runs what `ambient record` runs
 for a finished track — `session::model_paths`, `Vad::turns(&samples, 30)`,
 `transcribe_segments` — so these are the numbers a user gets, on the shipped
 v3-int8 model. The decode column is one run; see the section below for how far
@@ -173,49 +173,76 @@ getting them wrong. `--json` writes the same rows, the total among them with
 and reads it back through `resample::to_16k` before the same VAD turns and the
 same decode. The fixture is native 16 kHz, so without `--via` the resampler
 every real recording goes through — Core Audio delivers 48 kHz — never runs at
-all. Measured on 2026-09-05, this machine, v3-int8.
+all.
 
-| Path | Speaker | Ref words | S | I | D | WER |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| native 16 k | 1089 | 721 | 3 | 0 | 0 | 0.0042 |
-| native 16 k | 1188 | 1296 | 29 | 2 | 4 | 0.0270 |
-| native 16 k | 121 | 135 | 7 | 1 | 1 | 0.0667 |
-| **native 16 k** | **total** | 2152 | 39 | 3 | 5 | **0.0218** |
-| via 48 k | 1089 | 721 | 3 | 3 | 0 | 0.0083 |
-| via 48 k | 1188 | 1296 | 36 | 4 | 5 | 0.0347 |
-| via 48 k | 121 | 135 | 6 | 1 | 1 | 0.0593 |
-| **via 48 k** | **total** | 2152 | 45 | 8 | 6 | **0.0274** |
-| via 44.1 k | 1089 | 721 | 4 | 3 | 0 | 0.0097 |
-| via 44.1 k | 1188 | 1296 | 35 | 2 | 4 | 0.0316 |
-| via 44.1 k | 121 | 135 | 9 | 1 | 1 | 0.0815 |
-| **via 44.1 k** | **total** | 2152 | 48 | 6 | 5 | **0.0274** |
+`--via-ffmpeg` is the control that makes those numbers readable. It takes the
+identical round trip with `ffmpeg` on the return leg too, from the same cached
+intermediate file, so `resample::to_16k` never runs and what is left is
+everything a `--via` run shares with it: the upsample, the `pcm_s16le`
+intermediate, and a second band-limiting pass. Measured on 2026-09-05, this
+machine, v3-int8, all five runs in one sweep.
 
-The round trip costs 0.0056 of word error rate — 0.0218 native against 0.0274
-at either rate — which is over the half-point line this plan uses to call a
-change real. Both rates land on the same total from different mistakes, and
-neither rate is the culprit: 48 k is an exact 3:1 ratio and 44.1 k is not, so a
-ratio-specific bug would have separated them. What they share is the code
-under test.
+| Path | Speaker | Seconds | Ref words | S | I | D | WER |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| native 16 k | 1089 | 302.11 | 721 | 3 | 0 | 0 | 0.0042 |
+| native 16 k | 1188 | 522.73 | 1296 | 29 | 2 | 4 | 0.0270 |
+| native 16 k | 121 | 88.89 | 135 | 7 | 1 | 1 | 0.0667 |
+| **native 16 k** | **total** | 913.74 | 2152 | 39 | 3 | 5 | **0.0218** |
+| 48 k, ours | 1089 | 302.11 | 721 | 3 | 3 | 0 | 0.0083 |
+| 48 k, ours | 1188 | 522.73 | 1296 | 36 | 4 | 5 | 0.0347 |
+| 48 k, ours | 121 | 88.89 | 135 | 6 | 1 | 1 | 0.0593 |
+| **48 k, ours** | **total** | 913.74 | 2152 | 45 | 8 | 6 | **0.0274** |
+| 48 k, ffmpeg | 1089 | 302.11 | 721 | 4 | 2 | 1 | 0.0097 |
+| 48 k, ffmpeg | 1188 | 522.73 | 1296 | 37 | 4 | 5 | 0.0355 |
+| 48 k, ffmpeg | 121 | 88.89 | 135 | 9 | 1 | 1 | 0.0815 |
+| **48 k, ffmpeg** | **total** | 913.74 | 2152 | 50 | 7 | 7 | **0.0297** |
+| 44.1 k, ours | 1089 | 302.11 | 721 | 4 | 3 | 0 | 0.0097 |
+| 44.1 k, ours | 1188 | 522.74 | 1296 | 35 | 2 | 4 | 0.0316 |
+| 44.1 k, ours | 121 | 88.89 | 135 | 9 | 1 | 1 | 0.0815 |
+| **44.1 k, ours** | **total** | 913.74 | 2152 | 48 | 6 | 5 | **0.0274** |
+| 44.1 k, ffmpeg | 1089 | 302.11 | 721 | 4 | 2 | 0 | 0.0083 |
+| 44.1 k, ffmpeg | 1188 | 522.73 | 1296 | 35 | 4 | 4 | 0.0332 |
+| 44.1 k, ffmpeg | 121 | 88.89 | 135 | 9 | 1 | 1 | 0.0815 |
+| **44.1 k, ffmpeg** | **total** | 913.74 | 2152 | 48 | 7 | 5 | **0.0279** |
 
-The damage is not evenly spread. Insertions nearly triple at 48 k, 3 to 8, and
-speaker 1089 goes from a clean zero to three invented words: the resampler is
-handing the recogniser something it reads as speech in places the native file
-does not. Speaker 121 moves the other way at 48 k, 0.0667 to 0.0593, which is
-one substitution on 135 reference words and is noise at that size.
+`resample::to_16k` is not what the round trip costs. Going through 48 kHz and
+back costs 0.0056 of word error rate with our resampler on the return leg —
+0.0274 against 0.0218 native, over the half-point line this plan uses — and
+0.0079 with ffmpeg's own `swr` on that leg instead, 0.0297. Removing our code
+from the path made the score worse, by five words in 2152. At 44.1 k the two
+legs are 0.0274 and 0.0279, the same story inside a word or two. On this
+fixture rubato is at worst indistinguishable from the resampler ffmpeg ships,
+and the half point belongs to the round trip itself: an upsample, an s16
+intermediate, and two band-limiting passes where a real recording has one.
 
-An upsample-then-downsample round trip is not free even in a correct
-implementation — it is two band-limiting passes where a real recording has one
-— so this is an upper bound on what a 48 kHz microphone actually costs, not a
-measurement of it. It is still the only end-to-end number there is for
-`resample::to_16k`, and it points at the resampler rather than at the fixture.
-Fixing it is its own task with its own number.
+That is the reading the earlier version of this section got wrong, and the
+control is what separates them: a `--via` run alone cannot tell our resampler
+apart from the ffmpeg upsample it is built on.
 
-The decode timings from this run are not on this table on purpose: it ran with
-a load average near 40 on 18 cores and returned 6x realtime against the 46x
-recorded above for the identical native run. A second run of both rates
-returned every count identically — 45/8/6 and 48/6/5 — while its totals moved
-from 166 s to 153 s and from 138 s to 101 s. The counts are what this table
-needs and they are solid under that load; the clock is not.
+The `Seconds` column answers the other thing a resampler can get wrong. Every
+path returns the same durations: 913.735 s for four of the five runs and
+913.7351 s for 44.1 k through `to_16k` — two samples in 14.6 million, on the
+one ratio that is not an integer. Nothing is being lost or duplicated at
+441:160 any more than at 3:1.
+
+Speaker 121 is 135 reference words, so a single word moves it 0.0074 and its
+0.0593-to-0.0815 spread across these paths is not signal. The 1188 rows carry
+the weight and they move by two or three words across every resampled path.
+
+The plan's stop condition is met numerically — 0.0274 against 0.0218 is over
+half a point — but the suspect it hands to the next task is the round trip, not
+`resample::to_16k`, and this run decided it that way rather than leaving the
+question open. A task spent tuning rubato would be chasing ffmpeg's `swr`. What
+no fixture of native 16 kHz audio can measure is the thing that actually ships:
+one downsample of genuinely 48 kHz audio, with no upsample before it. That
+needs a fixture recorded at 48 kHz, and it is the task worth writing.
+
+The decode timings are off this table on purpose: the sweep ran under a load
+average near 8 on 18 cores and returned 38-42x realtime against the 46x
+recorded above for the identical native run. The counts are what this table
+needs and they are solid under that load — this sweep reproduced the native
+39/3/5 and both earlier `--via` totals, 45/8/6 at 48 k and 48/6/5 at 44.1 k,
+to the last substitution. The clock is not.
 
 ## The two shipped models on the same fixture
 
