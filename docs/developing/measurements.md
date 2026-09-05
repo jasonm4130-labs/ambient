@@ -243,6 +243,40 @@ with no `--model` — because switching spends 1.1 GB of headroom on a machine
 nobody has run this on to buy half a point of word error rate. Measure the port
 first; the table says which way it should then go.
 
+## Diarization error rate on the fixture
+
+`cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
+[--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
+`ambient record` runs for a finished session — the model resolution of
+`session::diarize_session`, the same pyannote segmentation and WeSpeaker
+embedding, `Diarizer::diarize` at the shipped 0.5 threshold — so these are the
+numbers a user gets. Scored at the conventional 0.25 s collar; `--collar 0`
+scores every frame instead.
+
+| Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER | Run |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 300.00 | 3 | 6 | 9.65 s | 4.49 s | 2.61 s | 0.1279 | 1.90 s |
+| IS1009a | 300.00 | 4 | 7 | 4.80 s | 8.21 s | 17.23 s | 0.2058 | 2.21 s |
+| TS3003a | 300.00 | 4 | 6 | 15.69 s | 2.27 s | 7.08 s | 0.1116 | 2.67 s |
+| **total** | 900.00 | 11 | 19 | 30.14 s | 14.97 s | 26.92 s | **0.1434** | 6.77 s |
+
+The total is computed over the summed error seconds rather than averaged over
+the rows, so a meeting with less speech in it cannot outvote a talkative one.
+Speaker counts sum rather than dedupe: speaker 0 of one meeting is not speaker
+0 of the next.
+
+Every meeting over-clusters — 19 hypothesis speakers against 11 in the
+reference — and IS1009a shows what that costs: 17.23 s of confusion, more than
+its missed and false-alarm seconds put together, and a DER nearly double the
+other two. Splitting one person across two clusters is the failure worth
+chasing here rather than the segmentation, and `--threshold` is the knob that
+moves it. Speed is not the constraint: 900 s of audio separated in 6.77 s.
+
+`--json` writes the same rows as
+`{"meeting", "seconds", "reference_speakers", "hypothesis_speakers",
+"missed_s", "false_alarm_s", "confusion_s", "der", "run_s"}`, the total among
+them with `meeting` reading `total`.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
