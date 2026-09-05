@@ -126,6 +126,21 @@ parse; both appear, the first with empty metadata columns and the second as
 `started_at`, `duration_s`, `transcribed`, `live`, `transcribing` and `error`.
 See [sessions](../developing/sessions.md).
 
+## search
+
+```sh
+ambient search <query> [--json]
+```
+
+Case-insensitive substring search for `query` over every session's tidied
+transcript, newest session first. Prints a header row followed by one row per
+hit — session id, `mm:ss`, speaker and the matching line — and exits 0 with
+just the header when nothing on disk matches, or the sessions folder is
+empty. `--json` prints the same hits as a JSON array instead, each with
+`session`, `index`, `track`, `start_ms`, `speaker` and `text`; `index` is the
+line's position in that session's appended order, the same one `api::search`
+reports. See [the session API](../developing/api.md).
+
 ## show
 
 ```sh

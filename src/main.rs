@@ -10,6 +10,7 @@ USAGE
                  [--seconds <n>]       record until stopped, then transcribe
   ambient stop [<session-dir>]         stop the recording in progress
   ambient sessions [--json]            list the sessions on disk
+  ambient search <query> [--json]      find words across every session
   ambient show <session-dir> [--verbatim] [--json]
                                        print a recorded session
   ambient diarize <session-dir> [--threshold <f>]
@@ -197,6 +198,43 @@ fn main() -> Result<()> {
                         .unwrap_or_else(|| "-".into()),
                     s.name.as_deref().unwrap_or("-"),
                     s.state()
+                );
+            }
+            Ok(())
+        }
+        Some("search") => {
+            let rest: Vec<String> = args.collect();
+            let json = rest.iter().any(|a| a == "--json");
+            let mut query_parts: Vec<&str> = Vec::new();
+            for a in &rest {
+                if a == "--json" {
+                    continue;
+                }
+                if a.starts_with("--") {
+                    bail!("unexpected argument {a:?}\n\n{USAGE}");
+                }
+                query_parts.push(a);
+            }
+            if query_parts.is_empty() {
+                bail!("{USAGE}");
+            }
+            let query = query_parts.join(" ");
+            let home = ambient::session::home();
+            let hits = ambient::session::search(&home, &query, 50)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&hits)?);
+                return Ok(());
+            }
+            println!("{:<24}  {:<8}  {:<12}  text", "session", "mm:ss", "speaker");
+            for h in &hits {
+                let secs = h.start_ms / 1000;
+                println!(
+                    "{:<24}  {:02}:{:02}     {:<12}  {}",
+                    h.session,
+                    secs / 60,
+                    secs % 60,
+                    h.speaker.as_deref().unwrap_or("-"),
+                    h.text
                 );
             }
             Ok(())

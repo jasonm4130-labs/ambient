@@ -30,9 +30,13 @@ pub struct Method {
     pub input_schema: Value,
 }
 
-/// Every method this dispatcher answers, in the order `ambient mcp`'s
-/// `tools/list` reports them. Descriptions and schemas are unchanged from
-/// what `mcp::tools()` hardcoded before this module existed.
+/// Every method `ambient mcp`'s `tools/list` advertises as an MCP tool, in
+/// that order — not every method [`call`] answers. `search` is a `call` match
+/// arm without an entry here: `mcp.rs` selects its three tools out of this
+/// list by name, and `search` is deliberately dispatcher-only, reachable from
+/// the CLI and the window but not offered to an MCP client. Descriptions and
+/// schemas here are unchanged from what `mcp::tools()` hardcoded before this
+/// module existed.
 pub fn methods() -> Vec<Method> {
     vec![
         Method {
@@ -100,6 +104,7 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
         "status" => Ok(status(&paths.root())),
         "sessions" => Ok(sessions(&paths.root())),
         "transcript" => transcript(&paths.root(), params),
+        "search" => search(&paths.root(), params),
         other => Err(ApiError::InvalidParams(format!("no such method {other:?}"))),
     }
 }
@@ -185,6 +190,30 @@ fn read(root: &Path, id: &str, since: u64, verbatim: bool) -> Result<Value, Stri
     let seen = usize::try_from(since).unwrap_or(usize::MAX);
     let unseen: Vec<session::Line> = lines.into_iter().skip(seen).collect();
     Ok(json!({"session": id, "state": state(&dir), "next": next, "lines": unseen}))
+}
+
+/// The `search` method. `query` is required and must be a string; `limit`
+/// defaults to 50 and, when given, must be a whole number. Argument shape is
+/// checked here, the same way [`transcript`] does it, before anything reaches
+/// [`session::search`].
+fn search(root: &Path, params: &Value) -> Result<Value, ApiError> {
+    let args = params
+        .as_object()
+        .ok_or_else(|| ApiError::InvalidParams("`search` needs a string `query`".into()))?;
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`query` must be a string".into()))?;
+    let limit = match args.get("limit") {
+        None => 50,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| ApiError::InvalidParams("`limit` must be a whole number".into()))?
+            as usize,
+    };
+    let hits =
+        session::search(root, query, limit).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    serde_json::to_value(hits).map_err(|e| ApiError::Failed(format!("{e}")))
 }
 
 /// `root/id`, or why that is not a session of this machine. An id is one path
@@ -344,6 +373,42 @@ mod tests {
     fn transcript_since_must_be_a_whole_number() {
         let (paths, _root) = temp_paths("since-type");
         let err = call("transcript", &json!({"session": "x", "since": "1"}), &paths).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`search\`` section,
+    /// so the doc and the dispatcher cannot drift apart.
+    #[test]
+    fn search_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, root) = temp_paths("search-docs");
+        let dir = root.join("2026-09-05-1200");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("raw.jsonl"),
+            r#"{"track":"room","start_ms":5000,"end_ms":6000,"text":"the budget review is at noon","confidence":0.9}
+"#,
+        )
+        .unwrap();
+
+        let request: Value = serde_json::from_str(r#"{"query": "budget", "limit": 50}"#).unwrap();
+        let got = call("search", &request, &paths).unwrap();
+        assert_eq!(
+            got,
+            json!([{
+                "session": "2026-09-05-1200",
+                "index": 0,
+                "track": "room",
+                "start_ms": 5000,
+                "speaker": null,
+                "text": "the budget review is at noon"
+            }])
+        );
+    }
+
+    #[test]
+    fn search_query_must_be_a_string() {
+        let (paths, _root) = temp_paths("search-query-type");
+        let err = call("search", &json!({"query": 5}), &paths).unwrap_err();
         assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
     }
 

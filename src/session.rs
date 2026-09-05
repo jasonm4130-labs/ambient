@@ -1185,6 +1185,81 @@ pub fn transcript_appended(dir: &Path, verbatim: bool) -> Result<Vec<Line>> {
     fold_edits(dir, verbatim, false)
 }
 
+/// One line of [`search`]'s reply: which session it came from, its position
+/// in that session's [`transcript_appended`] order, and the line itself.
+#[derive(Debug, Clone, Serialize)]
+pub struct Hit {
+    pub session: String,
+    pub index: usize,
+    pub track: Track,
+    pub start_ms: u64,
+    pub speaker: Option<String>,
+    pub text: String,
+}
+
+/// Case-insensitive substring search for `query` over the folded (non-
+/// verbatim) transcript of every session under `root`, newest session first,
+/// truncated at `limit` hits total.
+///
+/// `index` is a line's position in [`transcript_appended`] order — the order
+/// the window renders and the `transcript` API method reports — never
+/// [`transcript`]'s clock order, so a caller can hand it straight back to
+/// either one.
+///
+/// Enumeration is defensive: a candidate is a directory found with
+/// [`std::fs::symlink_metadata`] (never one `is_dir()` alone would find,
+/// which follows a link), and a session whose `raw.jsonl` is missing, not a
+/// regular file, or unparseable — a live capture, a failed one, or a
+/// half-written directory — is skipped rather than failing the whole query.
+pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Hit>> {
+    if query.trim().is_empty() {
+        bail!("empty query");
+    }
+    let needle = query.to_lowercase();
+
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Ok(Vec::new());
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
+        .collect();
+    dirs.sort();
+
+    let mut hits = Vec::new();
+    'sessions: for dir in dirs.iter().rev() {
+        let Some(id) = dir.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let not_a_regular_file = [dir.join("raw.jsonl"), dir.join("edits.jsonl")]
+            .iter()
+            .any(|p| std::fs::symlink_metadata(p).is_ok_and(|m| !m.is_file()));
+        if not_a_regular_file {
+            continue;
+        }
+        let Ok(lines) = transcript_appended(dir, false) else {
+            continue;
+        };
+        for (index, line) in lines.iter().enumerate() {
+            if line.text.to_lowercase().contains(&needle) {
+                hits.push(Hit {
+                    session: id.clone(),
+                    index,
+                    track: line.track,
+                    start_ms: line.start_ms,
+                    speaker: line.speaker.clone(),
+                    text: line.text.clone(),
+                });
+                if hits.len() >= limit {
+                    break 'sessions;
+                }
+            }
+        }
+    }
+    Ok(hits)
+}
+
 /// The one body both orders share, so they cannot drift.
 fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
     let raw_text = std::fs::read_to_string(dir.join("raw.jsonl"))
@@ -2662,5 +2737,127 @@ mod tests {
             vec![5_000, 0],
             "the call line was appended after the room line and stays there"
         );
+    }
+}
+
+/// `libtest` matches a filter as a substring of the full test path, so
+/// `session::tests::search_…` would not be selected by `cargo test
+/// session::search` — only a *module* named `search` puts `session::search`
+/// in every one of its tests' paths. This module exists for that reason as
+/// much as for keeping [`search`]'s tests apart from `mod tests` above.
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn fixture(test: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ambient-{test}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn record(track: Track, start_ms: u64, text: &str) -> RawRecord {
+        RawRecord {
+            track,
+            start_ms,
+            end_ms: start_ms + 1_000,
+            text: text.into(),
+            confidence: 0.9,
+        }
+    }
+
+    fn write_raw(dir: &Path, lines: &[RawRecord]) {
+        std::fs::create_dir_all(dir).unwrap();
+        let body: String = lines
+            .iter()
+            .map(|l| format!("{}\n", serde_json::to_string(l).unwrap()))
+            .collect();
+        std::fs::write(dir.join("raw.jsonl"), body).unwrap();
+    }
+
+    /// The older session, an unrelated line only. Kept out of the newest
+    /// session so it cannot accidentally land on an index the two orders
+    /// agree on.
+    fn older_session(root: &Path) -> PathBuf {
+        let dir = root.join("2026-01-01T0900");
+        write_raw(&dir, &[record(Track::Room, 0, "just a budget line")]);
+        dir
+    }
+
+    /// The newest session, exactly two lines, written so append order and
+    /// clock order disagree: `Room@5000` first on disk, `Call@0` second.
+    /// Only the room line matches "budget".
+    fn newest_session(root: &Path) -> PathBuf {
+        let dir = root.join("2026-02-01T0900");
+        write_raw(
+            &dir,
+            &[
+                record(Track::Room, 5_000, "Budget review at noon"),
+                record(Track::Call, 0, "unrelated words"),
+            ],
+        );
+        dir
+    }
+
+    #[test]
+    fn matches_case_insensitively_newest_session_first_by_appended_index() {
+        let root = fixture("search-basic");
+        let newest = newest_session(&root);
+        older_session(&root);
+
+        // The fixture is only a real test of `index` if the two orders
+        // disagree for the matching line.
+        let clock_order: Vec<String> = transcript(&newest, false)
+            .unwrap()
+            .iter()
+            .map(|l| l.text.clone())
+            .collect();
+        let appended_order: Vec<String> = transcript_appended(&newest, false)
+            .unwrap()
+            .iter()
+            .map(|l| l.text.clone())
+            .collect();
+        assert_ne!(clock_order, appended_order);
+
+        let hits = search(&root, "BUDGET", 50).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].session, "2026-02-01T0900");
+        assert_eq!(hits[1].session, "2026-01-01T0900");
+        for hit in &hits {
+            let lines = transcript_appended(&root.join(&hit.session), false).unwrap();
+            assert_eq!(lines[hit.index].text, hit.text);
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn no_match_is_empty() {
+        let root = fixture("search-no-match");
+        newest_session(&root);
+        older_session(&root);
+
+        assert!(search(&root, "zzz", 50).unwrap().is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn limit_truncates_the_result() {
+        let root = fixture("search-limit");
+        newest_session(&root);
+        older_session(&root);
+
+        assert_eq!(search(&root, "BUDGET", 1).unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_empty_query_is_refused_before_touching_the_filesystem() {
+        let root = fixture("search-empty-query");
+        let err = search(&root, "   ", 50).unwrap_err();
+        assert!(format!("{err:#}").contains("empty query"), "{err:#}");
+        std::fs::remove_dir_all(&root).ok();
     }
 }

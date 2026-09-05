@@ -68,6 +68,38 @@ Reply:
 }
 ```
 
+## `search`
+
+Case-insensitive substring search over every session's folded transcript,
+newest session first.
+
+Request:
+
+```json
+{"query": "budget", "limit": 50}
+```
+
+`limit` is optional and defaults to `50`.
+
+Reply:
+
+```json
+[
+  {
+    "session": "2026-09-05-1200",
+    "index": 3,
+    "track": "room",
+    "start_ms": 5000,
+    "speaker": null,
+    "text": "the budget review is at noon"
+  }
+]
+```
+
+`index` is the line's position in `transcript_appended` order — the order
+lines were written, not the order their clocks say — so it can be used to
+re-fetch the same line from `transcript`.
+
 ## `status`
 
 What Ambient is doing right now: the live session, if any, and what is
