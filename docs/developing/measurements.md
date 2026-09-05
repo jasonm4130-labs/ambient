@@ -501,6 +501,26 @@ within 1 s. The implied `rtf` is `2 × (0.881 + 5.966) / 302.11 = 13.692 /
 302.11 = 0.045`, under 0.5. The worst drain overshoot across the three runs
 below is 10.87 ms = 0.011 s, under 1 s. All four clauses hold: **go**.
 
+A go means a follow-up plan is in scope, and these are the facts it must
+respect. `session::transcribe_session` opens `raw.jsonl` with
+`std::fs::File::create` before the models load, deliberately: the file's
+existence is what the window's "Interrupted" test reads, and `File::create`
+truncates, so a second transcriber on the same session must be refused rather
+than allowed to race the first for that file — `claim_transcription` is what
+refuses it today. `capture_into` writes both tracks through `hound` writers
+and only calls `finalize()` on them when the drain loop ends, so the RIFF and
+data length fields in a still-growing capture's WAV header are stale until
+then; anything that reads a capture before it stops cannot trust that header's
+length. The overshoot number above assumes the ASR worker runs at
+`QOS_CLASS_BACKGROUND`, the same class `queue::Queue` uses for a real
+transcription job; the per-block costs in the table above, by contrast, were
+measured on `asrbench`'s main thread at default QoS with nothing else
+running, so they are optimistic relative to a background-QoS live worker.
+And `asr::Recognizer::transcribe_segments` takes `&mut self` — ADR-0015's
+serial queue transcribes one job at a time on one long-lived thread, so the
+`tracks=2` rows above are one worker carrying two tracks' work, not two
+workers running at once.
+
 ## Live transcription: drain overshoot beside ASR
 
 M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06, from the three `drainbench` runs
