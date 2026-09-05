@@ -6,7 +6,7 @@ sidebar:
 
 # Using ambient
 
-Five pages, in the order you will want them.
+Six pages, in the order you will want them.
 
 **[Getting started](getting-started.md)** — build the binary, fetch the models,
 launch it, and read what the app is once it is running. The launch method is
@@ -26,6 +26,10 @@ names. Read this before recording anyone who is not you.
 **[When it does not work](troubleshooting.md)** — a recording that succeeds and
 contains silence is the failure you will hit, and it is a permissions problem
 every time. Two truth tables and the fix.
+
+**[Reading sessions from an assistant](mcp.md)** — `ambient mcp` hands the
+transcript to Claude Code or any other MCP client as data. Registration, the
+three read-only tools, and how to follow a session while it records.
 
 ## What a recording produces
 

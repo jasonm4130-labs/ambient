@@ -277,6 +277,29 @@ mentions the rest. Removing someone does not unname them in
 past recordings — those names live in each session's `edits.jsonl`. The roster
 holds names and nothing else; see [what is kept](what-is-kept.md).
 
+## mcp
+
+```sh
+ambient mcp
+```
+
+Serves the Model Context Protocol on stdin and stdout so another program can
+read sessions as data: three read-only tools, `sessions`, `transcript` and
+`status`, and newline-delimited JSON-RPC 2.0 with one reply per request. It is
+not meant to be typed at — a client starts it, and it exits when that client
+closes its stdin — but a piped request answers on stdout, which is how you
+check a registration:
+
+```sh
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"ping"}' | ambient mcp
+```
+
+Nothing but protocol goes to stdout; diagnostics go to stderr. Nothing writes:
+there is no tool here to record, name or delete. Registration, the tool
+arguments and the cursor for following a session as it records are in
+[reading sessions from an assistant](mcp.md), and the reasoning is
+[ADR 0016](../adr/0016-mcp-verb-for-live-reading.md).
+
 ## Environment
 
 | Variable | Read by | Effect |
