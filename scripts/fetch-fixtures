@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Build the word error rate fixture from LibriSpeech test-clean (CC BY 4.0,
+# openslr.org/12) under ~/.cache/ambient, never in the repo: the archive is
+# 330 MB and the licence is the upstream corpus's, not ours.
+#
+#   scripts/fetch-fixtures            # cached after the first run
+#   scripts/fetch-fixtures --force    # rebuild the stitched fixture
+#
+# Safe to run every night. The archive is fetched once and extracted once;
+# a second run touches the network never and rewrites nothing. --force
+# rebuilds the wav/txt/manifest from the already-extracted corpus — it does
+# not re-download 330 MB, because the archive was verified when it landed.
+#
+# The three speakers are the first three directories in sorted order and the
+# chapter is that speaker's first, so which audio this scores is a property of
+# the corpus rather than a list someone typed. Each chapter's utterances are
+# concatenated in id order with 700 ms of silence between them: one long track
+# per speaker is what `ambient record` actually sees, and the gaps give the VAD
+# turn boundaries to find.
+set -euo pipefail
+
+url=https://www.openslr.org/resources/12/test-clean.tar.gz
+cache="$HOME/.cache/ambient"
+libri="$cache/librispeech"
+tarball="$libri/test-clean.tar.gz"
+corpus="$libri/LibriSpeech/test-clean"
+out="$cache/fixtures/wer"
+
+speakers=3
+gap_ms=700
+rate=16000
+bytes_per_second=$((rate * 2)) # 16 kHz mono 16-bit
+
+force=""
+for arg in "$@"; do
+  case "$arg" in
+    --force) force=1 ;;
+    *)
+      echo "usage: scripts/fetch-fixtures [--force]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if command -v ffmpeg >/dev/null 2>&1; then
+  decoder=ffmpeg
+elif command -v afconvert >/dev/null 2>&1; then
+  decoder=afconvert
+else
+  echo "fetch-fixtures: need ffmpeg or afconvert to decode FLAC" >&2
+  exit 1
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# Emit $1 as $2 little-endian bytes. Used to write the wav header by hand:
+# both decoders are asked for headerless PCM so the utterances and the silence
+# can be concatenated as bytes, which leaves the container to us.
+le() {
+  local n=$1 w=$2 i
+  for ((i = 0; i < w; i++)); do
+    printf '%b' "$(printf '\\0%03o' $(((n >> (i * 8)) & 255)))"
+  done
+}
+
+# Echo "<offset> <length>" of a wav's data chunk payload. afconvert writes an
+# extensible fmt chunk, so the header is not the textbook 44 bytes and the
+# chunks have to be walked.
+wav_data() {
+  local f=$1 off=12 id size
+  while :; do
+    id=$(dd if="$f" bs=1 skip="$off" count=4 2>/dev/null)
+    size=$(od -An -tu4 -j $((off + 4)) -N4 "$f" | tr -d ' ')
+    [ -n "$id" ] && [ -n "$size" ] || return 1
+    if [ "$id" = data ]; then
+      echo "$((off + 8)) $size"
+      return 0
+    fi
+    off=$((off + 8 + size + size % 2))
+  done
+}
+
+# Decode $1 to headerless 16 kHz mono signed 16-bit little-endian PCM at $2.
+decode_raw() {
+  if [ "$decoder" = ffmpeg ]; then
+    ffmpeg -v error -nostdin -y -i "$1" -ar "$rate" -ac 1 -f s16le -acodec pcm_s16le "$2"
+  else
+    afconvert -f WAVE -d "LEI16@$rate" -c 1 "$1" "$tmp/decoded.wav"
+    local off len
+    read -r off len < <(wav_data "$tmp/decoded.wav")
+    tail -c "+$((off + 1))" "$tmp/decoded.wav" | head -c "$len" >"$2"
+  fi
+}
+
+seconds_of() { # $1 wav -> duration to two decimals
+  local off len
+  read -r off len < <(wav_data "$1")
+  awk -v b="$len" -v r="$bytes_per_second" 'BEGIN { printf "%.2f", b / r }'
+}
+
+if [ ! -f "$tarball" ]; then
+  mkdir -p "$libri"
+  echo "fetching test-clean.tar.gz (about 330 MB) ..."
+  if ! curl -fSL --progress-bar -o "$tarball.part" "$url"; then
+    rm -f "$tarball.part"
+    echo "fetch-fixtures: download failed: $url" >&2
+    exit 1
+  fi
+  mv "$tarball.part" "$tarball"
+fi
+
+if [ ! -d "$corpus" ]; then
+  if ! tar -tzf "$tarball" >/dev/null 2>&1; then
+    rm -f "$tarball"
+    echo "fetch-fixtures: $tarball is truncated or not a gzip archive; deleted it, run again" >&2
+    exit 1
+  fi
+  echo "extracting test-clean ..."
+  tar -xzf "$tarball" -C "$libri" LibriSpeech/test-clean
+fi
+
+mkdir -p "$out"
+head -c $((gap_ms * bytes_per_second / 1000)) /dev/zero >"$tmp/gap.raw"
+
+files=0
+total=0
+entries=""
+
+while read -r speaker_dir; do
+  speaker=$(basename "$speaker_dir")
+  chapter_dir=$(find "$speaker_dir" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort | head -1)
+  chapter=$(basename "$chapter_dir")
+  trans="$chapter_dir/$speaker-$chapter.trans.txt"
+  [ -f "$trans" ] || {
+    echo "fetch-fixtures: no transcript at $trans" >&2
+    exit 1
+  }
+
+  wav="$out/$speaker.wav"
+  txt="$out/$speaker.txt"
+
+  if [ -z "$force" ] && [ -f "$wav" ] && [ -f "$txt" ]; then
+    utterances=$(wc -l <"$txt" | tr -d ' ')
+    duration=$(seconds_of "$wav")
+    echo "already present: $wav"
+    echo "already present: $txt"
+  else
+    : >"$tmp/track.raw"
+    : >"$tmp/track.txt"
+    utterances=0
+    while read -r flac; do
+      id=$(basename "$flac" .flac)
+      # The reference is scored word by word, so the utterance id is dropped
+      # and only the words survive — an id left in would count as a word that
+      # was never spoken.
+      line=$(sed -n "s/^$id //p" "$trans")
+      [ -n "$line" ] || {
+        echo "fetch-fixtures: $trans has no line for $id" >&2
+        exit 1
+      }
+      [ "$utterances" -eq 0 ] || cat "$tmp/gap.raw" >>"$tmp/track.raw"
+      decode_raw "$flac" "$tmp/utterance.raw"
+      cat "$tmp/utterance.raw" >>"$tmp/track.raw"
+      printf '%s\n' "$line" >>"$tmp/track.txt"
+      utterances=$((utterances + 1))
+    done < <(find "$chapter_dir" -maxdepth 1 -name '*.flac' | LC_ALL=C sort)
+
+    n=$(wc -c <"$tmp/track.raw" | tr -d ' ')
+    {
+      printf 'RIFF'
+      le $((36 + n)) 4
+      printf 'WAVEfmt '
+      le 16 4
+      le 1 2
+      le 1 2
+      le "$rate" 4
+      le "$bytes_per_second" 4
+      le 2 2
+      le 16 2
+      printf 'data'
+      le "$n" 4
+      cat "$tmp/track.raw"
+    } >"$wav"
+    mv "$tmp/track.txt" "$txt"
+    duration=$(awk -v b="$n" -v r="$bytes_per_second" 'BEGIN { printf "%.2f", b / r }')
+    echo "wrote $wav ($utterances utterances, ${duration}s)"
+    echo "wrote $txt"
+  fi
+
+  files=$((files + 2))
+  total=$(awk -v a="$total" -v b="$duration" 'BEGIN { printf "%.2f", a + b }')
+  entries="$entries$(
+    printf '  {"wav": "%s", "reference": "%s", "speaker": "%s", "utterances": %d, "seconds": %s}' \
+      "$wav" "$txt" "$speaker" "$utterances" "$duration"
+  )"$'\n'
+done < <(find "$corpus" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort | head -"$speakers")
+
+manifest="$out/manifest.json"
+if [ -z "$force" ] && [ -f "$manifest" ]; then
+  echo "already present: $manifest"
+else
+  {
+    echo '['
+    printf '%s' "$entries" | sed '$!s/$/,/'
+    echo ']'
+  } >"$manifest"
+  echo "wrote $manifest"
+fi
+files=$((files + 1))
+
+echo "FIXTURES OK $files files ${total}s"
