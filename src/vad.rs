@@ -189,9 +189,10 @@ impl Vad {
         let mut silence_run = 0usize;
 
         for (i, &p) in probs.iter().enumerate() {
-            // NaN and the infinities compare false against both thresholds, so
-            // an unguarded one holds a segment open to the end of the
-            // recording. Read it as silence and let the hysteresis decide.
+            // NaN compares false against both thresholds, so an unguarded one
+            // holds a segment open to the end of the recording; +inf clears ON
+            // and opens one. Read any non-finite value as silence and let the
+            // hysteresis decide.
             let p = if p.is_finite() { p } else { 0.0 };
             let at = i * FRAME;
             if !in_speech {
@@ -477,6 +478,14 @@ mod segments {
         let segs = Vad::segments_from(&p, ragged);
         assert_eq!(segs.len(), 1, "{segs:?}");
         assert_eq!(segs[0].end, ragged);
+    }
+
+    #[test]
+    fn an_infinite_probability_does_not_open_a_turn() {
+        // +inf is the other half of the guard, and the opposite failure to
+        // NaN's: it clears ON, so unguarded it opens a turn that lasts as long
+        // as the run. Read as silence, it opens nothing.
+        assert!(run(&probs(&[(0.0, 500), (f32::INFINITY, 1000), (0.0, 500)])).is_empty());
     }
 
     #[test]
