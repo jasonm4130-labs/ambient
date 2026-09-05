@@ -187,9 +187,11 @@ impl Vad {
         let mut silence_run = 0usize;
 
         for (i, &p) in probs.iter().enumerate() {
-            // A NaN or infinity compares false against both thresholds, which
-            // would silently hold a turn open to the end of the recording.
-            // Read it as silence: it is not evidence of speech.
+            // A NaN compares false against both thresholds, so it lands in the
+            // `else` arm and resets the silence run, holding a turn open to the
+            // end of the recording; `+inf` clears `ON` and opens one outright.
+            // Neither is evidence of speech, so read every non-finite value as
+            // silence. (`-inf` already read as silence; this keeps one rule.)
             let p = if p.is_finite() { p } else { 0.0 };
             let at = i * FRAME;
             if !in_speech {
