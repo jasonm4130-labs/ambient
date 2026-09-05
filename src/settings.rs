@@ -29,10 +29,88 @@ use objc2_web_kit::{
     WKWebViewConfiguration,
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
 
+use crate::api::{self, ApiError};
 use crate::config::Config;
 
 const PAGE: &str = include_str!("../assets/settings.html");
+
+/// A routed request from the page: `{id, method, params}`. Anything that
+/// fails to parse as this (today, only the `Patch` shape) falls back to
+/// [`Bridge::handle`].
+#[derive(Debug, Deserialize)]
+struct Request {
+    id: u64,
+    method: String,
+    params: Option<Value>,
+}
+
+/// The page's held events, before it has called `init`: a plain struct with
+/// no objc types in it, so its ordering and idempotence are testable off the
+/// main thread and without a `WKWebView`.
+#[derive(Default)]
+struct Events {
+    open: bool,
+    held: Vec<(String, Value)>,
+}
+
+impl Events {
+    /// Records one event. Returns the JS to evaluate now if the queue is
+    /// open, or `None` if it was held for [`Events::open`] to deliver later.
+    fn record(&mut self, name: &str, payload: &Value) -> Option<String> {
+        if self.open {
+            Some(event_js(name, payload))
+        } else {
+            self.held.push((name.to_string(), payload.clone()));
+            None
+        }
+    }
+
+    /// Marks the queue open and returns the JS for everything held, in the
+    /// order it was recorded. Idempotent: calling this again on an
+    /// already-open queue finds nothing left to take and returns an empty
+    /// list — `init` may be called more than once (React's `StrictMode`
+    /// double-invokes the mount effect) and a second call must not re-deliver
+    /// anything.
+    fn open(&mut self) -> Vec<String> {
+        self.open = true;
+        std::mem::take(&mut self.held)
+            .into_iter()
+            .map(|(name, payload)| event_js(&name, &payload))
+            .collect()
+    }
+}
+
+/// JSON is not quite a JS expression: U+2028 and U+2029 are legal inside a
+/// JSON string and terminate a JS line, and `serde_json` does not escape
+/// them. A transcript line is user-controlled text and goes through this
+/// path, so every piece of JS handed to `evaluateJavaScript` is built through
+/// this function.
+fn escape_line_terminators(js: String) -> String {
+    js.replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+/// The JS for one reply: `Ok` becomes `{"result": v}`, and the two
+/// [`ApiError`] variants become `{"error": {"kind", "message"}}` with the
+/// exact `kind` strings units 3–6 read off the wire.
+fn reply_js(id: u64, outcome: Result<Value, ApiError>) -> String {
+    let body = match outcome {
+        Ok(v) => json!({"result": v}),
+        Err(ApiError::InvalidParams(m)) => {
+            json!({"error": {"kind": "invalid_params", "message": m}})
+        }
+        Err(ApiError::Failed(m)) => json!({"error": {"kind": "failed", "message": m}}),
+    };
+    escape_line_terminators(format!("window.ambient.reply({id}, {body});"))
+}
+
+/// The JS for one one-way event.
+fn event_js(name: &str, payload: &Value) -> String {
+    let name_json = json!(name);
+    escape_line_terminators(format!("window.ambient.event({name_json}, {payload});"))
+}
 
 /// One edit from the page. Every field is optional because the page sends only
 /// what changed.
@@ -76,6 +154,12 @@ struct Ivars {
     /// its own about what the app is doing, and asking for one would be the
     /// second source of truth the design forbids.
     recording: Cell<bool>,
+    /// The route the page's `init` should answer with. Set by
+    /// [`SettingsPane::select_settings`]; the default is what a freshly
+    /// launched window shows.
+    route: Cell<&'static str>,
+    /// Events recorded before the page's `init`, delivered once it arrives.
+    events: RefCell<Events>,
 }
 
 define_class!(
@@ -95,12 +179,62 @@ define_class!(
                 eprintln!("settings: ignoring a message that was not a string");
                 return;
             };
-            self.handle(&s.to_string());
+            self.route_message(&s.to_string());
         }
     }
 );
 
 impl Bridge {
+    /// The one entry point for a message off the wire: a request with an
+    /// `id` is routed through `init` or [`api::call`]; anything else (today,
+    /// only the old `Patch` shape) falls back to [`Bridge::handle`].
+    fn route_message(&self, json: &str) {
+        match serde_json::from_str::<Request>(json) {
+            Ok(req) => self.answer(req),
+            Err(_) => self.handle(json),
+        }
+    }
+
+    /// `init` is intercepted before [`api::call`], which has no `init` arm:
+    /// it answers with the pane's current route and opens the event queue,
+    /// delivering everything held. Idempotent — a second `init` re-opens an
+    /// already-open queue and drains an empty one, which is what
+    /// `StrictMode`'s double-invoked mount effect needs.
+    fn answer(&self, req: Request) {
+        if req.method == "init" {
+            let route = self.ivars().route.get();
+            self.eval(&reply_js(req.id, Ok(json!({"route": route}))));
+            let held = self.ivars().events.borrow_mut().open();
+            for js in held {
+                self.eval(&js);
+            }
+            return;
+        }
+        let params = req.params.unwrap_or_else(|| json!({}));
+        let paths = api::Paths {
+            config_file: crate::config::path(),
+            roster_file: crate::roster::path(),
+            sessions_root: std::env::var_os("AMBIENT_HOME").map(PathBuf::from),
+        };
+        let result = api::call(&req.method, &params, &paths);
+        self.eval(&reply_js(req.id, result));
+    }
+
+    /// A one-way notification to the page: `config`, `navigate`, `phase` and
+    /// `diarize`. Queued until the page's `init`, then sent straight through.
+    pub fn event(&self, name: &str, payload: &Value) {
+        let js = self.ivars().events.borrow_mut().record(name, payload);
+        if let Some(js) = js {
+            self.eval(&js);
+        }
+    }
+
+    fn eval(&self, js: &str) {
+        if let Some(web) = self.ivars().web.borrow().as_ref() {
+            unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(js), None) };
+        }
+    }
+
     fn handle(&self, json: &str) {
         let patch: Patch = match serde_json::from_str(json) {
             Ok(p) => p,
@@ -312,10 +446,7 @@ impl Bridge {
                 .and_then(|d| d.file_name())
                 .map(|n| n.to_string_lossy().to_string()),
         });
-        let js = format!("applyConfig({payload});");
-        if let Some(web) = self.ivars().web.borrow().as_ref() {
-            unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
-        }
+        self.event("config", &payload);
     }
 }
 
@@ -341,6 +472,8 @@ impl SettingsPane {
             web: RefCell::new(None),
             stashed: RefCell::new(Vec::new()),
             recording: Cell::new(false),
+            route: Cell::new("sessions"),
+            events: RefCell::new(Events::default()),
         });
         let bridge: Retained<Bridge> = unsafe { msg_send![super(bridge), init] };
 
@@ -381,6 +514,21 @@ impl SettingsPane {
     /// to move the sessions folder while this is set.
     pub fn set_recording(&self, recording: bool) {
         self.bridge.ivars().recording.set(recording);
+    }
+
+    /// A one-way notification to the page: `config`, `navigate`, `phase` and
+    /// `diarize`. Unit 5's `render` calls this with `phase`.
+    pub fn event(&self, name: &str, payload: &Value) {
+        self.bridge.event(name, payload);
+    }
+
+    /// Sets the route `init` answers with to `settings` and tells a page
+    /// already mounted to switch there too. Unit 6's host swap wires
+    /// `src/window.rs` to this in place of showing the settings view
+    /// directly.
+    pub fn select_settings(&self) {
+        self.bridge.ivars().route.set("settings");
+        self.bridge.event("navigate", &json!({"page": "settings"}));
     }
 
     /// For the launch log. A `WKWebView` that was re-parented into a view
@@ -480,5 +628,52 @@ mod tests {
         // applied.
         let p = parse(r#"{"unknown":1,"diarize":true}"#).expect("unknown keys are skipped");
         assert_eq!(p.diarize, Some(true));
+    }
+
+    #[test]
+    fn events_before_init_are_held_and_delivered_in_order() {
+        let mut events = Events::default();
+        assert!(events.record("a", &json!(1)).is_none());
+        assert!(events.record("b", &json!(2)).is_none());
+
+        let delivered = events.open();
+        assert_eq!(
+            delivered,
+            vec![event_js("a", &json!(1)), event_js("b", &json!(2))]
+        );
+
+        // An event emitted after `init` is not held: it comes straight back.
+        let js = events.record("c", &json!(3));
+        assert_eq!(js, Some(event_js("c", &json!(3))));
+
+        // A second `init` finds nothing left to deliver.
+        assert!(events.open().is_empty());
+    }
+
+    #[test]
+    fn reply_js_shapes_results_and_errors_and_escapes_line_terminators() {
+        let ok = reply_js(1, Ok(json!({"a": 1})));
+        assert!(ok.contains(r#""result":{"a":1}"#), "got {ok:?}");
+
+        let invalid = reply_js(2, Err(ApiError::InvalidParams("bad shape".into())));
+        assert!(
+            invalid.contains(r#""error":{"kind":"invalid_params","message":"bad shape"}"#),
+            "got {invalid:?}"
+        );
+
+        let failed = reply_js(3, Err(ApiError::Failed("could not read it".into())));
+        assert!(
+            failed.contains(r#""error":{"kind":"failed","message":"could not read it""#),
+            "got {failed:?}"
+        );
+
+        // U+2028 is legal inside a JSON string and terminates a JS line;
+        // `serde_json` does not escape it, so the reply helper must.
+        let with_separator = reply_js(4, Ok(json!(format!("a{}b", '\u{2028}'))));
+        assert!(
+            !with_separator.contains('\u{2028}'),
+            "got {with_separator:?}"
+        );
+        assert!(with_separator.contains("\\u2028"), "got {with_separator:?}");
     }
 }

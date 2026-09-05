@@ -98,3 +98,15 @@ declare global {
 // Installed from the page so Rust can call `window.ambient.reply(id, …)` and
 // `window.ambient.event(name, payload)` through `evaluateJavaScript`.
 window.ambient = { reply, event };
+
+/// The seam a screen actually depends on, so a test can hand it a
+/// `FakeBridge` instead of the real wire.
+export interface Bridge {
+  call<T>(method: string, params?: object): Promise<T>;
+  on(name: string, handler: EventHandler): () => void;
+}
+
+/// The stable singleton wrapping the module functions above — same wire
+/// behaviour and `window.ambient` installation, just named so a provider can
+/// hand it out as a `Bridge`.
+export const bridge: Bridge = { call, on };
