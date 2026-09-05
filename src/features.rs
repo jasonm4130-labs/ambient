@@ -90,6 +90,12 @@ fn padded_window() -> Vec<f32> {
 
 /// Log-mel features in the encoder's layout: `[N_MELS * frames]`, mel-major.
 pub fn log_mel(samples: &[f32]) -> (Vec<f32>, usize) {
+    // No samples, no frames: the pre-emphasis below reads `samples[0]`, and an
+    // empty segment reaching here is a caller's business, not a panic.
+    if samples.is_empty() {
+        return (Vec::new(), 0);
+    }
+
     // Pre-emphasis.
     let mut x = Vec::with_capacity(samples.len());
     x.push(samples[0]);
@@ -253,6 +259,11 @@ mod tests {
             assert!(mean.abs() < 1e-3, "row {m} mean {mean}");
             assert!((std - 1.0).abs() < 1e-2, "row {m} std {std}");
         }
+    }
+
+    #[test]
+    fn log_mel_of_no_samples_is_empty() {
+        assert_eq!(log_mel(&[]), (Vec::new(), 0));
     }
 
     #[test]
