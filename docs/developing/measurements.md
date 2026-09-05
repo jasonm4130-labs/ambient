@@ -430,6 +430,99 @@ almost right there and would be badly wrong anywhere else. IS1009a is the
 honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
 meeting with four real ones — and it is not enough on its own.
 
+## Live transcription: cost per block
+
+M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06. `cargo build --release --bin
+asrbench`, then the built binary run directly (not under `cargo run`, so
+`/usr/bin/time -l`'s rusage is the binary's own, not cargo's) with no `--wav`,
+so it replays the manifest's first entry — the 1089 fixture upsampled once to
+`~/.cache/ambient/bench/1089.48k.wav` (302.11 s):
+
+```
+/usr/bin/time -l <target>/release/asrbench --block-seconds 30 --json <path>
+```
+
+The harness cuts native-rate 48 kHz audio into `--block-seconds` blocks, each
+resampled to 16 kHz, run through VAD, its turns decoded — a turn ending within
+`PAD_MS` of a block edge is carried into the next block rather than cut.
+`model_load_s` is a one-time cost measured outside the per-block figures below.
+
+Total row, 30 s blocks:
+
+| blocks | audio_s | prep_s | decode_s | rtf | max_block_work_s | model_load_s |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 11 | 302.11 | 0.881 | 5.966 | 0.023 | 0.866 | 0.607 |
+
+Lag rows, 30 s blocks — `tracks=N` is the workload once through; `tracks=N
+(x2)` is `bench::repeat(rows, 2)`, the same blocks played twice in a row to
+tell a bounded backlog from a growing one:
+
+| | max_lag_s | final_lag_s |
+| --- | ---: | ---: |
+| tracks=1 | 0.866 | 0.125 |
+| tracks=1 (x2) | 0.866 | 0.125 |
+| tracks=2 | 1.731 | 0.249 |
+| tracks=2 (x2) | 1.731 | 0.249 |
+
+The `(x2)` rows land on exactly the same numbers as their single-pass
+counterparts, at both track counts. That is the finding, not a coincidence:
+at an `rtf` of 0.023 each block finishes long before the next one arrives, so
+a worker that repeats the workload never falls further behind than it did the
+first time through — a bounded backlog, not a growing one.
+
+`maximum resident set size` from `/usr/bin/time -l` (bytes on macOS, divided
+by 1048576 for MB): **2038 MB** peak for the 30 s run.
+
+The single most expensive block is index 5 (`end_s=180.00`): `prep_s=0.107`,
+`decode_s=0.758`, `turns=3`, `prep_s + decode_s = 0.866 s` — the block behind
+`max_block_work_s` above.
+
+The benchmark pays `Vad`'s per-call recurrent-state reset on every block, and
+accepts it, because a live pass built on the current `Vad` would pay it too.
+
+### Verdict
+
+The rule was fixed before these numbers were seen: a **go** requires, at 30 s
+blocks, `tracks=2` `max_lag_s` under 30, the `tracks=2` doubled-workload
+`max_lag_s` within 1 s of it, the `tracks=2` implied `rtf` — `2 ×
+(prep_s + decode_s) / audio_s` — under 0.5, and the worst drain overshoot
+(see the section below) under 1 s; otherwise a **no-go** naming the
+constraint that failed.
+
+| block_seconds | prep_s + decode_s | rtf | tracks=2 max_lag_s | tracks=2 (x2) max_lag_s |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 7.064 | 0.023 | 0.859 | 0.859 |
+| 20 | 6.864 | 0.023 | 1.390 | 1.390 |
+| 30 | 6.846 | 0.023 | 1.731 | 1.731 |
+
+At 30 s blocks `tracks=2` `max_lag_s` is 1.731 s, under 30. The doubled
+workload (`tracks=2 (x2)`) is also 1.731 s, 0.000 s from the single pass, well
+within 1 s. The implied `rtf` is `2 × (0.881 + 5.966) / 302.11 = 13.692 /
+302.11 = 0.045`, under 0.5. The worst drain overshoot across the three runs
+below is 10.87 ms = 0.011 s, under 1 s. All four clauses hold: **go**.
+
+## Live transcription: drain overshoot beside ASR
+
+M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06, from the three `drainbench` runs
+already logged for this outcome: `cargo run --release --bin drainbench -- 60
+~/.cache/ambient/bench/1089.48k.wav`, each exit 0. The worst run's max
+overshoot is **10.87 ms** (run 2, under ASR).
+
+| run | periods | decodes completed | mean overshoot | max overshoot | ring margin |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 (idle) | 25 | — | 6.38 ms | 10.03 ms | 0.033% of 30 s |
+| 1 (under ASR) | 289 | 4 | 8.00 ms | 10.10 ms | 0.034% of 30 s |
+| 2 (idle) | 25 | — | 6.91 ms | 10.03 ms | 0.033% of 30 s |
+| 2 (under ASR) | 289 | 4 | 8.23 ms | 10.87 ms | 0.036% of 30 s |
+| 3 (idle) | 25 | — | 7.06 ms | 10.03 ms | 0.033% of 30 s |
+| 3 (under ASR) | 289 | 4 | 8.19 ms | 10.08 ms | 0.034% of 30 s |
+
+The idle rows are the same 200 ms drain loop with no ASR beside it; no
+capture was started (no tap, per the non-goal). The ASR worker ran at
+`QOS_CLASS_BACKGROUND`, which is the QoS the number above assumes. Every run's
+verdict line reads the same: `ok — worst overshoot is under 1% of the 30 s
+ring`.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
