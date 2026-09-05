@@ -164,6 +164,56 @@ segmenter is not losing words and the recogniser is not inventing them, it is
 getting them wrong. `--json` writes the same rows, the total among them with
 `speaker` reading `total`.
 
+## Live transcription: cost per block
+
+`cargo run --release --bin asrbench -- [--wav <path>] [--block-seconds <n>]
+[--json <path>]`, on 2026-09-05, on speaker 1089 of the fixture upsampled to
+48 kHz — 302 s of audio in eleven 30 s blocks. Each block is resampled, run
+through `Vad::turns`, and its turns decoded, which is the work a live
+transcriber does and `wer` does not: `wer` gets 16 kHz audio and segments the
+whole track once.
+
+| Blocks | Audio | Prep | Decode | RTF | Worst block | Model load | Peak RSS |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 11 | 302.11 s | 1.99 s | 26.59 s | 0.095 | 3.49 s | 2.47 s | 2050 MB |
+
+RTF is work per second of audio, so 0.095 is a tenth of realtime and the
+headroom is roughly 10×. Prep — resample plus VAD — is 1.99 s against 26.59 s
+of decode: the per-block resample and VAD pass a live transcriber pays and a
+whole-track pass does not costs 7% of the total, not a doubling. The worst
+block is block 3 at 0.36 s of prep and 3.13 s of decode over six turns; that
+3.49 s is the number the queue simulation turns into lag. Peak RSS is
+`maximum resident set size` from `/usr/bin/time -l` on the whole run.
+
+| Workload | Tracks | Max lag | Final lag |
+| --- | ---: | ---: | ---: |
+| 302 s | 1 | 3.49 s | 0.47 s |
+| 302 s | 2 | 6.97 s | 2.86 s |
+| 604 s (`repeat`, ×2) | 1 | 3.49 s | 0.47 s |
+| 604 s (`repeat`, ×2) | 2 | 6.97 s | 2.86 s |
+
+The backlog is bounded: doubling the workload leaves the maximum lag
+unchanged, so the worker drains each block before the next one lands and a
+two-hour meeting lags no more than a five-minute one. Two tracks — a room and
+a call, which arrive at the same instant — cost the second track a wait behind
+the first, and 6.97 s is still one block's audio behind, not a growing queue.
+The rule: bounded when the doubled workload's maximum lag is within 1 s of the
+single workload's, accumulating when it roughly doubles.
+
+Two things the benchmark charges itself that a reader should know about.
+`Vad::turns` resets its recurrent state on every call, so a per-block pass pays
+that reset eleven times where a whole-track pass pays it once; the cost is left
+in, because a live transcriber built on today's `Vad` would pay it too. And
+speech still running at a block's edge is not decoded there — its samples are
+carried into the next block — so a long utterance splits at an interior quiet
+frame as the whole-track path splits it, rather than at the block boundary; the
+carried audio is counted once, where it is decoded, while the cost of preparing
+it again lands in the next block's prep.
+
+These are one run's numbers on a machine that had other builds on it. A repeat
+run measured RTF 0.149 and a 6.56 s worst block — same verdict, half the
+headroom — so read the margin as an order of magnitude, not a constant.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
