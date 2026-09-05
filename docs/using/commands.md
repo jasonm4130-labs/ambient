@@ -108,13 +108,19 @@ apart. See [capture](../developing/capture.md).
 ## show
 
 ```sh
-ambient show <session-dir> [--verbatim]
+ambient show <session-dir> [--verbatim] [--json]
 ```
 
 Prints the session with `edits.jsonl` folded over `raw.jsonl`. `--verbatim`
 skips the fold and shows what the recogniser actually produced. Nothing is
 mutated. The window's *Tidied*/*Verbatim* toggle is the same pair of views. See
 [sessions](../developing/sessions.md).
+
+`--json` prints the same lines as a JSON array instead of the aligned text, for
+piping into `jq` or a script. Each element carries `track` (`"room"` or
+`"call"`), `start_ms`, `end_ms`, `speaker` (`null` until something has named
+it) and `text`. It composes with `--verbatim`, in either order, and a session
+with no lines in it prints `[]` rather than a message on stderr.
 
 ## name
 
