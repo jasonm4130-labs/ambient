@@ -23,6 +23,7 @@ USAGE
   ambient config [<key> <value>]       show or change settings
   ambient mcp                          serve sessions over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
+  ambient doctor [--json]              check the install: models, config, sessions
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
@@ -232,6 +233,36 @@ fn main() -> Result<()> {
             let n = ambient::session::diarize_session(std::path::Path::new(&dir), threshold)?;
             eprintln!("  {n} edit(s) appended");
             ambient::session::show(std::path::Path::new(&dir), false, false)
+        }
+        Some("doctor") => {
+            let flags: Vec<String> = args.collect();
+            let json = flags.iter().any(|a| a == "--json");
+            if let Some(other) = flags.iter().find(|a| *a != "--json") {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
+            }
+            let checks = ambient::doctor::run(
+                ambient::session::models_root(),
+                &ambient::config::path(),
+                &ambient::session::home(),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&checks)?);
+            } else {
+                for c in &checks {
+                    println!(
+                        "{:<4} {:<28}  {}",
+                        if c.ok { "ok" } else { "FAIL" },
+                        c.name,
+                        c.detail
+                    );
+                }
+            }
+            // A non-zero exit is what makes this usable from a script, and
+            // what stops a broken install reading as a clean run.
+            if checks.iter().any(|c| !c.ok) {
+                std::process::exit(1);
+            }
+            Ok(())
         }
         // Read-only, and the whole of it is on stdin and stdout: nothing
         // else may print to stdout while this runs or the client sees a
