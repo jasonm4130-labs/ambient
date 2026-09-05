@@ -9,7 +9,7 @@ USAGE
   ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>]
                  [--seconds <n>]       record until stopped, then transcribe
   ambient stop [<session-dir>]         stop the recording in progress
-  ambient show <session-dir> [--verbatim]
+  ambient show <session-dir> [--verbatim] [--json]
                                        print a recorded session
   ambient diarize <session-dir> [--threshold <f>]
                                        assign speakers to a recorded session
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
             }
             let n = ambient::session::name_speaker(std::path::Path::new(&dir), &label, &who)?;
             eprintln!("  {n} line(s) now attributed to {who}");
-            ambient::session::show(std::path::Path::new(&dir), false)
+            ambient::session::show(std::path::Path::new(&dir), false, false)
         }
         Some("roster") => {
             let mut names = ambient::roster::load();
@@ -143,8 +143,11 @@ fn main() -> Result<()> {
             if dir.is_empty() {
                 bail!("{USAGE}");
             }
-            let verbatim = args.any(|a| a == "--verbatim");
-            ambient::session::show(std::path::Path::new(&dir), verbatim)
+            // Collected first so the two flags work in either order.
+            let flags: Vec<String> = args.collect();
+            let verbatim = flags.iter().any(|a| a == "--verbatim");
+            let json = flags.iter().any(|a| a == "--json");
+            ambient::session::show(std::path::Path::new(&dir), verbatim, json)
         }
         Some("diarize") => {
             let dir = args.next().unwrap_or_default();
@@ -165,7 +168,7 @@ fn main() -> Result<()> {
             }
             let n = ambient::session::diarize_session(std::path::Path::new(&dir), threshold)?;
             eprintln!("  {n} edit(s) appended");
-            ambient::session::show(std::path::Path::new(&dir), false)
+            ambient::session::show(std::path::Path::new(&dir), false, false)
         }
         Some("probe") => {
             ambient::probe::run()?;

@@ -1045,8 +1045,10 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
     removed
 }
 
-/// A raw record with whatever the edit layer has said about it.
-#[derive(Debug, Clone)]
+/// A raw record with whatever the edit layer has said about it. `Serialize`
+/// is what `show --json` hands to scripts, so the field names and the
+/// `room`/`call` spelling are a contract.
+#[derive(Debug, Clone, Serialize)]
 pub struct Line {
     pub track: Track,
     pub start_ms: u64,
@@ -1125,8 +1127,15 @@ pub fn transcript(dir: &Path, verbatim: bool) -> Result<Vec<Line>> {
     Ok(lines)
 }
 
-pub fn show(dir: &Path, verbatim: bool) -> Result<()> {
+pub fn show(dir: &Path, verbatim: bool, json: bool) -> Result<()> {
     let lines = transcript(dir, verbatim)?;
+    // Under `--json` the reader is a script, so an empty session is an empty
+    // array on stdout rather than a note on stderr — a consumer that always
+    // gets JSON needs no special case for a session with nothing in it.
+    if json {
+        println!("{}", serde_json::to_string_pretty(&lines)?);
+        return Ok(());
+    }
     if lines.is_empty() {
         eprintln!("no transcript in {}", dir.display());
         return Ok(());
@@ -1934,6 +1943,53 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join("edits.jsonl")).unwrap(),
             before
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `show --json` is the scripting surface, so the field names and the
+    /// `room`/`call` spelling are part of the contract, not an implementation
+    /// detail — and an unnamed speaker has to survive as `null` rather than
+    /// vanishing, or a consumer cannot tell "nobody knows" from "no field".
+    #[test]
+    fn a_folded_transcript_serialises_as_the_documented_json() {
+        let root = sweep_root("json");
+        let dir = root.join("2026-01-01T0900");
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = [
+            RawRecord {
+                track: Track::Room,
+                start_ms: 0,
+                end_ms: 1000,
+                text: "hello".into(),
+                confidence: 0.9,
+            },
+            RawRecord {
+                track: Track::Call,
+                start_ms: 1000,
+                end_ms: 2000,
+                text: "hi".into(),
+                confidence: 0.9,
+            },
+        ];
+        let body: String = raw
+            .iter()
+            .map(|r| format!("{}\n", serde_json::to_string(r).unwrap()))
+            .collect();
+        std::fs::write(dir.join("raw.jsonl"), body).unwrap();
+        std::fs::write(
+            dir.join("edits.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::to_string(&spoken_by(Track::Room, 0, "Ana", USER_BY)).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let lines = transcript(&dir, false).unwrap();
+        assert_eq!(
+            serde_json::to_string(&lines).unwrap(),
+            r#"[{"track":"room","start_ms":0,"end_ms":1000,"speaker":"Ana","text":"hello"},{"track":"call","start_ms":1000,"end_ms":2000,"speaker":null,"text":"hi"}]"#
         );
         std::fs::remove_dir_all(&root).ok();
     }
