@@ -19,6 +19,8 @@ USAGE
                                        name a speaker, e.g. call-1 Priya
   ambient undo <session-dir> [--seq <n>]
                                        take back the last naming
+  ambient meta <session-dir> name|notes|pinned|tag|untag <value>
+                                       set the name/notes, pin, or add/remove a tag
   ambient export <session-dir> [--out <path>]
                                        write transcript.md
   ambient config [<key> <value>]       show or change settings
@@ -113,6 +115,41 @@ fn main() -> Result<()> {
                 None => ambient::session::undo_last_naming(path)?,
             };
             eprintln!("reverted {n} edits");
+            Ok(())
+        }
+        Some("meta") => {
+            let dir = args.next().unwrap_or_default();
+            let field = args.next().unwrap_or_default();
+            let value = args.next().unwrap_or_default();
+            if dir.is_empty() || field.is_empty() || value.is_empty() {
+                bail!("{USAGE}");
+            }
+            if let Some(other) = args.next() {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
+            }
+            let dir = std::path::Path::new(&dir);
+            let mut patch = ambient::session::MetaPatch::default();
+            match field.as_str() {
+                "name" => patch.name = Some(value),
+                "notes" => patch.notes = Some(value),
+                "pinned" => {
+                    patch.pinned = Some(match value.as_str() {
+                        "true" | "yes" | "on" | "1" => true,
+                        "false" | "no" | "off" | "0" => false,
+                        other => bail!("{other:?} is not a yes or no. Use true or false."),
+                    })
+                }
+                "tag" => patch.add_tag = Some(value),
+                "untag" => patch.remove_tag = Some(value),
+                other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+            }
+            let _lock = ambient::session::claim_transcription(dir)?;
+            let meta = ambient::session::update_meta(dir, &patch)?;
+            println!(
+                "{}  tags: {}",
+                meta.name.as_deref().unwrap_or("-"),
+                meta.tags.join(", ")
+            );
             Ok(())
         }
         Some("roster") => {

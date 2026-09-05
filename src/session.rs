@@ -108,6 +108,12 @@ pub struct SessionMeta {
     /// before this field loadable.
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -799,6 +805,9 @@ pub fn capture_into(
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default(),
         warnings,
+        tags: Vec::new(),
+        notes: String::new(),
+        pinned: false,
     };
     std::fs::write(
         dir.join("session.json"),
@@ -973,6 +982,8 @@ pub struct SessionSummary {
     pub live: bool,
     pub transcribing: bool,
     pub error: Option<String>,
+    pub tags: Vec<String>,
+    pub pinned: bool,
 }
 
 impl SessionSummary {
@@ -998,11 +1009,15 @@ impl SessionSummary {
 /// else in the folder is one, which is what keeps a stray `notes` directory
 /// out of the answer.
 pub fn summaries(root: &Path) -> Vec<SessionSummary> {
-    list(root)
+    let mut out: Vec<SessionSummary> = list(root)
         .iter()
         .rev()
         .filter_map(|d| summarise(d))
-        .collect()
+        .collect();
+    // Stable: ties (nothing pinned, or several sessions pinned) keep the
+    // newest-first order the collection above already established.
+    out.sort_by_key(|s| !s.pinned);
+    out
 }
 
 /// One directory, or `None` when it is not a session at all. Public so a
@@ -1027,6 +1042,8 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
         live,
         transcribing: live_transcriber(dir).is_some(),
         error: None,
+        tags: Vec::new(),
+        pinned: false,
     };
     match present {
         // A capture in flight writes `session.json` last, so its absence here
@@ -1041,6 +1058,8 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
                 s.name = meta.name;
                 s.started_at = Some(meta.started_at);
                 s.duration_s = Some(meta.duration_s);
+                s.tags = meta.tags;
+                s.pinned = meta.pinned;
             }
             // The id stays the directory name: it is what the caller typed to
             // get here and the only thing left that identifies the session.
@@ -1048,6 +1067,71 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
         },
     }
     Some(s)
+}
+
+/// A change to a session's metadata: only the `Some` fields are applied, and
+/// `add_tag`/`remove_tag` change one tag at a time so two clients each adding
+/// a different tag both keep theirs rather than one clobbering the other's
+/// list. No `deny_unknown_fields` — the api arm deserialises this out of the
+/// same params object that also carries `session`, and rejecting an unknown
+/// key there would refuse a perfectly good request.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MetaPatch {
+    pub name: Option<String>,
+    pub notes: Option<String>,
+    pub pinned: Option<bool>,
+    pub add_tag: Option<String>,
+    pub remove_tag: Option<String>,
+}
+
+/// Apply `patch` to `dir`'s `session.json` and return the result.
+///
+/// Lock-free on purpose: the transcriber calls sibling writers
+/// (`diarize_session`, `name_speaker`, `undo_last_naming`) while already
+/// holding [`claim_transcription`]'s lock, and this function joins that
+/// family rather than a special case — every *entry point* (the `api::call`
+/// arm, the CLI's `meta` arm) claims the lock once around the call. Claiming
+/// it again in here would make the entry point's own claim collide with
+/// itself on the success path.
+///
+/// The write is atomic: `session.json.tmp` is written in full and then
+/// renamed over `session.json`, so a reader never sees a half-written file
+/// and a crash mid-write leaves the old one intact.
+pub fn update_meta(dir: &Path, patch: &MetaPatch) -> Result<SessionMeta> {
+    let path = dir.join("session.json");
+    let text = std::fs::read_to_string(&path).map_err(|_| {
+        anyhow!(
+            "{} has no session.json yet — it is still recording",
+            dir.display()
+        )
+    })?;
+    let mut meta: SessionMeta =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+
+    if let Some(name) = &patch.name {
+        meta.name = Some(name.clone());
+    }
+    if let Some(notes) = &patch.notes {
+        meta.notes = notes.clone();
+    }
+    if let Some(pinned) = patch.pinned {
+        meta.pinned = pinned;
+    }
+    if let Some(tag) = &patch.add_tag {
+        if !meta.tags.iter().any(|t| t == tag) {
+            meta.tags.push(tag.clone());
+        }
+    }
+    if let Some(tag) = &patch.remove_tag {
+        meta.tags.retain(|t| t != tag);
+    }
+
+    let tmp = dir.join("session.json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&meta)?)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} into place", path.display()))?;
+    Ok(meta)
 }
 
 /// The most recently written session. Built on [`list`] so a second walk
@@ -2858,6 +2942,192 @@ mod search_tests {
         let root = fixture("search-empty-query");
         let err = search(&root, "   ", 50).unwrap_err();
         assert!(format!("{err:#}").contains("empty query"), "{err:#}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+/// Same reasoning as [`search_tests`]: `session::meta_tests::…` contains
+/// `session::meta`, so `cargo test session::meta` selects these, which a
+/// module named `tests` would not.
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+
+    fn fixture(test: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ambient-{test}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn write_session(dir: &Path, id: &str, started_at: &str, name: Option<&str>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let meta = SessionMeta {
+            id: id.into(),
+            name: name.map(str::to_string),
+            started_at: started_at.into(),
+            ended_at: started_at.into(),
+            duration_s: 42.0,
+            device_hz: 48000,
+            mic_hz: 48000,
+            channels: 1,
+            mic_channels: 1,
+            apps: Vec::new(),
+            model: "parakeet".into(),
+            warnings: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            pinned: false,
+        };
+        std::fs::write(
+            dir.join("session.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn setting_the_name_leaves_duration_untouched() {
+        let root = fixture("meta-name");
+        let dir = root.join("2026-01-01T0900");
+        write_session(&dir, "2026-01-01T0900", "2026-01-01T09:00:00+00:00", None);
+
+        let patch = MetaPatch {
+            name: Some("Stand-up".into()),
+            ..Default::default()
+        };
+        let meta = update_meta(&dir, &patch).unwrap();
+        assert_eq!(meta.name.as_deref(), Some("Stand-up"));
+        assert_eq!(meta.duration_s, 42.0);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn tags_accumulate_across_calls_and_a_removal_leaves_the_rest() {
+        let root = fixture("meta-tags");
+        let dir = root.join("2026-01-01T0900");
+        write_session(
+            &dir,
+            "2026-01-01T0900",
+            "2026-01-01T09:00:00+00:00",
+            Some("Stand-up"),
+        );
+
+        let meta = update_meta(
+            &dir,
+            &MetaPatch {
+                add_tag: Some("1:1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(meta.name.as_deref(), Some("Stand-up"));
+        assert_eq!(meta.tags, vec!["1:1".to_string()]);
+
+        let meta = update_meta(
+            &dir,
+            &MetaPatch {
+                add_tag: Some("budget".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(meta.name.as_deref(), Some("Stand-up"));
+        assert_eq!(meta.tags, vec!["1:1".to_string(), "budget".to_string()]);
+
+        let meta = update_meta(
+            &dir,
+            &MetaPatch {
+                remove_tag: Some("1:1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(meta.tags, vec!["budget".to_string()]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn pinning_the_older_session_puts_it_first() {
+        let root = fixture("meta-pinned-order");
+        let older = root.join("2026-01-01T0900");
+        let newer = root.join("2026-02-01T0900");
+        write_session(&older, "2026-01-01T0900", "2026-01-01T09:00:00+00:00", None);
+        write_session(&newer, "2026-02-01T0900", "2026-02-01T09:00:00+00:00", None);
+
+        update_meta(
+            &older,
+            &MetaPatch {
+                pinned: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let ids: Vec<String> = summaries(&root).into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, ["2026-01-01T0900", "2026-02-01T0900"]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_dir_with_no_session_json_is_still_recording() {
+        let root = fixture("meta-no-json");
+        let dir = root.join("2026-01-01T0900");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let err = update_meta(&dir, &MetaPatch::default()).unwrap_err();
+        assert!(format!("{err:#}").contains("still recording"), "{err:#}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_session_json_without_the_new_keys_still_parses() {
+        let old = r#"{"id":"2026-01-01T0900","name":null,"started_at":"a","ended_at":"b",
+                      "duration_s":1.0,"device_hz":48000,"mic_hz":48000,"channels":1,
+                      "mic_channels":1,"apps":[],"model":"parakeet"}"#;
+        let meta: SessionMeta = serde_json::from_str(old).unwrap();
+        assert!(meta.tags.is_empty());
+        assert_eq!(meta.notes, "");
+        assert!(!meta.pinned);
+    }
+
+    #[test]
+    fn a_live_transcriber_lock_refuses_the_api_write_and_leaves_the_file_untouched() {
+        let root = fixture("meta-lock");
+        let dir = root.join("2026-01-01T0900");
+        write_session(
+            &dir,
+            "2026-01-01T0900",
+            "2026-01-01T09:00:00+00:00",
+            Some("Stand-up"),
+        );
+        std::fs::write(dir.join(TRANSCRIBING_LOCK), std::process::id().to_string()).unwrap();
+        let before = std::fs::read_to_string(dir.join("session.json")).unwrap();
+
+        let paths = crate::api::Paths {
+            config_file: root.join("config.json"),
+            roster_file: root.join("roster.json"),
+            sessions_root: Some(root.clone()),
+        };
+        let err = crate::api::call(
+            "session.update",
+            &serde_json::json!({"session": "2026-01-01T0900", "name": "x"}),
+            &paths,
+        )
+        .unwrap_err();
+        let message = match err {
+            crate::api::ApiError::Failed(m) => m,
+            other => panic!("expected Failed, got {other:?}"),
+        };
+        assert!(message.contains("being transcribed"), "{message}");
+
+        let after = std::fs::read_to_string(dir.join("session.json")).unwrap();
+        assert_eq!(before, after);
+
         std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -123,8 +123,8 @@ closes — and one interrupted mid-write has a `session.json` that will not
 parse; both appear, the first with empty metadata columns and the second as
 `broken`, because a session that has gone wrong is the one worth seeing.
 `--json` prints the same rows as a JSON array, each with `id`, `dir`, `name`,
-`started_at`, `duration_s`, `transcribed`, `live`, `transcribing` and `error`.
-See [sessions](../developing/sessions.md).
+`started_at`, `duration_s`, `transcribed`, `live`, `transcribing`, `error`,
+`tags` and `pinned`. See [sessions](../developing/sessions.md).
 
 ## search
 
@@ -208,6 +208,20 @@ how a mistyped path reads.
 a line that does not exist answers `no edit <n>`, a line already reverted
 answers `already reverted`, and a line that is itself a `revert` is refused:
 undo the edit it names.
+
+## meta
+
+```sh
+ambient meta <session-dir> name|notes|pinned|tag|untag <value>
+```
+
+Sets the session's name or notes, pins or unpins it, or adds/removes one tag
+— whichever field you name — and prints the resulting name and tag list.
+`pinned` takes `true`/`false` (also `yes`/`no`, `on`/`off`, `1`/`0`); `tag` and
+`untag` add or remove one tag at a time, so adding a tag that is already there
+or removing one that is not is a no-op rather than an error. Rewrites
+`session.json` only. A session still being captured has no `session.json` yet
+and refuses, saying so. See [the session API](../developing/api.md).
 
 ## diarize
 

@@ -39,7 +39,9 @@ Reply:
     "transcribed": true,
     "live": false,
     "transcribing": false,
-    "error": null
+    "error": null,
+    "tags": [],
+    "pinned": false
   }
 ]
 ```
@@ -99,6 +101,49 @@ Reply:
 `index` is the line's position in `transcript_appended` order — the order
 lines were written, not the order their clocks say — so it can be used to
 re-fetch the same line from `transcript`.
+
+## `session.update`
+
+Rename a session, add or remove one tag, replace its notes, or pin it —
+whichever fields are present in the request. Rewrites `session.json` only;
+`raw.jsonl` and `edits.jsonl` are untouched.
+
+Request:
+
+```json
+{"session": "2026-09-05-1200", "name": "Standup", "add_tag": "1:1", "pinned": true}
+```
+
+`name`, `notes`, `pinned`, `add_tag` and `remove_tag` are all optional; only
+the fields present are applied. `add_tag` of a tag already on the session and
+`remove_tag` of one that is not are no-ops, so two callers each adding a
+different tag both keep theirs.
+
+Reply, the session's full metadata after the change:
+
+```json
+{
+  "id": "2026-09-05-1200",
+  "name": "Standup",
+  "started_at": "2026-09-05T12:00:00+01:00",
+  "ended_at": "2026-09-05T12:10:12+01:00",
+  "duration_s": 612.5,
+  "device_hz": 48000,
+  "mic_hz": 48000,
+  "channels": 1,
+  "mic_channels": 1,
+  "apps": [],
+  "model": "parakeet",
+  "warnings": [],
+  "tags": ["1:1"],
+  "notes": "",
+  "pinned": true
+}
+```
+
+A session still recording has no `session.json` yet and answers `Failed`
+saying so; a session a transcriber currently holds the lock on answers
+`Failed` saying it is being transcribed.
 
 ## `status`
 

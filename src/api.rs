@@ -105,6 +105,7 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
         "sessions" => Ok(sessions(&paths.root())),
         "transcript" => transcript(&paths.root(), params),
         "search" => search(&paths.root(), params),
+        "session.update" => session_update(&paths.root(), params),
         other => Err(ApiError::InvalidParams(format!("no such method {other:?}"))),
     }
 }
@@ -132,6 +133,8 @@ fn sessions(root: &Path) -> Value {
                 live: session::is_growing(&dir.join("audio").join("room.native.wav")),
                 transcribing: session::live_transcriber(dir).is_some(),
                 error: Some(refusal),
+                tags: Vec::new(),
+                pinned: false,
             }),
             None => session::summarise(dir),
         })
@@ -214,6 +217,41 @@ fn search(root: &Path, params: &Value) -> Result<Value, ApiError> {
     let hits =
         session::search(root, query, limit).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
     serde_json::to_value(hits).map_err(|e| ApiError::Failed(format!("{e}")))
+}
+
+/// The `session.update` method: rename, tag, note or pin a session by
+/// rewriting its `session.json`. `session` is required and must be a string;
+/// everything else in `params` is [`session::MetaPatch`], deserialised
+/// straight out of the same object so a client can send `session` and the
+/// patch fields together in one request.
+///
+/// Resolved through [`session_dir`] and [`symlinked`] — the same containment
+/// [`read`] uses — before anything is written, so a write path is never
+/// weaker than the read path next to it. The lock is claimed once, here at
+/// the entry point: [`session::update_meta`] stays lock-free so the
+/// transcriber can call it (and its siblings) while already holding the lock
+/// it took for itself.
+fn session_update(root: &Path, params: &Value) -> Result<Value, ApiError> {
+    let args = params.as_object().ok_or_else(|| {
+        ApiError::InvalidParams("`session.update` needs a string `session`".into())
+    })?;
+    let id = args
+        .get("session")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
+    let patch: session::MetaPatch = serde_json::from_value(params.clone())
+        .map_err(|e| ApiError::InvalidParams(format!("{e}")))?;
+
+    let dir = session_dir(root, id).map_err(ApiError::Failed)?;
+    if let Some(refusal) = symlinked(&dir) {
+        return Err(ApiError::Failed(refusal));
+    }
+
+    let _lock =
+        session::claim_transcription(&dir).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    let meta =
+        session::update_meta(&dir, &patch).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    serde_json::to_value(meta).map_err(|e| ApiError::Failed(format!("{e}")))
 }
 
 /// `root/id`, or why that is not a session of this machine. An id is one path
@@ -409,6 +447,74 @@ mod tests {
     fn search_query_must_be_a_string() {
         let (paths, _root) = temp_paths("search-query-type");
         let err = call("search", &json!({"query": 5}), &paths).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`session.update\``
+    /// section, so the doc and the dispatcher cannot drift apart.
+    #[test]
+    fn session_update_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, root) = temp_paths("session-update-docs");
+        let dir = root.join("2026-09-05-1200");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("session.json"),
+            r#"{
+                "id": "2026-09-05-1200",
+                "name": null,
+                "started_at": "2026-09-05T12:00:00+01:00",
+                "ended_at": "2026-09-05T12:10:12+01:00",
+                "duration_s": 612.5,
+                "device_hz": 48000,
+                "mic_hz": 48000,
+                "channels": 1,
+                "mic_channels": 1,
+                "apps": [],
+                "model": "parakeet",
+                "warnings": [],
+                "tags": [],
+                "notes": "",
+                "pinned": false
+            }"#,
+        )
+        .unwrap();
+
+        let request: Value = serde_json::from_str(
+            r#"{"session": "2026-09-05-1200", "name": "Standup", "add_tag": "1:1", "pinned": true}"#,
+        )
+        .unwrap();
+        let got = call("session.update", &request, &paths).unwrap();
+        assert_eq!(
+            got,
+            json!({
+                "id": "2026-09-05-1200",
+                "name": "Standup",
+                "started_at": "2026-09-05T12:00:00+01:00",
+                "ended_at": "2026-09-05T12:10:12+01:00",
+                "duration_s": 612.5,
+                "device_hz": 48000,
+                "mic_hz": 48000,
+                "channels": 1,
+                "mic_channels": 1,
+                "apps": [],
+                "model": "parakeet",
+                "warnings": [],
+                "tags": ["1:1"],
+                "notes": "",
+                "pinned": true
+            })
+        );
+    }
+
+    #[test]
+    fn session_update_session_must_be_a_string() {
+        let (paths, _root) = temp_paths("session-update-type");
+        let err = call(
+            "session.update",
+            &json!({"session": 5, "name": "x"}),
+            &paths,
+        )
+        .unwrap_err();
         assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
     }
 
