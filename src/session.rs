@@ -533,7 +533,10 @@ pub fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
         );
     }
     if !vad_path.is_file() {
-        bail!("no VAD model at {}", vad_path.display());
+        bail!(
+            "no VAD model at {} — run ./fetch-models.sh",
+            vad_path.display()
+        );
     }
     Ok((asr_dir, vad_path))
 }
