@@ -63,6 +63,10 @@ exactly `CHECK OK`, and a green quality run ends with `QUALITY OK <total wer>`
 instead, so the trailing `echo` is what makes the pair a verifier: it runs only
 when both halves passed, and without it every green night reads as red.
 
+The same commit adds `"Bash(scripts/quality:*)"` and `"Bash(./scripts/quality:*)"` to the
+`allow` list in `.claude/settings.json`, beside the `scripts/check` entries: the generator runs
+`CHECK_CMD` before every commit, and a command the allow list does not name is denied whole.
+
 Tasks land in plan order, and one task must merge before the next starts. An
 open PR from a killed run is picked up on the next start; a blocked or
 human-closed PR on any task stops the plan until someone acts.
