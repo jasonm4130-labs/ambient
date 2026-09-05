@@ -266,11 +266,21 @@ Speaker counts sum rather than dedupe: speaker 0 of one meeting is not speaker
 0 of the next.
 
 Every meeting over-clusters — 19 hypothesis speakers against 11 in the
-reference — and IS1009a shows what that costs: 17.23 s of confusion, more than
-its missed and false-alarm seconds put together, and a DER nearly double the
-other two. Splitting one person across two clusters is the failure worth
-chasing here rather than the segmentation, and `--threshold` is the knob that
-moves it. Speed is not the constraint: 900 s of audio separated in 6.77 s.
+reference — and IS1009a pays for it with 17.23 s of confusion and a DER nearly
+double the other two. It is still not where most of the error is. Missed
+speech is the largest single component at 30.14 s, and `--threshold` cannot
+touch it: swept from 0.4 to 0.9 it leaves missed and false alarm at exactly
+30.14 s and 14.97 s while confusion ranges from 16.00 s to 58.71 s.
+`Diarizer::diarize` takes one winning speaker per frame, so relabelling
+clusters cannot change how many speakers are heard at once — and the
+references carry 21.5 s of overlapping speech that a single-label output has
+no way to attribute. Those 45.11 s put a floor of 0.090 under the DER on this
+fixture that no clustering change reaches; the rest is segmentation.
+
+The threshold does move confusion, and not monotonically: 0.6 scores 0.1217
+against the shipped 0.5's 0.1434, and 0.7 gives 0.1375 back. Three meetings is
+not a holdout to move the default on. Speed is not the constraint: 900 s of
+audio separated in 6.77 s.
 
 `--json` writes the same rows as
 `{"meeting", "seconds", "reference_speakers", "hypothesis_speakers",

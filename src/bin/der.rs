@@ -108,8 +108,10 @@ fn main() -> Result<()> {
         bail!("{} lists no fixtures", manifest.display());
     }
 
-    // The resolution `session::diarize_session` uses, not a second copy: a
-    // harness pointed at different weights measures a different product.
+    // Copied line for line from `session::diarize_session`, which resolves
+    // these inline rather than through a helper. Keep the two in step: a
+    // harness pointed at different weights measures a different product, and
+    // nothing here would notice.
     let root = models_root()?;
     let seg = root.join("pyannote-segmentation-3.0").join("model.onnx");
     let emb = root.join("wespeaker_en_voxceleb_resnet34_LM.onnx");
