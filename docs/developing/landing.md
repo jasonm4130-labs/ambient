@@ -48,10 +48,20 @@ rate and the total against the committed `quality/wer.json`. Its last line is
 or `QUALITY BASELINE <total wer>` the first time, when it writes that file
 instead; a regression prints the offending rows and exits non-zero, and a task
 that improves the number records it with `scripts/quality --update`, so the
-diff to `quality/wer.json` is the evidence in the pull request. It runs only
-once `CHECK_CMD` in `loop/config` reads `scripts/check && scripts/quality`,
-which is a change a person commits: the hooks deny a task's own commit that
-stages `loop/`.
+diff to `quality/wer.json` is the evidence in the pull request.
+
+It runs only once `CHECK_CMD` in `loop/config` says so, which is a change a
+person commits: the hooks deny a task's own commit that stages `loop/`. The
+line to commit is
+
+```sh
+: "${CHECK_CMD:=scripts/check && scripts/quality && echo 'CHECK OK'}"
+```
+
+`run_check` in `loop/land.sh` asks that the whole command's last line be
+exactly `CHECK OK`, and a green quality run ends with `QUALITY OK <total wer>`
+instead, so the trailing `echo` is what makes the pair a verifier: it runs only
+when both halves passed, and without it every green night reads as red.
 
 Tasks land in plan order, and one task must merge before the next starts. An
 open PR from a killed run is picked up on the next start; a blocked or

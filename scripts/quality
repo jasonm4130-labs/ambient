@@ -77,20 +77,33 @@ if [ ! -f "$baseline" ]; then
   exit 0
 fi
 
-# A speaker the baseline does not name is reported too: the fixture changed
-# under the gate, and passing silently would compare nothing.
-offenders=$(jq -r --slurpfile base "$baseline" --argjson tol "$tolerance" '
-  ($base[0] | map({key: .speaker, value: .wer}) | from_entries) as $b
-  | .[]
-  | select($b[.speaker] == null or .wer > $b[.speaker] + $tol)
-  | [.speaker, .wer, ($b[.speaker] // -1)] | @tsv' "$rows")
+# Both directions of fixture drift are reported: a speaker the baseline does
+# not name, and a baseline speaker this run did not score. The second is the
+# one that flatters the result — a vanished speaker leaves a total computed
+# over what remains, which can sit below the baseline while a third of the
+# fixture is gone.
+#
+# jq's status is checked because an unreadable baseline makes it print nothing
+# and exit non-zero, and an empty offender list is how this gate says "pass".
+if ! offenders=$(jq -r --slurpfile base "$baseline" --argjson tol "$tolerance" '
+  (map({key: .speaker, value: .wer}) | from_entries) as $c
+  | ($base[0] | map({key: .speaker, value: .wer}) | from_entries) as $b
+  | (($c | keys) + ($b | keys) | unique)[]
+  | select($c[.] == null or $b[.] == null or $c[.] > $b[.] + $tol)
+  | [., ($c[.] // -1), ($b[.] // -1)] | @tsv' "$rows"); then
+  echo "ERROR $baseline could not be read as the rows this run produced"
+  cat "$baseline"
+  exit 1
+fi
 
 if [ -n "$offenders" ]; then
-  echo "ERROR word error rate regressed by more than $tolerance against $baseline"
+  echo "ERROR the run does not match $baseline: a row rose by more than $tolerance, or the fixture changed"
   printf '%-9s %8s %8s %8s\n' speaker wer baseline delta
   while IFS=$'\t' read -r speaker wer base; do
     if [ "$base" = "-1" ]; then
       printf '%-9s %8.4f %8s %8s\n' "$speaker" "$wer" none new
+    elif [ "$wer" = "-1" ]; then
+      printf '%-9s %8s %8.4f %8s\n' "$speaker" none "$base" missing
     else
       printf '%-9s %8.4f %8.4f %8.4f\n' "$speaker" "$wer" "$base" \
         "$(awk -v a="$wer" -v b="$base" 'BEGIN { printf "%.4f", a - b }')"
