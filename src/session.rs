@@ -938,6 +938,100 @@ pub fn list(root: &Path) -> Vec<PathBuf> {
     all
 }
 
+/// One session as `ambient sessions` reports it: what the directory says about
+/// itself, and what the filesystem says is happening to it right now.
+///
+/// Every metadata field is optional because every one of them comes from
+/// `session.json`, which a session being captured has not written yet and a
+/// session interrupted mid-write may have written only half of. Both are
+/// listed rather than hidden — a session that has gone wrong is the one a
+/// person most needs to see.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub dir: PathBuf,
+    pub name: Option<String>,
+    pub started_at: Option<String>,
+    pub duration_s: Option<f64>,
+    pub transcribed: bool,
+    pub live: bool,
+    pub transcribing: bool,
+    pub error: Option<String>,
+}
+
+impl SessionSummary {
+    /// The one word for what is happening to this session. Ordered by what is
+    /// happening *now*: a capture in flight is `live` whatever else the
+    /// directory holds, and `broken` outranks the rest because unreadable
+    /// metadata makes every other answer a guess.
+    pub fn state(&self) -> &'static str {
+        match self {
+            s if s.live => "live",
+            s if s.transcribing => "transcribing",
+            s if s.error.is_some() => "broken",
+            s if s.transcribed => "done",
+            _ => "awaiting transcript",
+        }
+    }
+}
+
+/// Every session under `root`, newest first, summarised.
+///
+/// A directory counts as a session when it holds a `session.json` or when its
+/// native scratch wav is growing — the two ends of a recording's life. Nothing
+/// else in the folder is one, which is what keeps a stray `notes` directory
+/// out of the answer.
+pub fn summaries(root: &Path) -> Vec<SessionSummary> {
+    list(root)
+        .iter()
+        .rev()
+        .filter_map(|d| summarise(d))
+        .collect()
+}
+
+/// One directory, or `None` when it is not a session at all.
+fn summarise(dir: &Path) -> Option<SessionSummary> {
+    let json = dir.join("session.json");
+    // `symlink_metadata` rather than `metadata`: a symlink here is followed by
+    // nothing, so the file is described, not the thing it points at.
+    let present = std::fs::symlink_metadata(&json);
+    let live = is_growing(&dir.join("audio").join("room.native.wav"));
+    if present.is_err() && !live {
+        return None;
+    }
+    let mut s = SessionSummary {
+        id: dir.file_name()?.to_string_lossy().into_owned(),
+        dir: dir.to_path_buf(),
+        name: None,
+        started_at: None,
+        duration_s: None,
+        transcribed: dir.join("transcript.md").is_file(),
+        live,
+        transcribing: live_transcriber(dir).is_some(),
+        error: None,
+    };
+    match present {
+        // A capture in flight writes `session.json` last, so its absence here
+        // is the normal state of a live session rather than a fault.
+        Err(_) => {}
+        Ok(m) if !m.is_file() => s.error = Some("session.json is a symlink".into()),
+        Ok(_) => match std::fs::read_to_string(&json)
+            .map_err(|e| e.to_string())
+            .and_then(|t| serde_json::from_str::<SessionMeta>(&t).map_err(|e| e.to_string()))
+        {
+            Ok(meta) => {
+                s.name = meta.name;
+                s.started_at = Some(meta.started_at);
+                s.duration_s = Some(meta.duration_s);
+            }
+            // The id stays the directory name: it is what the caller typed to
+            // get here and the only thing left that identifies the session.
+            Err(e) => s.error = Some(format!("session.json: {e}")),
+        },
+    }
+    Some(s)
+}
+
 /// The most recently written session. Built on [`list`] so a second walk
 /// cannot drift from the first.
 pub fn latest(root: &Path) -> Option<PathBuf> {
@@ -1397,7 +1491,12 @@ pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
 /// the resample that follows it — which is exactly the window in which a
 /// recording can be said to be in progress.
 pub fn live_session() -> Option<PathBuf> {
-    let mut live: Vec<PathBuf> = std::fs::read_dir(home())
+    live_session_in(&home())
+}
+
+/// [`live_session`] against a given sessions folder, so a test can ask.
+pub fn live_session_in(root: &Path) -> Option<PathBuf> {
+    let mut live: Vec<PathBuf> = std::fs::read_dir(root)
         .ok()?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| is_growing(&p.join("audio").join("room.native.wav")))
@@ -2179,5 +2278,77 @@ mod tests {
         );
         drop(taken);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `sessions` answers with what is on disk, which includes the sessions
+    /// that are still being written and the ones whose metadata cannot be
+    /// read. Hiding either is how a session goes missing: a capture in flight
+    /// has no `session.json` yet, and one interrupted mid-write has a
+    /// `session.json` that will not parse.
+    #[test]
+    fn summaries_list_every_session_including_the_unreadable_ones() {
+        let root = std::env::temp_dir().join(format!("ambient-summaries-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let mk = |id: &str| {
+            let d = root.join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        };
+        let meta = |id: &str| {
+            format!(
+                r#"{{"id":"{id}","name":"stand-up","started_at":"2026-09-05T09:00:00+01:00",
+                     "ended_at":"2026-09-05T09:00:12+01:00","duration_s":12.5,"device_hz":48000,
+                     "mic_hz":48000,"channels":1,"mic_channels":1,"apps":[],"model":"parakeet"}}"#
+            )
+        };
+        // Recorded and transcribed.
+        let a = mk("a");
+        std::fs::write(a.join("session.json"), meta("a")).unwrap();
+        std::fs::write(a.join("transcript.md"), "# transcript\n").unwrap();
+        // Captured, no transcript yet.
+        let b = mk("b");
+        std::fs::write(b.join("session.json"), meta("b")).unwrap();
+        // Interrupted mid-write: the metadata is truncated.
+        let c = mk("c");
+        std::fs::write(c.join("session.json"), r#"{"id":"#).unwrap();
+        // A capture in progress: `session.json` is written only once the
+        // scratch wavs have closed, so all this session has is a growing wav.
+        let d = mk("d");
+        std::fs::create_dir_all(d.join("audio")).unwrap();
+        std::fs::write(d.join("audio").join("room.native.wav"), b"RIFF....").unwrap();
+        // Neither of these is a session.
+        mk("notes");
+        std::fs::write(root.join("README"), "not a session\n").unwrap();
+
+        let got = summaries(&root);
+        let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["d", "c", "b", "a"], "newest first, nothing else");
+
+        let by = |id: &str| got.iter().find(|s| s.id == id).unwrap();
+        assert!(by("a").transcribed, "a has a transcript.md");
+        assert_eq!(by("a").duration_s, Some(12.5));
+        assert!(!by("b").transcribed, "b has no transcript.md");
+        assert!(
+            by("c")
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("session.json"),
+            "the error names the file that could not be read: {:?}",
+            by("c").error
+        );
+        assert_eq!(
+            by("c").id,
+            "c",
+            "the directory name, when the file cannot say"
+        );
+        assert!(by("d").live, "d's scratch wav was written a moment ago");
+        assert_eq!(by("d").error, None, "a capture in flight is not an error");
+        assert_eq!(by("d").duration_s, None, "and has no duration yet");
+        for id in ["a", "b", "c"] {
+            assert!(!by(id).live, "{id} is not being captured");
+        }
+        std::fs::remove_dir_all(&root).ok();
     }
 }

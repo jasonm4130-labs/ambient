@@ -105,6 +105,27 @@ directory to reach a specific one. [When it does not
 work](troubleshooting.md) has the cases where sort order and start order come
 apart. See [capture](../developing/capture.md).
 
+## sessions
+
+```sh
+ambient sessions [--json]
+```
+
+Lists every session in the sessions folder, newest first, one line each: id,
+start time, duration, name and state. The state is `live` while a capture is in
+flight, `transcribing` while a transcriber holds the lock, `awaiting
+transcript` for audio no transcript has been written for yet, `done` once
+`transcript.md` exists, and `broken` when `session.json` cannot be read.
+
+It lists what is on disk rather than what is finished. A session still being
+captured has no `session.json` yet — it is written once the scratch audio
+closes — and one interrupted mid-write has a `session.json` that will not
+parse; both appear, the first with empty metadata columns and the second as
+`broken`, because a session that has gone wrong is the one worth seeing.
+`--json` prints the same rows as a JSON array, each with `id`, `dir`, `name`,
+`started_at`, `duration_s`, `transcribed`, `live`, `transcribing` and `error`.
+See [sessions](../developing/sessions.md).
+
 ## show
 
 ```sh
