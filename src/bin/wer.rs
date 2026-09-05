@@ -1,7 +1,7 @@
 //! Word error rate for Ambient's own transcription path.
 //!
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
-//!                                     [--model <dir>]
+//!                                     [--model <dir>] [--via <rate>]
 //!
 //! Scores the fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished track: the same model resolution, the
@@ -11,11 +11,18 @@
 //! `--model` overrides only the ASR directory, through the same
 //! `session::model_paths` a `record --model` goes through, so comparing two
 //! shipped models compares them at the one place the product chooses one.
+//!
+//! `--via <rate>` puts `resample::to_16k` in the path the fixture would
+//! otherwise skip: the 16 kHz wav is upsampled to `rate` with `ffmpeg` once and
+//! cached, then read back and resampled down here. Capture writes native-rate
+//! bytes — 48 kHz from Core Audio — so a user's audio always crosses that
+//! function and the fixture never did.
 
-use ambient::{asr::Recognizer, features, resample::TARGET_HZ, session, vad::Vad, wer};
+use ambient::{asr::Recognizer, features, resample, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 /// One fixture as `scripts/fetch-fixtures` writes it. `utterances` and
@@ -47,14 +54,74 @@ struct Row {
 }
 
 fn default_manifest() -> PathBuf {
+    cache_root().join("fixtures/wer/manifest.json")
+}
+
+fn cache_root() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".cache/ambient/fixtures/wer/manifest.json")
+    PathBuf::from(home).join(".cache/ambient")
+}
+
+/// FNV-1a over a file's bytes. Not a security hash — it names a cache entry
+/// after the exact bytes it was built from, which is all the cache needs.
+fn content_hash(path: &Path) -> Result<u64> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Ok(h)
+}
+
+/// Upsample `wav` to `rate` with `ffmpeg`, cached under
+/// `~/.cache/ambient/fixtures/via/<rate>/`, and return the cached path.
+///
+/// Cached because the upsample is deterministic and slow, and because the point
+/// of the run is `resample::to_16k`, not ffmpeg. The cache entry is named after
+/// the *source bytes*, not the speaker: `scripts/fetch-fixtures --force` recuts
+/// `<speaker>.wav` without touching this directory, and a speaker-keyed cache
+/// would then score stale audio against the new reference and say nothing.
+/// Written to a `.part` file and renamed, so an interrupted run leaves no
+/// truncated wav that a later run would happily read as the fixture.
+fn upsample(wav: &Path, speaker: &str, rate: u32) -> Result<PathBuf> {
+    let dir = cache_root().join("fixtures/via").join(rate.to_string());
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let out = dir.join(format!("{speaker}-{:016x}.wav", content_hash(wav)?));
+    if out.exists() {
+        return Ok(out);
+    }
+    let part = out.with_extension("part");
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-loglevel", "error", "-y", "-i"])
+        .arg(wav)
+        .args([
+            "-ar",
+            &rate.to_string(),
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
+        ])
+        .arg(&part)
+        .status()
+        .context("running ffmpeg — --via needs it on PATH (brew install ffmpeg)")?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&part);
+        bail!("ffmpeg failed to upsample {} to {rate} Hz", wav.display());
+    }
+    std::fs::rename(&part, &out).with_context(|| format!("writing {}", out.display()))?;
+    println!("upsampled {} -> {}", wav.display(), out.display());
+    Ok(out)
 }
 
 fn main() -> Result<()> {
     let mut manifest = None;
     let mut json = None;
     let mut model = None;
+    let mut via: Option<u32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a path"));
@@ -62,7 +129,16 @@ fn main() -> Result<()> {
             "--manifest" => manifest = Some(PathBuf::from(value("--manifest")?)),
             "--json" => json = Some(PathBuf::from(value("--json")?)),
             "--model" => model = Some(value("--model")?),
-            _ => bail!("usage: wer [--manifest <path>] [--json <path>] [--model <dir>]"),
+            "--via" => {
+                let raw = value("--via")?;
+                via = Some(
+                    raw.parse()
+                        .with_context(|| format!("--via wants a sample rate in Hz, got {raw}"))?,
+                );
+            }
+            _ => bail!(
+                "usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <rate>]"
+            ),
         }
     }
     let manifest = manifest.unwrap_or_else(default_manifest);
@@ -101,8 +177,20 @@ fn main() -> Result<()> {
             .wav
             .to_str()
             .with_context(|| format!("{} is not valid UTF-8", entry.wav.display()))?;
-        let samples = features::read_wav(wav)
-            .with_context(|| format!("reading {} — run scripts/fetch-fixtures", wav))?;
+        let samples = match via {
+            None => features::read_wav(wav)
+                .with_context(|| format!("reading {} — run scripts/fetch-fixtures", wav))?,
+            Some(rate) => {
+                let up = upsample(&entry.wav, &entry.speaker, rate)?;
+                let (raw, got) = resample::read_wav_any(&up)?;
+                // A cache file at the wrong rate would silently measure a
+                // different conversion than the one named on the command line.
+                if got != rate {
+                    bail!("{} is {got} Hz, expected {rate} Hz", up.display());
+                }
+                resample::to_16k(&raw, got)?
+            }
+        };
         let reference = std::fs::read_to_string(&entry.reference).with_context(|| {
             format!(
                 "reading {} — run scripts/fetch-fixtures",
@@ -160,6 +248,10 @@ fn main() -> Result<()> {
         realtime: total_seconds / total_decode,
     });
 
+    match via {
+        None => println!("read at 16 kHz, resample::to_16k not exercised"),
+        Some(rate) => println!("read at {rate} Hz through resample::to_16k"),
+    }
     println!(
         "{:<9} {:>9} {:>7} {:>6} {:>6} {:>6} {:>8} {:>8} {:>9}",
         "speaker", "seconds", "words", "S", "I", "D", "WER", "decode", "realtime"
