@@ -40,6 +40,33 @@ says where it stopped.
 6. Repeat until `MAX` tasks have landed, the deadline passes, or something
    stops it.
 
+`scripts/quality` runs after the verifier and is the accuracy half of the gate.
+It builds the LibriSpeech fixture (cached after the first night), scores
+Ambient's own recording path over it, and compares each speaker's word error
+rate and the total against the committed `quality/wer.json`. Its last line is
+`QUALITY OK <total wer>` when no row has drifted up by more than half a point,
+or `QUALITY BASELINE <total wer>` the first time, when it writes that file
+instead; a regression prints the offending rows and exits non-zero, and a task
+that improves the number records it with `scripts/quality --update`, so the
+diff to `quality/wer.json` is the evidence in the pull request.
+
+It runs only once `CHECK_CMD` in `loop/config` says so, which is a change a
+person commits: the hooks deny a task's own commit that stages `loop/`. The
+line to commit is
+
+```sh
+: "${CHECK_CMD:=scripts/check && scripts/quality && echo 'CHECK OK'}"
+```
+
+`run_check` in `loop/land.sh` asks that the whole command's last line be
+exactly `CHECK OK`, and a green quality run ends with `QUALITY OK <total wer>`
+instead, so the trailing `echo` is what makes the pair a verifier: it runs only
+when both halves passed, and without it every green night reads as red.
+
+The same commit adds `"Bash(scripts/quality:*)"` and `"Bash(./scripts/quality:*)"` to the
+`allow` list in `.claude/settings.json`, beside the `scripts/check` entries: the generator runs
+`CHECK_CMD` before every commit, and a command the allow list does not name is denied whole.
+
 Tasks land in plan order, and one task must merge before the next starts. An
 open PR from a killed run is picked up on the next start; a blocked or
 human-closed PR on any task stops the plan until someone acts.

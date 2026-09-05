@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# The quality gate: word error rate on the LibriSpeech fixture, compared with a
+# committed baseline. Quiet like scripts/check — one line per step on success,
+# the failing step's whole log on the first failure.
+#
+#   scripts/quality             # ✓ per step, then QUALITY OK <total wer>
+#   scripts/quality --update    # record this run as the new baseline
+#
+# The unattended landing loop (docs/developing/landing.md) runs this after the
+# verifier, so a task that makes the transcript worse cannot merge. A row may
+# drift up by half a point before it counts as a regression: the decode is
+# deterministic on one machine but not across model or runtime versions, and a
+# gate that fires on noise is a gate someone turns off.
+#
+# quality/wer.json holds accuracy only — speaker, the S/I/D counts and the rate
+# — and no timings: decode seconds move a little every run, and a baseline that
+# churns on every run buries the one number its diff exists to show. Timings
+# belong in docs/developing/measurements.md.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+tolerance=0.005
+baseline=quality/wer.json
+
+update=""
+for arg in "$@"; do
+  case "$arg" in
+    --update) update=1 ;;
+    *)
+      echo "usage: scripts/quality [--update]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+log=$(mktemp)
+rows=$(mktemp)
+trap 'rm -f "$log" "$rows"' EXIT
+
+run() {
+  if "$@" >"$log" 2>&1; then
+    echo "✓ $*"
+  else
+    echo "ERROR $*"
+    cat "$log"
+    exit 1
+  fi
+}
+
+run scripts/fetch-fixtures
+run cargo run --release --bin wer -- --json "$rows"
+
+current=$(jq '[.[] | {speaker, reference_words, substitutions, insertions, deletions, wer}]' "$rows")
+total=$(jq -r '.[] | select(.speaker == "total") | .wer' "$rows")
+if [ -z "$current" ] || [ -z "$total" ]; then
+  echo "ERROR the wer run produced no total row"
+  cat "$rows"
+  exit 1
+fi
+total=$(printf '%.4f' "$total")
+
+record() {
+  mkdir -p "$(dirname "$baseline")"
+  printf '%s\n' "$current" >"$baseline"
+  echo "wrote $baseline"
+}
+
+if [ -n "$update" ]; then
+  record
+  echo "QUALITY UPDATED $total"
+  exit 0
+fi
+
+if [ ! -f "$baseline" ]; then
+  record
+  echo "QUALITY BASELINE $total"
+  exit 0
+fi
+
+# Both directions of fixture drift are reported: a speaker the baseline does
+# not name, and a baseline speaker this run did not score. The second is the
+# one that flatters the result — a vanished speaker leaves a total computed
+# over what remains, which can sit below the baseline while a third of the
+# fixture is gone.
+#
+# jq's status is checked because an unreadable baseline makes it print nothing
+# and exit non-zero, and an empty offender list is how this gate says "pass".
+if ! offenders=$(jq -r --slurpfile base "$baseline" --argjson tol "$tolerance" '
+  (map({key: .speaker, value: .wer}) | from_entries) as $c
+  | ($base[0] | map({key: .speaker, value: .wer}) | from_entries) as $b
+  | (($c | keys) + ($b | keys) | unique)[]
+  | select($c[.] == null or $b[.] == null or $c[.] > $b[.] + $tol)
+  | [., ($c[.] // -1), ($b[.] // -1)] | @tsv' "$rows"); then
+  echo "ERROR $baseline could not be read as the rows this run produced"
+  cat "$baseline"
+  exit 1
+fi
+
+if [ -n "$offenders" ]; then
+  echo "ERROR the run does not match $baseline: a row rose by more than $tolerance, or the fixture changed"
+  printf '%-9s %8s %8s %8s\n' speaker wer baseline delta
+  while IFS=$'\t' read -r speaker wer base; do
+    if [ "$base" = "-1" ]; then
+      printf '%-9s %8.4f %8s %8s\n' "$speaker" "$wer" none new
+    elif [ "$wer" = "-1" ]; then
+      printf '%-9s %8s %8.4f %8s\n' "$speaker" none "$base" missing
+    else
+      printf '%-9s %8.4f %8.4f %8.4f\n' "$speaker" "$wer" "$base" \
+        "$(awk -v a="$wer" -v b="$base" 'BEGIN { printf "%.4f", a - b }')"
+    fi
+  done <<<"$offenders"
+  echo "an intended change is recorded with scripts/quality --update"
+  exit 1
+fi
+
+echo "QUALITY OK $total"
