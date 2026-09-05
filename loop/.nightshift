@@ -1,7 +1,7 @@
 {
   "version": "0.1.2",
   "vars": {
-    "PLAN": "docs/plans/2026-09-04-nightshift-smoke.md",
+    "PLAN": "docs/plans/2026-09-05-wer.md",
     "MERGE_MODE": "wait",
     "BASE": "main",
     "NAME": "wt-ambient-adopt"
