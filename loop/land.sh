@@ -142,6 +142,9 @@ scrub=(-u CLAUDECODE -u CLAUDE_CODE_SUBPROCESS_ENV_SCRUB -u CLAUDE_CODE_CHILD_SE
   -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET
   -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_PID -u CLAUDE_EFFORT)
 
+# stdin is /dev/null: claude -p reads stdin even with a prompt argument, and the
+# task list is on stdin while the night loop runs, so a generator once ate the
+# remaining tasks and the night ended after one.
 # One claude -p call. Writes the JSON envelope and the text result to run_dir,
 # logs the cost, and prints the result text. Never fails the script: the caller
 # judges by what is in git, not by the exit code.
@@ -151,7 +154,7 @@ ask() { # ask <name> <permission-mode> <budget> <timeout> <prompt>
   (cd "$WORKTREE" && bounded "$t" env "${scrub[@]}" "${unsigned[@]}" claude -p "$prompt" \
       --permission-mode "$mode" --permission-prompts none --add-dir "$run_dir" \
       --setting-sources "$SETTING_SOURCES" --no-session-persistence \
-      --max-budget-usd "$budget" --model "$MODEL" --output-format json) >"$out" 2>"$run_dir/$name.stderr" || true
+      --max-budget-usd "$budget" --model "$MODEL" --output-format json </dev/null) >"$out" 2>"$run_dir/$name.stderr" || true
   jq -r '.result // empty' "$out" 2>/dev/null >"$run_dir/$name.md" || true
   local cost turns
   cost=$(jq -r '.total_cost_usd // 0' "$out" 2>/dev/null || echo 0)
@@ -224,7 +227,7 @@ land_pr() { # land_pr <n> <pr>
   local n=$1 pr=$2 rc=0
   if [ -n "$MERGE_CMD" ]; then
     # shellcheck disable=SC2086
-    (cd "$WORKTREE" && bounded "$MERGE_TIMEOUT" $MERGE_CMD "$pr") >"$run_dir/merge.log" 2>&1 || rc=$?
+    (cd "$WORKTREE" && bounded "$MERGE_TIMEOUT" $MERGE_CMD "$pr" </dev/null) >"$run_dir/merge.log" 2>&1 || rc=$?
   else
     local waited=0 st
     while :; do
