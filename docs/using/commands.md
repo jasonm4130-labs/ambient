@@ -44,6 +44,27 @@ bindings, then reports the ONNX Runtime execution-provider state. Needs no
 permission — enumeration is not capture — so a clean `probe` says nothing about
 whether a tap will return audio.
 
+## doctor
+
+```sh
+ambient doctor [--json]
+```
+
+Runs every check a recording depends on and prints all of the answers, one per
+line as `ok` or `FAIL` with the path, count or error behind it: the models root
+and the four model files under it, the config file, and the sessions folder —
+whether it can be written to, how many sessions are awaiting a transcript,
+which one is being captured right now, and any `transcribing.lock` left behind
+by a transcriber that died. Exits 1 if any check failed, so a script can gate
+on it; `--json` prints the same checks as an array of `name`, `ok` and
+`detail`.
+
+Unlike [`probe`](#probe), which asks whether the machine can capture at all,
+`doctor` asks whether this installation is complete. The config check is the
+one nothing else does: `Config::load` falls back to the defaults without
+failing when the file is missing, unreadable or malformed, so a config file
+being ignored is otherwise invisible.
+
 ## tap
 
 ```sh
