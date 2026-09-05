@@ -40,13 +40,19 @@ fi
 
 # Check the staged *content*, not the working tree: a file formatted after
 # `git add` would otherwise pass here and fail in CI.
+#
+# `skip_children` because each file is checked alone in an empty directory:
+# rustfmt follows `mod` declarations by default, so without it src/lib.rs can
+# never pass — it aborts on "failed to resolve mod `asr`" long before it looks
+# at the formatting. Every file that has one is staged on its own merits
+# anyway, so nothing goes unchecked.
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 bad=()
 for f in "${staged[@]}"; do
   mkdir -p "$tmp/$(dirname "$f")"
   git show ":$f" > "$tmp/$f"
-  if ! rustfmt --check --edition 2021 "$tmp/$f" >/dev/null 2>&1; then
+  if ! rustfmt --check --edition 2021 --config skip_children=true "$tmp/$f" >/dev/null 2>&1; then
     bad+=("$f")
   fi
 done
