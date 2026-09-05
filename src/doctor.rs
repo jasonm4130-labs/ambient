@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn config_distinguishes_absent_from_unparseable_from_unreadable() {
+    fn config_distinguishes_absent_from_unparsable_from_unreadable() {
         let root = scratch("config");
         let models: anyhow::Result<PathBuf> = Err(anyhow!("no models"));
         let check = |p: &Path| {
