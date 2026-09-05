@@ -161,11 +161,142 @@ fn call(params: Option<&Value>, root: &Path) -> Result<Value, Refusal> {
     }
     match name {
         "status" => Ok(content(&status(root), false)),
-        // Task 2 fills these in. Answering keeps the contract visible: a tool
-        // that failed, not a method that vanished.
-        "sessions" | "transcript" => Ok(content(&json!("not implemented"), true)),
+        "sessions" => Ok(content(&sessions(root), false)),
+        "transcript" => transcript(root, params.get("arguments")),
         other => Err(invalid_params(format!("no such tool {other:?}"))),
     }
+}
+
+/// The `sessions` tool: every session directory under the root, newest first.
+///
+/// Enumerated by [`session_dirs`] rather than by [`session::summaries`], which
+/// walks with `is_dir` and so would summarise — and read the `session.json` of
+/// — whatever a link in the folder points at. A session whose files include a
+/// symlink is listed with `error` set and no metadata: it is on this machine
+/// and a person should see it, but nothing behind that link is read.
+fn sessions(root: &Path) -> Value {
+    let listed: Vec<Value> = session_dirs(root)
+        .iter()
+        .rev()
+        .filter_map(|dir| match symlinked(dir) {
+            Some(refusal) => Some(session::SessionSummary {
+                id: dir.file_name()?.to_string_lossy().into_owned(),
+                dir: dir.clone(),
+                name: None,
+                started_at: None,
+                duration_s: None,
+                transcribed: dir.join("transcript.md").is_file(),
+                live: session::is_growing(&dir.join("audio").join("room.native.wav")),
+                transcribing: session::live_transcriber(dir).is_some(),
+                error: Some(refusal),
+            }),
+            None => session::summarise(dir),
+        })
+        .filter_map(|s| serde_json::to_value(s).ok())
+        .collect();
+    Value::Array(listed)
+}
+
+/// The `transcript` tool. Every argument's JSON type is checked here, before
+/// any of them reaches the filesystem: a wrong type is the client's bug and a
+/// protocol error, while a session that cannot be read is a tool result the
+/// model can act on.
+fn transcript(root: &Path, arguments: Option<&Value>) -> Result<Value, Refusal> {
+    let args = arguments
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid_params("`transcript` needs a string `session`"))?;
+    let id = args
+        .get("session")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_params("`session` must be a string"))?;
+    let since = match args.get("since") {
+        None => 0,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| invalid_params("`since` must be a whole number of lines"))?,
+    };
+    let verbatim = match args.get("verbatim") {
+        None => false,
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| invalid_params("`verbatim` must be true or false"))?,
+    };
+    Ok(match read(root, id, since, verbatim) {
+        Ok(value) => content(&value, false),
+        Err(message) => content(&Value::String(message), true),
+    })
+}
+
+/// One session from `since` lines on, or the reason it could not be read.
+///
+/// The cursor counts lines in the order `raw.jsonl` holds them, which is why
+/// this reads [`session::transcript_appended`] and not [`session::transcript`]:
+/// the room track is written before the call track and their clocks are
+/// independent, so a cursor on `start_ms` would step past call lines that
+/// arrived later and never show them. A session with no `raw.jsonl` yet is not
+/// a failure — it is a recording that has produced no words so far, and it
+/// answers with an empty list and a `next` of 0.
+fn read(root: &Path, id: &str, since: u64, verbatim: bool) -> Result<Value, String> {
+    let dir = session_dir(root, id)?;
+    if let Some(refusal) = symlinked(&dir) {
+        return Err(refusal);
+    }
+    let lines = if dir.join("raw.jsonl").exists() {
+        session::transcript_appended(&dir, verbatim).map_err(|e| format!("{e:#}"))?
+    } else {
+        Vec::new()
+    };
+    let next = lines.len() as u64;
+    let seen = usize::try_from(since).unwrap_or(usize::MAX);
+    let unseen: Vec<session::Line> = lines.into_iter().skip(seen).collect();
+    Ok(json!({"session": id, "state": state(&dir), "next": next, "lines": unseen}))
+}
+
+/// `root/id`, or why that is not a session of this machine. An id is one path
+/// segment: a separator or a `..` in it is a request for a path outside the
+/// sessions folder, and is answered before anything is opened. The directory
+/// itself is tested with `symlink_metadata`, so a link in the folder is no
+/// more a session here than it is to [`session_dirs`].
+fn session_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
+    if id.is_empty() || id == "." || id == ".." || id.contains('/') {
+        return Err(format!("{id:?} is not a session id"));
+    }
+    let dir = root.join(id);
+    if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+        return Err(format!("no session {id}"));
+    }
+    Ok(dir)
+}
+
+/// The one word for what is happening to a session, in the order it is
+/// happening: a capture in flight outranks a transcriber, which outranks the
+/// `transcript.md` a previous run left. `pending` is the rest — captured, and
+/// waiting for the queue.
+fn state(dir: &Path) -> &'static str {
+    if session::is_growing(&dir.join("audio").join("room.native.wav")) {
+        "live"
+    } else if session::live_transcriber(dir).is_some() {
+        "transcribing"
+    } else if dir.join("transcript.md").is_file() {
+        "done"
+    } else {
+        "pending"
+    }
+}
+
+/// The files a tool reads out of a session directory.
+const READ_FROM_SESSIONS: [&str; 3] = ["session.json", "raw.jsonl", "edits.jsonl"];
+
+/// The refusal for the first of those files that exists and is not a regular
+/// file. Containment is the whole point: the directory being inside the root
+/// says nothing about where a file inside it points, and following one would
+/// serve a file from anywhere on disk as a session of this machine.
+fn symlinked(dir: &Path) -> Option<String> {
+    READ_FROM_SESSIONS
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| !m.is_file()))
+        .map(|p| format!("refusing symlink {}", p.display()))
 }
 
 /// A tool result. The value is serialised compactly into one text block, which
@@ -446,21 +577,227 @@ mod tests {
         assert_eq!(got[1]["result"], json!({}));
     }
 
-    /// Task 2 fills these in. Until then they answer, so a client sees a tool
-    /// that failed rather than a method that is not there.
-    #[test]
-    fn the_unwritten_tools_report_themselves_as_failing() {
-        let root = scratch("stubs");
-        let got = exchange(
-            &root,
-            &[
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sessions","arguments":{}}}"#,
-                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"transcript","arguments":{"session":"x"}}}"#,
-            ],
+    /// Metadata as a closed capture writes it.
+    fn meta(id: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"stand-up","started_at":"2026-09-05T12:00:00+01:00",
+                 "ended_at":"2026-09-05T12:00:12+01:00","duration_s":12.5,"device_hz":48000,
+                 "mic_hz":48000,"channels":1,"mic_channels":1,"apps":[],"model":"parakeet"}}"#
+        )
+    }
+
+    fn raw_line(track: &str, start_ms: u64) -> String {
+        let end_ms = start_ms + 1_000;
+        format!(
+            r#"{{"track":"{track}","start_ms":{start_ms},"end_ms":{end_ms},"text":"{track} at {start_ms}","confidence":0.9}}"#
+        )
+    }
+
+    /// A finished session: metadata, the raw lines in the order they were
+    /// appended, and a transcript.
+    fn transcribed(root: &Path, id: &str, lines: &[(&str, u64)]) -> PathBuf {
+        let dir = root.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("session.json"), meta(id)).unwrap();
+        let body: String = lines.iter().map(|(t, s)| raw_line(t, *s) + "\n").collect();
+        std::fs::write(dir.join("raw.jsonl"), body).unwrap();
+        std::fs::write(dir.join("transcript.md"), "# transcript\n").unwrap();
+        dir
+    }
+
+    fn call_tool(root: &Path, name: &str, arguments: &str) -> Value {
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
         );
-        for r in &got {
-            assert_eq!(r["result"]["isError"], true, "{r}");
-            assert_eq!(r["result"]["content"][0]["text"], "not implemented", "{r}");
+        exchange(root, &[&request]).remove(0)
+    }
+
+    /// What a tool answered, parsed back out of its text block, and whether it
+    /// reported failure. A failed tool's text is a message, not JSON, so it
+    /// comes back as a string.
+    fn payload(response: &Value) -> (Value, bool) {
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a text block, got {response}"));
+        let value = serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()));
+        (value, response["result"]["isError"].as_bool().unwrap())
+    }
+
+    /// The sessions folder is the boundary. A link in it is not a session
+    /// whatever it points at, and a session whose `raw.jsonl` points out of
+    /// the folder is listed as broken rather than followed.
+    #[test]
+    fn sessions_lists_the_root_and_never_what_a_link_points_at() {
+        let root = scratch("sessions");
+        transcribed(&root, "2026-09-05-1200", &[("room", 0), ("room", 5_000)]);
+        std::os::unix::fs::symlink(root.join("2026-09-05-1200"), root.join("link")).unwrap();
+        let outside = scratch("sessions-outside");
+        std::fs::write(outside.join("session.json"), meta("outside")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("outside")).unwrap();
+        let leak = root.join("leak");
+        std::fs::create_dir_all(&leak).unwrap();
+        std::fs::write(leak.join("session.json"), meta("leak")).unwrap();
+        std::os::unix::fs::symlink(outside.join("session.json"), leak.join("raw.jsonl")).unwrap();
+
+        let (got, is_error) = payload(&call_tool(&root, "sessions", "{}"));
+        assert!(!is_error, "{got}");
+        let listed = got.as_array().unwrap();
+        let ids: Vec<&str> = listed.iter().map(|s| s["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["leak", "2026-09-05-1200"], "newest first, no links");
+        let by = |id: &str| listed.iter().find(|s| s["id"] == id).unwrap().clone();
+        assert_eq!(by("2026-09-05-1200")["transcribed"], true);
+        assert!(
+            by("leak")["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("refusing symlink")),
+            "{got}"
+        );
+        assert!(
+            by("leak")["duration_s"].is_null(),
+            "no metadata for a session we would not read"
+        );
+    }
+
+    /// `since` counts lines already seen and `next` is what to send back, so a
+    /// caller polling a session in flight sees each line exactly once — and a
+    /// cursor past the end is caught up rather than an error.
+    #[test]
+    fn transcript_returns_the_lines_after_the_cursor() {
+        let root = scratch("cursor");
+        transcribed(&root, "2026-09-05-1200", &[("room", 0), ("room", 5_000)]);
+        let ask = |extra: &str| {
+            let args = format!(r#"{{"session":"2026-09-05-1200"{extra}}}"#);
+            payload(&call_tool(&root, "transcript", &args))
+        };
+
+        let (all, is_error) = ask("");
+        assert!(!is_error, "{all}");
+        assert_eq!(all["session"], "2026-09-05-1200");
+        assert_eq!(all["state"], "done");
+        assert_eq!(all["next"], 2);
+        assert_eq!(all["lines"].as_array().unwrap().len(), 2);
+
+        let (one, _) = ask(r#","since":1"#);
+        assert_eq!(one["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(one["lines"][0]["start_ms"], 5_000);
+        assert_eq!(one["next"], 2);
+
+        for since in [r#","since":2"#, r#","since":9"#] {
+            let (caught_up, _) = ask(since);
+            assert_eq!(caught_up["lines"], json!([]), "{caught_up}");
+            assert_eq!(caught_up["next"], 2, "the length, whatever was asked for");
+        }
+    }
+
+    /// `raw.jsonl` is written room track first and then call track, and the
+    /// two clocks are independent — so the cursor counts appended lines. A
+    /// cursor on `start_ms` would skip the call line at 0 for ever.
+    #[test]
+    fn the_cursor_counts_appended_lines_and_not_the_clock() {
+        let root = scratch("race");
+        transcribed(&root, "2026-09-05-1200", &[("room", 5_000), ("call", 0)]);
+        let (got, _) = payload(&call_tool(
+            &root,
+            "transcript",
+            r#"{"session":"2026-09-05-1200","since":1}"#,
+        ));
+        let lines = got["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 1, "{got}");
+        assert_eq!(lines[0]["track"], "call");
+        assert_eq!(lines[0]["start_ms"], 0);
+    }
+
+    /// An argument of the wrong JSON type is the client's bug, not a session
+    /// that could not be read: it is refused before the disk is touched.
+    #[test]
+    fn arguments_of_the_wrong_type_are_invalid_params() {
+        let root = scratch("types");
+        transcribed(&root, "2026-09-05-1200", &[("room", 0)]);
+        for args in [
+            r#"{"session":"2026-09-05-1200","since":"1"}"#,
+            r#"{"session":"2026-09-05-1200","verbatim":"yes"}"#,
+            r#"{"session":5}"#,
+            "{}",
+        ] {
+            let got = call_tool(&root, "transcript", args);
+            assert_eq!(got["error"]["code"], -32602, "{args} -> {got}");
+        }
+    }
+
+    /// An id that is not one path segment inside the root never reaches the
+    /// filesystem, and one that names nothing says so in words a model can
+    /// act on.
+    #[test]
+    fn an_id_that_is_not_a_session_in_the_root_is_a_tool_error() {
+        let root = scratch("ids");
+        transcribed(&root, "2026-09-05-1200", &[("room", 0)]);
+        std::os::unix::fs::symlink(root.join("2026-09-05-1200"), root.join("link")).unwrap();
+        for id in ["../x", "", ".", "link"] {
+            let args = format!(r#"{{"session":"{id}"}}"#);
+            let (got, is_error) = payload(&call_tool(&root, "transcript", &args));
+            assert!(is_error, "{id} -> {got}");
+        }
+        let (got, is_error) = payload(&call_tool(&root, "transcript", r#"{"session":"nope"}"#));
+        assert!(is_error, "{got}");
+        assert!(got.as_str().unwrap().contains("no session nope"), "{got}");
+    }
+
+    /// The session directory is real, but the file inside it is a doorway out
+    /// of the root. Refused by name, so the reason is readable.
+    #[test]
+    fn a_raw_jsonl_that_is_a_symlink_is_refused() {
+        let root = scratch("leak");
+        let outside = scratch("leak-outside");
+        std::fs::write(outside.join("raw.jsonl"), raw_line("room", 0) + "\n").unwrap();
+        let leak = root.join("leak");
+        std::fs::create_dir_all(&leak).unwrap();
+        std::fs::write(leak.join("session.json"), meta("leak")).unwrap();
+        std::os::unix::fs::symlink(outside.join("raw.jsonl"), leak.join("raw.jsonl")).unwrap();
+
+        let (got, is_error) = payload(&call_tool(&root, "transcript", r#"{"session":"leak"}"#));
+        assert!(is_error, "{got}");
+        assert!(got.as_str().unwrap().contains("refusing symlink"), "{got}");
+    }
+
+    /// The four things that can be happening to a session, and in each of them
+    /// a caller gets an answer rather than an error — a session with no
+    /// `raw.jsonl` yet has no lines, which is not a failure.
+    #[test]
+    fn state_says_what_is_happening_and_a_session_with_no_lines_still_answers() {
+        let root = scratch("state");
+        transcribed(&root, "done", &[("room", 0)]);
+        let live = root.join("live");
+        std::fs::create_dir_all(live.join("audio")).unwrap();
+        std::fs::write(live.join("session.json"), meta("live")).unwrap();
+        std::fs::write(live.join("audio").join("room.native.wav"), b"RIFF....").unwrap();
+        let pending = root.join("pending");
+        std::fs::create_dir_all(&pending).unwrap();
+        std::fs::write(pending.join("session.json"), meta("pending")).unwrap();
+        let busy = root.join("busy");
+        std::fs::create_dir_all(&busy).unwrap();
+        std::fs::write(busy.join("session.json"), meta("busy")).unwrap();
+        std::fs::write(
+            busy.join(session::TRANSCRIBING_LOCK),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        for (id, state) in [
+            ("done", "done"),
+            ("live", "live"),
+            ("pending", "pending"),
+            ("busy", "transcribing"),
+        ] {
+            let args = format!(r#"{{"session":"{id}"}}"#);
+            let (got, is_error) = payload(&call_tool(&root, "transcript", &args));
+            assert!(!is_error, "{id} -> {got}");
+            assert_eq!(got["state"], state, "{id} -> {got}");
+        }
+        for id in ["live", "pending", "busy"] {
+            let args = format!(r#"{{"session":"{id}"}}"#);
+            let (got, _) = payload(&call_tool(&root, "transcript", &args));
+            assert_eq!(got["lines"], json!([]), "{id} has no raw.jsonl yet");
+            assert_eq!(got["next"], 0, "{id} -> {got}");
         }
     }
 }
