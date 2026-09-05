@@ -62,17 +62,32 @@ fn cache_root() -> PathBuf {
     PathBuf::from(home).join(".cache/ambient")
 }
 
+/// FNV-1a over a file's bytes. Not a security hash — it names a cache entry
+/// after the exact bytes it was built from, which is all the cache needs.
+fn content_hash(path: &Path) -> Result<u64> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Ok(h)
+}
+
 /// Upsample `wav` to `rate` with `ffmpeg`, cached under
 /// `~/.cache/ambient/fixtures/via/<rate>/`, and return the cached path.
 ///
 /// Cached because the upsample is deterministic and slow, and because the point
-/// of the run is `resample::to_16k`, not ffmpeg. Written to a `.part` file and
-/// renamed, so an interrupted run leaves no truncated wav that a later run
-/// would happily read as the fixture.
+/// of the run is `resample::to_16k`, not ffmpeg. The cache entry is named after
+/// the *source bytes*, not the speaker: `scripts/fetch-fixtures --force` recuts
+/// `<speaker>.wav` without touching this directory, and a speaker-keyed cache
+/// would then score stale audio against the new reference and say nothing.
+/// Written to a `.part` file and renamed, so an interrupted run leaves no
+/// truncated wav that a later run would happily read as the fixture.
 fn upsample(wav: &Path, speaker: &str, rate: u32) -> Result<PathBuf> {
     let dir = cache_root().join("fixtures/via").join(rate.to_string());
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let out = dir.join(format!("{speaker}.wav"));
+    let out = dir.join(format!("{speaker}-{:016x}.wav", content_hash(wav)?));
     if out.exists() {
         return Ok(out);
     }
