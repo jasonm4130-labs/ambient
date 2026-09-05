@@ -393,6 +393,43 @@ and 39.72 s of confusion for it. A threshold that suits one meeting is already
 wrong for another at three meetings; that is the argument for a holdout, not
 for a new constant.
 
+## DER by minimum embedding length
+
+`MIN_EMBED` in `src/diarize.rs` swapped between builds, `cargo run --release
+--bin der -- --json <tmp>` each time, on 2026-09-05, on the same fixture and
+the same 0.25 s collar as the sections above. A (window, local speaker)
+candidate holding less than `MIN_EMBED` of audio is never embedded, so it
+never becomes a cluster: raising the constant drops the short fragments that
+would have been their own speaker, and lowering it admits them.
+
+| `MIN_EMBED` | ES2004a (ref 3) | IS1009a (ref 4) | TS3003a (ref 4) | Missed | Total DER |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.5 s | 0.1315 (9 spk) | 0.2058 (9 spk) | 0.1184 (10 spk) | 30.11 s | 0.1474 |
+| **1.0 s (shipped)** | **0.1279 (6 spk)** | **0.2058 (7 spk)** | **0.1116 (6 spk)** | **30.14 s** | **0.1434** |
+| 1.5 s | 0.1279 (6 spk) | 0.2032 (7 spk) | 0.1044 (4 spk) | 30.14 s | 0.1394 |
+| 2.0 s | 0.1386 (5 spk) | 0.1578 (5 spk) | 0.0877 (1 spk) | 34.87 s | 0.1215 |
+
+The default holds at one second. No value beats it by more than 0.01 of DER on
+every meeting, which is what the keep rule asks: 1.5 s ties ES2004a exactly at
+0.1279, and 2.0 s — the lowest total on the page at 0.1215 — is 0.0107 *worse*
+on ES2004a, so the two candidates fail on the same meeting from opposite
+directions.
+
+Unlike the threshold sweep, this constant does move missed speech, because it
+decides what gets embedded rather than how embeddings cluster: 30.11 s at
+0.5 s against 34.87 s at 2.0 s, and ES2004a alone pays 9.65 s → 12.67 s of that.
+It buys confusion back — 28.47 s down to 13.06 s over the same range — and the
+totals are the trade netting out, not one term improving.
+
+The 2.0 s row is worth reading before believing its total. TS3003a scores
+0.0877 there with **one** hypothesis speaker against four in the reference,
+and zero confusion, because that meeting is very nearly a monologue: its
+reference gives 242.03 s of 243.80 s of speech to `MTD009PM` and the other
+three speakers 10.25 s between them. Calling the whole meeting one person is
+almost right there and would be badly wrong anywhere else. IS1009a is the
+honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
+meeting with four real ones — and it is not enough on its own.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
