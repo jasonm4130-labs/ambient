@@ -1,4 +1,5 @@
 pub mod asr;
+pub mod bench;
 pub mod capture;
 pub mod config;
 pub mod der;
