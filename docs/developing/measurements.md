@@ -545,5 +545,34 @@ ring`.
 
 ---
 
+## Word error rate through the resampler
+
+`cargo run --release --bin wer -- --via <rate>`, on 2026-09-06. Each fixture
+wav is transcoded with `ffmpeg -ar <rate> -ac 1 -sample_fmt s16` first, cached
+under `~/.cache/ambient/fixtures/via/<rate>/`, then read back with
+`resample::read_wav_any` and downsampled with `resample::to_16k` — the same
+path Core Audio's 48 kHz delivery (or a 44.1 kHz interface) takes before
+`features::read_wav`'s hard 16 kHz check could ever see it. The native row is
+`features::read_wav` on the fixture unchanged, restated here rather than
+copied from the section above because this is a fresh run. The fixture itself
+is 16 kHz LibriSpeech, so the 48 000/44 100 rows measure a round trip through
+the resampler on already band-limited audio, not native capture with real
+energy above 8 kHz — they exercise the code path, not Core Audio's content.
+
+| Via | Seconds | Ref words | S | I | D | WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| native | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 |
+| 48 000 | 913.74 | 2152 | 45 | 8 | 6 | 0.0274 |
+| 44 100 | 913.74 | 2152 | 48 | 6 | 5 | 0.0274 |
+
+Both resampled rows land 0.0056 above native, more than the 0.005 keep-rule
+margin, so the resampler is the suspect: going through a 48 kHz or 44.1 kHz
+round trip before `to_16k` costs more than half a point of WER on this
+fixture. That is a finding, not a fix — `resample::to_16k` is unchanged by
+this section, and no shipped constant moved, so `quality/wer.json` does not
+change with it.
+
+---
+
 Every number on this page is from the 128 GB machine; the 16 GB target is still
 unmeasured — see [porting to the work M5](porting.md).

@@ -1,7 +1,7 @@
 //! Word error rate for Ambient's own transcription path.
 //!
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
-//!                                     [--model <dir>]
+//!                                     [--model <dir>] [--via <rate>]
 //!
 //! Scores the fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished track: the same model resolution, the
@@ -11,11 +11,20 @@
 //! `--model` overrides only the ASR directory, through the same
 //! `session::model_paths` a `record --model` goes through, so comparing two
 //! shipped models compares them at the one place the product chooses one.
+//!
+//! `--via <rate>` transcodes each fixture wav to `<rate>` Hz with ffmpeg first,
+//! then reads it back through `resample::read_wav_any` and `resample::to_16k`
+//! — the same downsample path Core Audio's 48 kHz (or an interface's 44.1 kHz)
+//! delivery takes before `features::read_wav`'s hard 16 kHz requirement could
+//! ever see it. Transcodes are cached under
+//! `~/.cache/ambient/fixtures/via/<rate>/<speaker>.wav` and reused only when
+//! `ffprobe` confirms the cached file is still at `<rate>`.
 
-use ambient::{asr::Recognizer, features, resample::TARGET_HZ, session, vad::Vad, wer};
+use ambient::{asr::Recognizer, features, resample, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 /// One fixture as `scripts/fetch-fixtures` writes it. `utterances` and
@@ -51,10 +60,70 @@ fn default_manifest() -> PathBuf {
     PathBuf::from(home).join(".cache/ambient/fixtures/wer/manifest.json")
 }
 
+/// Where the `<rate>` Hz transcode of `speaker`'s fixture lives.
+fn via_cache_path(rate: u32, speaker: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home)
+        .join(".cache/ambient/fixtures/via")
+        .join(rate.to_string())
+        .join(format!("{speaker}.wav"))
+}
+
+/// The sample rate `ffprobe` reports for `path`, or `None` if it cannot be
+/// read — a file that is missing, unreadable or from a stale layout should
+/// regenerate rather than pretend to match.
+fn probed_rate(path: &Path) -> Option<u32> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=sample_rate",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// Transcode `src` to `rate` Hz mono 16-bit with ffmpeg, reusing a cached
+/// transcode when one already exists at the right rate. The cache directory
+/// also holds files from an earlier, unrelated attempt (hashed names, a
+/// `ctl-*` subdirectory) — this only ever reads and writes the plain
+/// `<speaker>.wav` path it owns, and never trusts a file there without
+/// re-probing its rate first.
+fn ensure_via(src: &Path, speaker: &str, rate: u32) -> Result<PathBuf> {
+    let dst = via_cache_path(rate, speaker);
+    if probed_rate(&dst) == Some(rate) {
+        return Ok(dst);
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let status = Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-y", "-i"])
+        .arg(src)
+        .args(["-ar", &rate.to_string(), "-ac", "1", "-sample_fmt", "s16"])
+        .arg(&dst)
+        .status()
+        .with_context(|| format!("running ffmpeg on {}", src.display()))?;
+    if !status.success() {
+        bail!("ffmpeg failed transcoding {} to {rate} Hz", src.display());
+    }
+    Ok(dst)
+}
+
 fn main() -> Result<()> {
     let mut manifest = None;
     let mut json = None;
     let mut model = None;
+    let mut via = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a path"));
@@ -62,7 +131,16 @@ fn main() -> Result<()> {
             "--manifest" => manifest = Some(PathBuf::from(value("--manifest")?)),
             "--json" => json = Some(PathBuf::from(value("--json")?)),
             "--model" => model = Some(value("--model")?),
-            _ => bail!("usage: wer [--manifest <path>] [--json <path>] [--model <dir>]"),
+            "--via" => {
+                via = Some(
+                    value("--via")?
+                        .parse::<u32>()
+                        .context("--via needs a sample rate in Hz, e.g. 48000")?,
+                )
+            }
+            _ => bail!(
+                "usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <rate>]"
+            ),
         }
     }
     let manifest = manifest.unwrap_or_else(default_manifest);
@@ -101,8 +179,17 @@ fn main() -> Result<()> {
             .wav
             .to_str()
             .with_context(|| format!("{} is not valid UTF-8", entry.wav.display()))?;
-        let samples = features::read_wav(wav)
-            .with_context(|| format!("reading {} — run scripts/fetch-fixtures", wav))?;
+        let samples = if let Some(rate) = via {
+            let transcoded = ensure_via(&entry.wav, &entry.speaker, rate)
+                .with_context(|| format!("transcoding {wav} to {rate} Hz"))?;
+            let (raw, actual_rate) = resample::read_wav_any(&transcoded)
+                .with_context(|| format!("reading {}", transcoded.display()))?;
+            resample::to_16k(&raw, actual_rate)
+                .with_context(|| format!("resampling {} to 16 kHz", transcoded.display()))?
+        } else {
+            features::read_wav(wav)
+                .with_context(|| format!("reading {} — run scripts/fetch-fixtures", wav))?
+        };
         let reference = std::fs::read_to_string(&entry.reference).with_context(|| {
             format!(
                 "reading {} — run scripts/fetch-fixtures",
