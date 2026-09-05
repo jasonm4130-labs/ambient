@@ -1,13 +1,13 @@
 {
-  "version": "0.1.2",
+  "version": "0.1.4",
   "vars": {
     "PLAN": "docs/plans/2026-09-05-wer.md",
     "MERGE_MODE": "wait",
     "BASE": "main",
-    "NAME": "wt-ambient-adopt"
+    "NAME": "ambient"
   },
   "files": {
-    "loop/land.sh": "9904ab4d338ee018dc2f5fd47b82aef311925f24d55f77761e9982baa0b504e8",
+    "loop/land.sh": "3a2c07ff26ba0fce54cfa4d626d63ad559432c56b887857a5579c324baf49614",
     "loop/config": "5e74f215b958a45f454b475d031adb12cd296d3ad6f4485b7281f5cf3191d354",
     "loop/PROMPT.md": "56d9db86dbf8a42d598d449aa56d78773041a7eda7cf735484fa76f9f090ecb4",
     "loop/SKEPTIC.md": "0388ffa5e1f97a5771d97e6ac1a4f4bf520f8c0b7a4053533326ef8d07fd2b95",
