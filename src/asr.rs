@@ -66,14 +66,10 @@ impl Recognizer {
         let decoder = build(find("decoder")?)?;
         let joiner = build(find("joiner")?)?;
 
-        let tokens_txt = std::fs::read_to_string(format!("{dir}/tokens.txt"))
-            .with_context(|| format!("{dir}/tokens.txt"))?;
-        let mut tokens = Vec::new();
-        for line in tokens_txt.lines() {
-            // "<piece> <id>", and the piece itself may be a space.
-            let idx = line.rfind(' ').unwrap_or(line.len());
-            tokens.push(line[..idx].to_string());
-        }
+        let tokens_path = format!("{dir}/tokens.txt");
+        let tokens_txt =
+            std::fs::read_to_string(&tokens_path).with_context(|| tokens_path.clone())?;
+        let tokens = parse_tokens(&tokens_txt, &tokens_path)?;
         let blank = tokens.len() - 1;
 
         Ok(Self {
@@ -222,6 +218,12 @@ impl Recognizer {
 
     pub fn transcribe(&mut self, samples: &[f32]) -> Result<String> {
         let (feats, frames) = crate::features::log_mel(samples);
+        // Nothing to encode. The encoder rejects a zero-length time axis, and
+        // an empty segment is silence, which transcribes to nothing.
+        if frames == 0 {
+            self.last_confidence = 0.0;
+            return Ok(String::new());
+        }
 
         let signal = Tensor::from_array((
             vec![1_i64, crate::features::N_MELS as i64, frames as i64],
@@ -266,6 +268,7 @@ impl Recognizer {
                 let (_, logits) = j["outputs"].try_extract_tensor::<f32>().a()?;
 
                 let n_tok = self.tokens.len(); // 8193 incl. blank
+                check_joiner(logits, n_tok, DURATIONS.len())?;
                 let tok = crate::features::argmax(&logits[..n_tok]).context("empty logits")?;
                 // Softmax only where it is needed: the winning token's share.
                 let max = logits[tok];
@@ -308,5 +311,84 @@ impl Recognizer {
             .map(|&i| self.tokens[i].replace('\u{2581}', " "))
             .collect();
         Ok(text.trim().to_string())
+    }
+}
+
+/// Split `tokens.txt` into its pieces, one per line.
+///
+/// The last token is the blank, so an empty file would make `tokens.len() - 1`
+/// underflow and every later index land out of bounds. Fail here, naming the
+/// file, rather than several thousand frames later.
+pub fn parse_tokens(text: &str, source: &str) -> Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        // "<piece> <id>", and the piece itself may be a space.
+        let idx = line.rfind(' ').unwrap_or(line.len());
+        tokens.push(line[..idx].to_string());
+    }
+    anyhow::ensure!(!tokens.is_empty(), "{source} is empty");
+    Ok(tokens)
+}
+
+/// Check one joiner output before it is indexed.
+///
+/// The decode loop slices the token half and the duration half by position, so
+/// a short tensor would read durations as tokens or panic; and one NaN turns
+/// the softmax denominator — and with it every confidence — into NaN, which
+/// propagates silently instead of stopping.
+pub fn check_joiner(logits: &[f32], n_tok: usize, n_dur: usize) -> Result<()> {
+    let want = n_tok + n_dur;
+    anyhow::ensure!(
+        logits.len() >= want,
+        "joiner output has {} values, expected at least {want}",
+        logits.len()
+    );
+    anyhow::ensure!(
+        logits[..want].iter().all(|v| v.is_finite()),
+        "joiner output is not finite"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_joiner_rejects_an_output_too_short_to_index() {
+        let err = check_joiner(&[0.0; 5], 4, 2).unwrap_err().to_string();
+        assert!(err.contains("expected at least 6"), "{err}");
+    }
+
+    #[test]
+    fn check_joiner_rejects_a_non_finite_output() {
+        let err = check_joiner(&[0.0, f32::NAN, 0.0], 2, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not finite"), "{err}");
+    }
+
+    #[test]
+    fn check_joiner_accepts_a_full_finite_output() {
+        assert!(check_joiner(&[0.0; 6], 4, 2).is_ok());
+    }
+
+    #[test]
+    fn parse_tokens_rejects_a_file_with_no_tokens() {
+        for text in ["", "\n\n"] {
+            let err = parse_tokens(text, "x/tokens.txt").unwrap_err().to_string();
+            assert!(err.contains("x/tokens.txt is empty"), "{err}");
+        }
+    }
+
+    /// The real file's layout: "<piece> <id>", where the piece may itself be a
+    /// space — so the id is split off the right, never the left.
+    #[test]
+    fn parse_tokens_reads_a_piece_that_is_a_space() {
+        let toks = parse_tokens("<unk> 0\n\u{2581}the 1\n  2\n", "x/tokens.txt").unwrap();
+        assert_eq!(toks, ["<unk>", "\u{2581}the", " "]);
     }
 }

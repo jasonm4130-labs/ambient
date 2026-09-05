@@ -6,6 +6,7 @@ pub mod diarize;
 pub mod doctor;
 pub mod fbank;
 pub mod features;
+pub mod mcp;
 pub mod menubar;
 pub mod probe;
 pub mod queue;

@@ -43,24 +43,29 @@ says where it stopped.
 `scripts/quality` runs after the verifier and is the accuracy half of the gate.
 It builds the LibriSpeech fixture (cached after the first night), scores
 Ambient's own recording path over it, and compares each speaker's word error
-rate and the total against the committed `quality/wer.json`. Its last line is
-`QUALITY OK <total wer>` when no row has drifted up by more than half a point,
-or `QUALITY BASELINE <total wer>` the first time, when it writes that file
-instead; a regression prints the offending rows and exits non-zero, and a task
-that improves the number records it with `scripts/quality --update`, so the
-diff to `quality/wer.json` is the evidence in the pull request.
+rate and the total against the committed `quality/wer.json`. In the same pass
+it scores the AMI diarization fixture and compares each meeting's diarization
+error rate against `quality/der.json`, so its last line carries a `der=` figure
+beside the word error rate: `QUALITY OK <total wer> der=<total der>` when no row
+has drifted up by more than half a point of WER or a point of DER, or
+`QUALITY BASELINE <total wer> der=<total der>` the first time a baseline file is
+missing, when it writes that file instead; a regression prints the offending
+rows and exits non-zero, and a task that improves a number records it with
+`scripts/quality --update`, so the diff to `quality/wer.json` or
+`quality/der.json` is the evidence in the pull request.
 
 It runs only once `CHECK_CMD` in `loop/config` says so, which is a change a
 person commits: the hooks deny a task's own commit that stages `loop/`. The
-line to commit is
+script is the gate and that line is the switch, and a plan can only deliver the
+gate. The line to commit is
 
 ```sh
 : "${CHECK_CMD:=scripts/check && scripts/quality && echo 'CHECK OK'}"
 ```
 
 `run_check` in `loop/land.sh` asks that the whole command's last line be
-exactly `CHECK OK`, and a green quality run ends with `QUALITY OK <total wer>`
-instead, so the trailing `echo` is what makes the pair a verifier: it runs only
+exactly `CHECK OK`, and a green quality run ends with
+`QUALITY OK <total wer> der=<total der>` instead, so the trailing `echo` is what makes the pair a verifier: it runs only
 when both halves passed, and without it every green night reads as red.
 
 The same commit adds `"Bash(scripts/quality:*)"` and `"Bash(./scripts/quality:*)"` to the

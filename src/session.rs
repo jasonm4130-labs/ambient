@@ -447,7 +447,7 @@ impl Drop for TranscribeLock {
 /// The pid written into a lock file, if the file names a live process. A pid
 /// that no longer answers `kill(pid, 0)` is a crash's leftovers, and the
 /// lock is stale.
-fn live_transcriber(dir: &Path) -> Option<u32> {
+pub fn live_transcriber(dir: &Path) -> Option<u32> {
     let pid: u32 = std::fs::read_to_string(dir.join(TRANSCRIBING_LOCK))
         .ok()?
         .trim()
@@ -1028,8 +1028,10 @@ pub fn summaries(root: &Path) -> Vec<SessionSummary> {
         .collect()
 }
 
-/// One directory, or `None` when it is not a session at all.
-fn summarise(dir: &Path) -> Option<SessionSummary> {
+/// One directory, or `None` when it is not a session at all. Public so a
+/// caller enumerating the folder under its own rule — the MCP server refuses
+/// symlinks that [`list`] follows — can summarise the directories it kept.
+pub fn summarise(dir: &Path) -> Option<SessionSummary> {
     let json = dir.join("session.json");
     // `symlink_metadata` rather than `metadata`: a symlink here is followed by
     // nothing, so the file is described, not the thing it points at.
@@ -1190,9 +1192,24 @@ pub struct Line {
     pub text: String,
 }
 
-/// Read `raw.jsonl` and fold `edits.jsonl` over it. With `verbatim`, the edit
-/// layer is ignored entirely — the same bytes the recogniser produced.
+/// Read `raw.jsonl` and fold `edits.jsonl` over it, in clock order. With
+/// `verbatim`, the edit layer is ignored entirely — the same bytes the
+/// recogniser produced.
 pub fn transcript(dir: &Path, verbatim: bool) -> Result<Vec<Line>> {
+    fold_edits(dir, verbatim, true)
+}
+
+/// [`transcript`] in the order `raw.jsonl` holds, which is the order the lines
+/// were appended. A reader wants the clock; anything counting lines it has
+/// already seen wants this, because the two tracks are written one after the
+/// other and their clocks are independent — so a line's arrival tells you
+/// nothing about its `start_ms`, and a cursor on the clock would skip it.
+pub fn transcript_appended(dir: &Path, verbatim: bool) -> Result<Vec<Line>> {
+    fold_edits(dir, verbatim, false)
+}
+
+/// The one body both orders share, so they cannot drift.
+fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
     let raw_text = std::fs::read_to_string(dir.join("raw.jsonl"))
         .with_context(|| format!("reading {}", dir.join("raw.jsonl").display()))?;
 
@@ -1256,7 +1273,9 @@ pub fn transcript(dir: &Path, verbatim: bool) -> Result<Vec<Line>> {
         }
     }
 
-    lines.sort_by_key(|l| l.start_ms);
+    if sort {
+        lines.sort_by_key(|l| l.start_ms);
+    }
     Ok(lines)
 }
 
@@ -2630,5 +2649,40 @@ mod tests {
         assert_eq!(m.status_line(), "done");
         m.set_phase(MeterPhase::Failed);
         assert_eq!(m.status_line(), "failed");
+    }
+
+    /// `raw.jsonl` is written one track at a time, so a line's position in the
+    /// file says nothing about when it was said. [`transcript`] sorts by the
+    /// clock, for a person reading; [`transcript_appended`] keeps the file's
+    /// order, which is the only order a cursor can count.
+    #[test]
+    fn appended_order_is_the_file_and_transcript_is_the_clock() {
+        let dir = std::env::temp_dir().join(format!("ambient-appended-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let record = |track: Track, start_ms: u64| RawRecord {
+            track,
+            start_ms,
+            end_ms: start_ms + 1_000,
+            text: format!("{} at {start_ms}", track.as_str()),
+            confidence: 0.9,
+        };
+        std::fs::write(
+            dir.join("raw.jsonl"),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&record(Track::Room, 5_000)).unwrap(),
+                serde_json::to_string(&record(Track::Call, 0)).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let starts = |lines: Vec<Line>| lines.iter().map(|l| l.start_ms).collect::<Vec<_>>();
+        assert_eq!(starts(transcript(&dir, false).unwrap()), vec![0, 5_000]);
+        assert_eq!(
+            starts(transcript_appended(&dir, false).unwrap()),
+            vec![5_000, 0],
+            "the call line was appended after the room line and stays there"
+        );
     }
 }

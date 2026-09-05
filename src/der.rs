@@ -16,6 +16,7 @@
 //! Pure arithmetic — no I/O, no models — so it is cheap to test exhaustively
 //! and gives the same answer on every machine.
 
+use crate::diarize::Span;
 use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 
@@ -99,6 +100,24 @@ pub fn parse_rttm(text: &str) -> Result<Vec<Turn>> {
         });
     }
     Ok(turns)
+}
+
+/// The diarizer's sample-indexed spans as scoreable turns.
+///
+/// The one bridge between the two halves: [`crate::diarize`] counts samples
+/// and numbers its speakers, this module counts seconds and names them. The
+/// name is the index written out, which loses nothing — [`score`] matches
+/// label *sets* by overlap and never compares label text, so `"0"` here and
+/// `FEE013` in the reference are as comparable as any other pair.
+pub fn spans_to_turns(spans: &[Span], sr: usize) -> Vec<Turn> {
+    spans
+        .iter()
+        .map(|span| Turn {
+            start_s: span.start as f64 / sr as f64,
+            end_s: span.end as f64 / sr as f64,
+            speaker: span.speaker.to_string(),
+        })
+        .collect()
 }
 
 /// Score a hypothesis segmentation against a reference one.
@@ -336,6 +355,7 @@ fn hungarian(cost: &[Vec<i64>]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diarize::Span;
 
     fn turn(speaker: &str, start_s: f64, end_s: f64) -> Turn {
         Turn {
@@ -445,6 +465,26 @@ mod tests {
         assert!(close(der.confusion_s, 10.0), "{:?}", der);
         assert!(close(der.missed_s, 8.0), "{:?}", der);
         assert!(close(der.false_alarm_s, 0.0), "{:?}", der);
+    }
+
+    #[test]
+    fn spans_become_turns_in_seconds() {
+        let spans = [
+            Span {
+                start: 0,
+                end: 16_000,
+                speaker: 0,
+            },
+            Span {
+                start: 32_000,
+                end: 48_000,
+                speaker: 1,
+            },
+        ];
+        assert_eq!(
+            spans_to_turns(&spans, 16_000),
+            vec![turn("0", 0.0, 1.0), turn("1", 2.0, 3.0)]
+        );
     }
 
     #[test]

@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
-# The quality gate: word error rate on the LibriSpeech fixture, compared with a
-# committed baseline. Quiet like scripts/check — one line per step on success,
-# the failing step's whole log on the first failure.
+# The quality gate: word error rate on the LibriSpeech fixture and diarization
+# error rate on the AMI fixture, each compared with a committed baseline. Quiet
+# like scripts/check — one line per step on success, the failing step's whole
+# log on the first failure.
 #
-#   scripts/quality             # ✓ per step, then QUALITY OK <total wer>
+#   scripts/quality             # ✓ per step, then QUALITY OK <total wer> der=<total der>
 #   scripts/quality --update    # record this run as the new baseline
 #
 # The unattended landing loop (docs/developing/landing.md) runs this after the
-# verifier, so a task that makes the transcript worse cannot merge. A row may
-# drift up by half a point before it counts as a regression: the decode is
-# deterministic on one machine but not across model or runtime versions, and a
-# gate that fires on noise is a gate someone turns off.
+# verifier, so a task that makes the transcript or the speaker attribution
+# worse cannot merge. A row may drift up by half a point of WER, or a point of
+# DER, before it counts as a regression: both are deterministic on one machine
+# but not across model or runtime versions, and a gate that fires on noise is a
+# gate someone turns off. DER gets the wider band because the diarizer's
+# clustering is the more sensitive of the two to a runtime change.
 #
-# quality/wer.json holds accuracy only — speaker, the S/I/D counts and the rate
-# — and no timings: decode seconds move a little every run, and a baseline that
-# churns on every run buries the one number its diff exists to show. Timings
-# belong in docs/developing/measurements.md.
+# quality/wer.json and quality/der.json hold accuracy only — the identity, the
+# error counts or seconds, and the rate — and no timings: decode and diarize
+# seconds move a little every run, and a baseline that churns on every run
+# buries the one number its diff exists to show. Timings belong in
+# docs/developing/measurements.md.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 tolerance=0.005
 baseline=quality/wer.json
+der_tolerance=0.01
+der_baseline=quality/der.json
 
 update=""
 for arg in "$@"; do
@@ -35,7 +41,8 @@ done
 
 log=$(mktemp)
 rows=$(mktemp)
-trap 'rm -f "$log" "$rows"' EXIT
+der_rows=$(mktemp)
+trap 'rm -f "$log" "$rows" "$der_rows"' EXIT
 
 run() {
   if "$@" >"$log" 2>&1; then
@@ -49,6 +56,7 @@ run() {
 
 run scripts/fetch-fixtures
 run cargo run --release --bin wer -- --json "$rows"
+run cargo run --release --bin der -- --json "$der_rows"
 
 current=$(jq '[.[] | {speaker, reference_words, substitutions, insertions, deletions, wer}]' "$rows")
 total=$(jq -r '.[] | select(.speaker == "total") | .wer' "$rows")
@@ -59,58 +67,91 @@ if [ -z "$current" ] || [ -z "$total" ]; then
 fi
 total=$(printf '%.4f' "$total")
 
+der_current=$(jq '[.[] | {meeting, seconds, reference_speakers, hypothesis_speakers, missed_s, false_alarm_s, confusion_s, der}]' "$der_rows")
+der_total=$(jq -r '.[] | select(.meeting == "total") | .der' "$der_rows")
+if [ -z "$der_current" ] || [ -z "$der_total" ]; then
+  echo "ERROR the der run produced no total row"
+  cat "$der_rows"
+  exit 1
+fi
+der_total=$(printf '%.4f' "$der_total")
+
 record() {
-  mkdir -p "$(dirname "$baseline")"
-  printf '%s\n' "$current" >"$baseline"
-  echo "wrote $baseline"
+  mkdir -p "$(dirname "$1")"
+  printf '%s\n' "$2" >"$1"
+  echo "wrote $1"
 }
 
 if [ -n "$update" ]; then
-  record
-  echo "QUALITY UPDATED $total"
+  record "$baseline" "$current"
+  record "$der_baseline" "$der_current"
+  echo "QUALITY UPDATED $total der=$der_total"
   exit 0
 fi
 
-if [ ! -f "$baseline" ]; then
-  record
-  echo "QUALITY BASELINE $total"
-  exit 0
-fi
-
-# Both directions of fixture drift are reported: a speaker the baseline does
-# not name, and a baseline speaker this run did not score. The second is the
-# one that flatters the result — a vanished speaker leaves a total computed
-# over what remains, which can sit below the baseline while a third of the
-# fixture is gone.
+# One comparison, run once per metric: the wer rows are keyed by speaker and
+# rated by wer, the der rows by meeting and der, and the two differ in nothing
+# else. Both directions of fixture drift are reported: a row the baseline does
+# not name, and a baseline row this run did not score. The second is the one
+# that flatters the result — a vanished row leaves a total computed over what
+# remains, which can sit below the baseline while a third of the fixture is
+# gone.
 #
 # jq's status is checked because an unreadable baseline makes it print nothing
 # and exit non-zero, and an empty offender list is how this gate says "pass".
-if ! offenders=$(jq -r --slurpfile base "$baseline" --argjson tol "$tolerance" '
-  (map({key: .speaker, value: .wer}) | from_entries) as $c
-  | ($base[0] | map({key: .speaker, value: .wer}) | from_entries) as $b
-  | (($c | keys) + ($b | keys) | unique)[]
-  | select($c[.] == null or $b[.] == null or $c[.] > $b[.] + $tol)
-  | [., ($c[.] // -1), ($b[.] // -1)] | @tsv' "$rows"); then
-  echo "ERROR $baseline could not be read as the rows this run produced"
-  cat "$baseline"
-  exit 1
-fi
+compare() {
+  local rows=$1 base=$2 key=$3 rate=$4 tol=$5
+  local offenders
+  if ! offenders=$(jq -r --slurpfile base "$base" --argjson tol "$tol" \
+    --arg key "$key" --arg rate "$rate" '
+    (map({key: .[$key], value: .[$rate]}) | from_entries) as $c
+    | ($base[0] | map({key: .[$key], value: .[$rate]}) | from_entries) as $b
+    | (($c | keys) + ($b | keys) | unique)[]
+    | select($c[.] == null or $b[.] == null or $c[.] > $b[.] + $tol)
+    | [., ($c[.] // -1), ($b[.] // -1)] | @tsv' "$rows"); then
+    echo "ERROR $base could not be read as the rows this run produced"
+    cat "$base"
+    exit 1
+  fi
 
-if [ -n "$offenders" ]; then
-  echo "ERROR the run does not match $baseline: a row rose by more than $tolerance, or the fixture changed"
-  printf '%-9s %8s %8s %8s\n' speaker wer baseline delta
-  while IFS=$'\t' read -r speaker wer base; do
-    if [ "$base" = "-1" ]; then
-      printf '%-9s %8.4f %8s %8s\n' "$speaker" "$wer" none new
-    elif [ "$wer" = "-1" ]; then
-      printf '%-9s %8s %8.4f %8s\n' "$speaker" none "$base" missing
+  [ -n "$offenders" ] || return 0
+
+  echo "ERROR the run does not match $base: a row rose by more than $tol, or the fixture changed"
+  printf '%-9s %8s %8s %8s\n' "$key" "$rate" baseline delta
+  while IFS=$'\t' read -r name value base_value; do
+    if [ "$base_value" = "-1" ]; then
+      printf '%-9s %8.4f %8s %8s\n' "$name" "$value" none new
+    elif [ "$value" = "-1" ]; then
+      printf '%-9s %8s %8.4f %8s\n' "$name" none "$base_value" missing
     else
-      printf '%-9s %8.4f %8.4f %8.4f\n' "$speaker" "$wer" "$base" \
-        "$(awk -v a="$wer" -v b="$base" 'BEGIN { printf "%.4f", a - b }')"
+      printf '%-9s %8.4f %8.4f %8.4f\n' "$name" "$value" "$base_value" \
+        "$(awk -v a="$value" -v b="$base_value" 'BEGIN { printf "%.4f", a - b }')"
     fi
   done <<<"$offenders"
   echo "an intended change is recorded with scripts/quality --update"
   exit 1
+}
+
+# A missing baseline is recorded rather than compared, per metric: adding the
+# second metric to this script must not stop the first one from being checked.
+baselined=""
+if [ -f "$baseline" ]; then
+  compare "$rows" "$baseline" speaker wer "$tolerance"
+else
+  record "$baseline" "$current"
+  baselined=1
 fi
 
-echo "QUALITY OK $total"
+if [ -f "$der_baseline" ]; then
+  compare "$der_rows" "$der_baseline" meeting der "$der_tolerance"
+else
+  record "$der_baseline" "$der_current"
+  baselined=1
+fi
+
+if [ -n "$baselined" ]; then
+  echo "QUALITY BASELINE $total der=$der_total"
+  exit 0
+fi
+
+echo "QUALITY OK $total der=$der_total"

@@ -21,6 +21,7 @@ USAGE
   ambient export <session-dir> [--out <path>]
                                        write transcript.md
   ambient config [<key> <value>]       show or change settings
+  ambient mcp                          serve sessions over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
   ambient doctor [--json]              check the install: models, config, sessions
   ambient probe                        check this machine is viable
@@ -263,6 +264,14 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        // Read-only, and the whole of it is on stdin and stdout: nothing
+        // else may print to stdout while this runs or the client sees a
+        // protocol error instead of an answer.
+        Some("mcp") => ambient::mcp::serve(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+            &ambient::session::home(),
+        ),
         Some("probe") => {
             ambient::probe::run()?;
             Ok(())
