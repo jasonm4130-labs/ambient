@@ -2,6 +2,7 @@
 //!
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
 //!                                     [--model <dir>] [--via <hz>]
+//!                                     [--via-ffmpeg]
 //!
 //! Scores the fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished track: the same model resolution, the
@@ -16,6 +17,12 @@
 //! upsampling each wav to that rate with `ffmpeg` and resampling it back. The
 //! fixture is native 16 kHz, so without this the resampler every real
 //! recording goes through — Core Audio delivers 48 kHz — is never measured.
+//!
+//! `--via-ffmpeg` is the control for that measurement: the identical round
+//! trip with `ffmpeg` on the return leg too, so `resample::to_16k` never runs.
+//! A `--via` run on its own cannot tell our resampler apart from ffmpeg's
+//! upsample and the `pcm_s16le` requantisation it shares; the difference
+//! between the two runs is what our code costs.
 
 use ambient::{asr::Recognizer, features, resample, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
@@ -61,51 +68,86 @@ fn cache_root() -> PathBuf {
     PathBuf::from(home).join(".cache/ambient")
 }
 
-/// The fixture wav upsampled to `hz`, cached beside the fixture it came from.
-/// Written once and reused: the point of measuring is `resample::to_16k`, and
-/// re-running ffmpeg every time would only add a fixed cost to every run.
-fn upsampled(src: &Path, speaker: &str, hz: u32) -> Result<PathBuf> {
-    let dir = cache_root().join("fixtures/via").join(hz.to_string());
+/// True when `dst` was built from the current `src`. An mtime comparison, not
+/// a hash: the fixture is rewritten only by `scripts/fetch-fixtures`, and a
+/// cache that never invalidated would let `--force`, or another manifest
+/// reusing a LibriSpeech speaker id, score last night's audio against
+/// tonight's references with nothing on the table saying so.
+fn current(src: &Path, dst: &Path) -> bool {
+    let stamp = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (stamp(src), stamp(dst)) {
+        (Some(src), Some(dst)) => dst >= src,
+        _ => false,
+    }
+}
+
+/// The cache path for one leg of a `--via` round trip, under
+/// `~/.cache/ambient/fixtures/via/<leg>/<speaker>.wav` — a sibling tree, not
+/// the fixture directory, so `scripts/fetch-fixtures` owns its own output.
+fn via_path(leg: &str, speaker: &str) -> Result<PathBuf> {
+    let dir = cache_root().join("fixtures/via").join(leg);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let dst = dir.join(format!("{speaker}.wav"));
-    if dst.exists() {
-        return Ok(dst);
+    Ok(dir.join(format!("{speaker}.wav")))
+}
+
+/// `src` resampled to `hz` by ffmpeg at `dst`. Written once and reused while
+/// it stays current: the point of measuring is what happens to the samples
+/// after, and re-running ffmpeg every time would add a fixed cost to every run.
+fn ffmpeg_resample(src: &Path, dst: &Path, hz: u32) -> Result<()> {
+    if current(src, dst) {
+        return Ok(());
     }
     let out = Command::new("ffmpeg")
         .args(["-nostdin", "-loglevel", "error", "-y", "-i"])
         .arg(src)
         .args(["-ac", "1", "-c:a", "pcm_s16le", "-ar"])
         .arg(hz.to_string())
-        .arg(&dst)
+        .arg(dst)
         .output()
         .context("running ffmpeg — --via needs it on PATH (brew install ffmpeg)")?;
     if !out.status.success() {
-        let _ = std::fs::remove_file(&dst);
+        let _ = std::fs::remove_file(dst);
         bail!(
-            "ffmpeg could not upsample {} to {hz} Hz: {}",
+            "ffmpeg could not resample {} to {hz} Hz: {}",
             src.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(dst)
+    Ok(())
 }
 
-/// The fixture's samples at 16 kHz, either read straight or taken the long way
-/// round through `hz` so the resampler is in the measured path.
-fn samples_for(wav: &str, speaker: &str, via: Option<u32>) -> Result<Vec<f32>> {
+/// A cached wav read back at the rate it was written at.
+fn read_at(path: &Path, hz: u32) -> Result<Vec<f32>> {
+    let (samples, rate) = resample::read_wav_any(path)?;
+    if rate != hz {
+        bail!(
+            "{} is {rate} Hz, not the {hz} Hz it was written at",
+            path.display()
+        );
+    }
+    Ok(samples)
+}
+
+/// The fixture's samples at 16 kHz: read straight, taken the long way round
+/// through `hz` and back through `resample::to_16k`, or — with `control` —
+/// taken that same way round with ffmpeg on both legs, which leaves
+/// `resample::to_16k` out of the path entirely. The control run is what says
+/// how much of a `--via` run's damage is ours and how much is the ffmpeg
+/// upsample and s16 requantisation both runs share.
+fn samples_for(wav: &str, speaker: &str, via: Option<u32>, control: bool) -> Result<Vec<f32>> {
     let Some(hz) = via else {
         return features::read_wav(wav)
             .with_context(|| format!("reading {wav} — run scripts/fetch-fixtures"));
     };
-    let up = upsampled(Path::new(wav), speaker, hz)?;
-    let (samples, rate) = resample::read_wav_any(&up)?;
-    if rate != hz {
-        bail!(
-            "{} is {rate} Hz, not the {hz} Hz it was written at",
-            up.display()
-        );
+    let up = via_path(&hz.to_string(), speaker)?;
+    ffmpeg_resample(Path::new(wav), &up, hz)?;
+    if control {
+        let back = via_path(&format!("{hz}-ffmpeg-16k"), speaker)?;
+        ffmpeg_resample(&up, &back, TARGET_HZ)?;
+        return read_at(&back, TARGET_HZ);
     }
-    resample::to_16k(&samples, rate)
+    let samples = read_at(&up, hz)?;
+    resample::to_16k(&samples, hz)
 }
 
 fn main() -> Result<()> {
@@ -113,6 +155,7 @@ fn main() -> Result<()> {
     let mut json = None;
     let mut model = None;
     let mut via: Option<u32> = None;
+    let mut control = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a value"));
@@ -127,10 +170,15 @@ fn main() -> Result<()> {
                         .with_context(|| format!("--via wants a sample rate in hz, not {hz:?}"))?,
                 );
             }
-            _ => {
-                bail!("usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <hz>]")
-            }
+            "--via-ffmpeg" => control = true,
+            _ => bail!(
+                "usage: wer [--manifest <path>] [--json <path>] [--model <dir>] \
+                 [--via <hz>] [--via-ffmpeg]"
+            ),
         }
+    }
+    if control && via.is_none() {
+        bail!("--via-ffmpeg is the control for a --via run, so it needs --via <hz> too");
     }
     let manifest = manifest.unwrap_or_else(default_manifest);
 
@@ -168,7 +216,7 @@ fn main() -> Result<()> {
             .wav
             .to_str()
             .with_context(|| format!("{} is not valid UTF-8", entry.wav.display()))?;
-        let samples = samples_for(wav, &entry.speaker, via)?;
+        let samples = samples_for(wav, &entry.speaker, via, control)?;
         let reference = std::fs::read_to_string(&entry.reference).with_context(|| {
             format!(
                 "reading {} — run scripts/fetch-fixtures",
