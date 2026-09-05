@@ -124,17 +124,41 @@ fn config_check(p: &Path) -> Check {
 /// Proved by writing, not by reading a permission bit: the sessions folder can
 /// be on a volume that is mounted read-only or not mounted at all, and both
 /// look fine until the first recording tries to claim a directory.
+///
+/// A folder that is not there yet is not a failure — `SessionDir::claim`
+/// creates it with `create_dir_all`, so an installation that has never
+/// recorded has no sessions folder and would record fine. What decides whether
+/// that claim succeeds is the nearest ancestor that does exist, so that is
+/// what gets the probe; `doctor` diagnoses, and creating the folder to find
+/// out would leave a trace of having been run.
 fn writable(sessions: &Path) -> Check {
-    let probe = sessions.join(format!(".ambient-doctor-{}", std::process::id()));
+    let target = if sessions.exists() {
+        sessions
+    } else {
+        sessions
+            .ancestors()
+            .find(|p| p.is_dir())
+            .unwrap_or(sessions)
+    };
+    let probe = target.join(format!(".ambient-doctor-{}", std::process::id()));
     match std::fs::write(&probe, "") {
         Ok(()) => {
             std::fs::remove_file(&probe).ok();
-            check("sessions/writable", true, sessions.display().to_string())
+            let detail = if target == sessions {
+                sessions.display().to_string()
+            } else {
+                format!(
+                    "{} — not created yet, {} is writable",
+                    sessions.display(),
+                    target.display()
+                )
+            };
+            check("sessions/writable", true, detail)
         }
         Err(e) => check(
             "sessions/writable",
             false,
-            format!("{} is not writable: {e}", sessions.display()),
+            format!("{} is not writable: {e}", target.display()),
         ),
     }
 }
@@ -282,6 +306,32 @@ mod tests {
             "1 session"
         );
         assert!(find(&checks, "sessions/live").ok);
+        assert!(find(&checks, "sessions/stale-lock").ok);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The default state of an installation that has never recorded: the
+    /// sessions folder is not there yet, because `SessionDir::claim` creates
+    /// it on demand. A recording would succeed, so `doctor` must not fail —
+    /// and must not create the folder just to find that out.
+    #[test]
+    fn doctor_passes_a_sessions_folder_the_first_recording_would_create() {
+        let root = tmp("doctor-fresh-install");
+        let config = root.join("config.json");
+        std::fs::write(&config, "{}").unwrap();
+        let sessions = root.join("Ambient");
+
+        let checks = run(Err(anyhow!("no models")), &config, &sessions);
+
+        let w = find(&checks, "sessions/writable");
+        assert!(w.ok, "detail was {:?}", w.detail);
+        assert!(!sessions.exists(), "doctor created the sessions folder");
+        assert_eq!(
+            find(&checks, "sessions/awaiting-transcript").detail,
+            "0 sessions"
+        );
+        assert_eq!(find(&checks, "sessions/live").detail, "none");
         assert!(find(&checks, "sessions/stale-lock").ok);
 
         std::fs::remove_dir_all(&root).ok();
