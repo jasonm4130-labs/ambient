@@ -58,6 +58,19 @@ else
   exit 1
 fi
 
+# afconvert covers the wer set only: the der set decodes and resamples in one
+# ffmpeg pass and validates its downloads with ffprobe, and afconvert cannot
+# stand in for either. Decided here, before anything is downloaded, so a
+# machine without ffmpeg is told once at the top and still gets the wer set it
+# has always got — rather than being failed after 330 MB and a built fixture.
+# A consumer that needs the der set finds no manifest and says so.
+if [ "$decoder" = ffmpeg ] && command -v ffprobe >/dev/null 2>&1; then
+  want_der=1
+else
+  want_der=""
+  echo "fetch-fixtures: skipping the der set, it needs ffmpeg and ffprobe" >&2
+fi
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -218,140 +231,140 @@ files=$((files + 1))
 
 # --- the diarization error rate set ----------------------------------------
 #
-# ES2004a, IS1009a and TS3003a are the first meeting of three AMI test-set
-# series, one from each recording site (Edinburgh, Idiap, TNO), so which
-# meetings this scores is a property of the corpus rather than a list someone
-# typed. References are the pyannote only_words RTTMs, pinned to one revision.
-ami="$cache/ami"
-der_out="$cache/fixtures/der"
-meetings="ES2004a IS1009a TS3003a"
-der_seconds=300
-rttm_rev=67c2d539286e89f68952d5dcf83912bd9f01dfae
-audio_base=https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus
-rttm_base=https://raw.githubusercontent.com/pyannote/AMI-diarization-setup
+# Skipped, not fatal, on a machine without ffmpeg: see the decoder probe above.
+if [ -n "$want_der" ]; then
+  # ES2004a, IS1009a and TS3003a are the first meeting of three AMI test-set
+  # series, one from each recording site (Edinburgh, Idiap, TNO), so which
+  # meetings this scores is a property of the corpus rather than a list someone
+  # typed. References are the pyannote only_words RTTMs, pinned to one revision.
+  ami="$cache/ami"
+  der_out="$cache/fixtures/der"
+  meetings="ES2004a IS1009a TS3003a"
+  der_seconds=300
+  rttm_rev=67c2d539286e89f68952d5dcf83912bd9f01dfae
+  audio_base=https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus
+  rttm_base=https://raw.githubusercontent.com/pyannote/AMI-diarization-setup
 
-# shasum -a 256 of the six downloads, in sha256sum's own layout. Pinned so an
-# upstream re-encode or a reference edit fails the fetch rather than quietly
-# moving the DER baseline underneath the quality gate.
-ami_digests="
-3e2560b19bee6952c7c7ce041b0f1ea8a7ea9468044c4eea79d2a2c67e24ab0f  ES2004a.Mix-Headset.wav
-9869c6146c2fd9595403edb36c2caeda65c12ffa2c0af4ce48d6814b673fd5a9  ES2004a.rttm
-6eb5a0ede0d9e72794f976ce7bea5b78133eae969f99b4c5418b43c2468d25b1  IS1009a.Mix-Headset.wav
-ba38d35ca567f3f1e061d90fdc33579ce60d2060fc8664eaeb77d2e0fcd88b01  IS1009a.rttm
-b6ce59ff735c234afdd94b13744aa26f6785af746170543fd03b33160e920a6d  TS3003a.Mix-Headset.wav
-57137f098ee3be9b8d77c9faa4b16e9155e821bdbf21b974dd8771d7e646d185  TS3003a.rttm
-"
+  # shasum -a 256 of the six downloads, in sha256sum's own layout. Pinned so an
+  # upstream re-encode or a reference edit fails the fetch rather than quietly
+  # moving the DER baseline underneath the quality gate.
+  ami_digests="
+  3e2560b19bee6952c7c7ce041b0f1ea8a7ea9468044c4eea79d2a2c67e24ab0f  ES2004a.Mix-Headset.wav
+  9869c6146c2fd9595403edb36c2caeda65c12ffa2c0af4ce48d6814b673fd5a9  ES2004a.rttm
+  6eb5a0ede0d9e72794f976ce7bea5b78133eae969f99b4c5418b43c2468d25b1  IS1009a.Mix-Headset.wav
+  ba38d35ca567f3f1e061d90fdc33579ce60d2060fc8664eaeb77d2e0fcd88b01  IS1009a.rttm
+  b6ce59ff735c234afdd94b13744aa26f6785af746170543fd03b33160e920a6d  TS3003a.Mix-Headset.wav
+  57137f098ee3be9b8d77c9faa4b16e9155e821bdbf21b974dd8771d7e646d185  TS3003a.rttm
+  "
 
-if [ "$decoder" != ffmpeg ] || ! command -v ffprobe >/dev/null 2>&1; then
-  echo "fetch-fixtures: the der set needs ffmpeg and ffprobe" >&2
-  exit 1
-fi
-
-# Download $2 to "$ami/$1" if it is not already there, verifying it before it
-# is allowed to stay: a wav that ffprobe cannot read and an RTTM that is not
-# RTTM (an HTML error page saved under the right name, say) both get deleted,
-# so the next run retries rather than scoring garbage.
-fetch_ami() {
-  local name=$1 url=$2 kind=$3 meeting=$4
-  local dest="$ami/$name"
-  if [ -f "$dest" ]; then return 0; fi
-  echo "fetching $name ..."
-  if ! curl --fail --location --silent --show-error -o "$tmp/$name" "$url"; then
-    rm -f "$tmp/$name"
-    echo "fetch-fixtures: download failed: $url" >&2
-    exit 1
-  fi
-  mv "$tmp/$name" "$dest"
-  if [ "$kind" = wav ]; then
-    if ! ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest" >/dev/null; then
-      rm -f "$dest"
-      echo "fetch-fixtures: not a readable wav, deleted it: $url" >&2
+  # Download $2 to "$ami/$1" if it is not already there, verifying it before it
+  # is allowed to stay: a wav that ffprobe cannot read and an RTTM that is not
+  # RTTM (an HTML error page saved under the right name, say) both get deleted,
+  # so the next run retries rather than scoring garbage.
+  fetch_ami() {
+    local name=$1 url=$2 kind=$3 meeting=$4
+    local dest="$ami/$name"
+    if [ -f "$dest" ]; then return 0; fi
+    echo "fetching $name ..."
+    if ! curl --fail --location --silent --show-error -o "$tmp/$name" "$url"; then
+      rm -f "$tmp/$name"
+      echo "fetch-fixtures: download failed: $url" >&2
       exit 1
     fi
-  elif ! awk -v m="$meeting" '
-      NF == 0 { next }
-      $1 != "SPEAKER" || $2 != m { exit 1 }
-      { turns++ }
-      END { if (turns == 0) exit 1 }
-    ' "$dest"; then
-    rm -f "$dest"
-    echo "fetch-fixtures: not an RTTM for $meeting, deleted it: $url" >&2
-    exit 1
-  fi
-  shasum -a 256 "$dest" | awk '{ printf "%s  %s\n", $1, "'"$name"'" }'
-}
-
-mkdir -p "$ami" "$der_out"
-for m in $meetings; do
-  fetch_ami "$m.Mix-Headset.wav" "$audio_base/$m/audio/$m.Mix-Headset.wav" wav "$m"
-  fetch_ami "$m.rttm" "$rttm_base/$rttm_rev/only_words/rttms/test/$m.rttm" rttm "$m"
-done
-
-# Every run, cached or fresh: the pinned digests are the fixture's identity.
-digest_fail=""
-for m in $meetings; do
-  for name in "$m.Mix-Headset.wav" "$m.rttm"; do
-    have=$(shasum -a 256 "$ami/$name" | awk '{ print $1 }')
-    want=$(printf '%s\n' "$ami_digests" | awk -v n="$name" '$2 == n { print $1 }')
-    if [ -z "$want" ]; then
-      echo "fetch-fixtures: $name is not pinned; add to ami_digests:" >&2
-      echo "$have  $name" >&2
-      digest_fail=1
-    elif [ "$have" != "$want" ]; then
-      echo "fetch-fixtures: $name changed upstream: pinned $want, got $have" >&2
-      digest_fail=1
+    mv "$tmp/$name" "$dest"
+    if [ "$kind" = wav ]; then
+      if ! ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest" >/dev/null; then
+        rm -f "$dest"
+        echo "fetch-fixtures: not a readable wav, deleted it: $url" >&2
+        exit 1
+      fi
+    elif ! awk -v m="$meeting" '
+        NF == 0 { next }
+        $1 != "SPEAKER" || $2 != m { exit 1 }
+        { turns++ }
+        END { if (turns == 0) exit 1 }
+      ' "$dest"; then
+      rm -f "$dest"
+      echo "fetch-fixtures: not an RTTM for $meeting, deleted it: $url" >&2
+      exit 1
     fi
+    shasum -a 256 "$dest" | awk '{ printf "%s  %s\n", $1, "'"$name"'" }'
+  }
+
+  mkdir -p "$ami" "$der_out"
+  for m in $meetings; do
+    fetch_ami "$m.Mix-Headset.wav" "$audio_base/$m/audio/$m.Mix-Headset.wav" wav "$m"
+    fetch_ami "$m.rttm" "$rttm_base/$rttm_rev/only_words/rttms/test/$m.rttm" rttm "$m"
   done
-done
-[ -z "$digest_fail" ] || exit 1
 
-der_entries=""
-for m in $meetings; do
-  der_wav="$der_out/$m.wav"
-  der_rttm="$der_out/$m.rttm"
+  # Every run, cached or fresh: the pinned digests are the fixture's identity.
+  digest_fail=""
+  for m in $meetings; do
+    for name in "$m.Mix-Headset.wav" "$m.rttm"; do
+      have=$(shasum -a 256 "$ami/$name" | awk '{ print $1 }')
+      want=$(printf '%s\n' "$ami_digests" | awk -v n="$name" '$2 == n { print $1 }')
+      if [ -z "$want" ]; then
+        echo "fetch-fixtures: $name is not pinned; add to ami_digests:" >&2
+        echo "$have  $name" >&2
+        digest_fail=1
+      elif [ "$have" != "$want" ]; then
+        echo "fetch-fixtures: $name changed upstream: pinned $want, got $have" >&2
+        digest_fail=1
+      fi
+    done
+  done
+  [ -z "$digest_fail" ] || exit 1
 
-  if [ -z "$force" ] && [ -f "$der_wav" ] && [ -f "$der_rttm" ]; then
-    echo "already present: $der_wav"
-    echo "already present: $der_rttm"
+  der_entries=""
+  for m in $meetings; do
+    der_wav="$der_out/$m.wav"
+    der_rttm="$der_out/$m.rttm"
+
+    if [ -z "$force" ] && [ -f "$der_wav" ] && [ -f "$der_rttm" ]; then
+      echo "already present: $der_wav"
+      echo "already present: $der_rttm"
+    else
+      ffmpeg -v error -nostdin -y -i "$ami/$m.Mix-Headset.wav" \
+        -t "$der_seconds" -ac 1 -ar "$rate" -sample_fmt s16 "$tmp/$m.wav"
+      mv "$tmp/$m.wav" "$der_wav"
+      # The reference is cut to match: turns starting past the cut are dropped
+      # and a turn straddling it is clipped, so no reference speech is claimed
+      # for audio the fixture does not contain. Same 10-field RTTM layout, and
+      # every field is copied through verbatim: only a clipped duration is
+      # rewritten, so the source's own precision survives the cut.
+      awk -v lim="$der_seconds" '
+        NF == 0 { next }
+        $4 + 0 < lim {
+          dur = $5
+          if ($4 + $5 > lim) dur = sprintf("%.2f", lim - $4)
+          printf "SPEAKER %s %s %s %s %s %s %s %s %s\n", $2, $3, $4, dur, $6, $7, $8, $9, $10
+        }
+      ' "$ami/$m.rttm" >"$tmp/$m.rttm"
+      mv "$tmp/$m.rttm" "$der_rttm"
+      echo "wrote $der_wav (${der_seconds}s, 16 kHz mono 16-bit)"
+      echo "wrote $der_rttm ($(wc -l <"$der_rttm" | tr -d ' ') turns)"
+    fi
+
+    files=$((files + 2))
+    total=$(awk -v a="$total" -v b="$der_seconds" 'BEGIN { printf "%.2f", a + b }')
+    der_entries="$der_entries$(
+      printf '  {"wav": "%s", "rttm": "%s", "meeting": "%s", "seconds": %d}' \
+        "$der_wav" "$der_rttm" "$m" "$der_seconds"
+    )"$'\n'
+  done
+
+  der_manifest="$der_out/manifest.json"
+  if [ -z "$force" ] && [ -f "$der_manifest" ]; then
+    echo "already present: $der_manifest"
   else
-    ffmpeg -v error -nostdin -y -i "$ami/$m.Mix-Headset.wav" \
-      -t "$der_seconds" -ac 1 -ar "$rate" -sample_fmt s16 "$tmp/$m.wav"
-    mv "$tmp/$m.wav" "$der_wav"
-    # The reference is cut to match: turns starting past the cut are dropped
-    # and a turn straddling it is clipped, so no reference speech is claimed
-    # for audio the fixture does not contain. Same 10-field RTTM layout.
-    awk -v lim="$der_seconds" '
-      NF == 0 { next }
-      $4 + 0 < lim {
-        dur = $5 + 0
-        if ($4 + dur > lim) dur = lim - $4
-        printf "SPEAKER %s %s %.2f %.2f %s %s %s %s %s\n", $2, $3, $4, dur, $6, $7, $8, $9, $10
-      }
-    ' "$ami/$m.rttm" >"$tmp/$m.rttm"
-    mv "$tmp/$m.rttm" "$der_rttm"
-    echo "wrote $der_wav (${der_seconds}s, 16 kHz mono 16-bit)"
-    echo "wrote $der_rttm ($(wc -l <"$der_rttm" | tr -d ' ') turns)"
+    {
+      echo '['
+      printf '%s' "$der_entries" | sed '$!s/$/,/'
+      echo ']'
+    } >"$der_manifest"
+    echo "wrote $der_manifest"
   fi
-
-  files=$((files + 2))
-  total=$(awk -v a="$total" -v b="$der_seconds" 'BEGIN { printf "%.2f", a + b }')
-  der_entries="$der_entries$(
-    printf '  {"wav": "%s", "rttm": "%s", "meeting": "%s", "seconds": %d}' \
-      "$der_wav" "$der_rttm" "$m" "$der_seconds"
-  )"$'\n'
-done
-
-der_manifest="$der_out/manifest.json"
-if [ -z "$force" ] && [ -f "$der_manifest" ]; then
-  echo "already present: $der_manifest"
-else
-  {
-    echo '['
-    printf '%s' "$der_entries" | sed '$!s/$/,/'
-    echo ']'
-  } >"$der_manifest"
-  echo "wrote $der_manifest"
+  files=$((files + 1))
 fi
-files=$((files + 1))
 
 echo "FIXTURES OK $files files ${total}s"

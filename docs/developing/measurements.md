@@ -166,6 +166,11 @@ All six downloads are pinned by `shasum -a 256` in the script and checked on
 every run, so an upstream re-encode or a reference edit fails the fetch rather
 than moving the DER baseline underneath the quality gate.
 
+This set needs `ffmpeg` and `ffprobe` on `PATH`; the WER set does not, and
+still builds without them. A machine missing either is told so on the first
+line and gets the WER set only — the DER harness then reports the missing
+manifest and names this script.
+
 | Meeting | Seconds | Reference turns |
 | --- | ---: | ---: |
 | ES2004a | 300 | 41 |
