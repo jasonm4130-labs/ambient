@@ -1,0 +1,42 @@
+[
+  {
+    "meeting": "ES2004a",
+    "seconds": 300.0,
+    "reference_speakers": 3,
+    "hypothesis_speakers": 6,
+    "missed_s": 9.649999999999839,
+    "false_alarm_s": 4.489999999999949,
+    "confusion_s": 2.6099999999999883,
+    "der": 0.1279407271615992
+  },
+  {
+    "meeting": "IS1009a",
+    "seconds": 300.0,
+    "reference_speakers": 4,
+    "hypothesis_speakers": 7,
+    "missed_s": 4.799999999999942,
+    "false_alarm_s": 8.20999999999987,
+    "confusion_s": 17.229999999999894,
+    "der": 0.20575627679115951
+  },
+  {
+    "meeting": "TS3003a",
+    "seconds": 300.0,
+    "reference_speakers": 4,
+    "hypothesis_speakers": 6,
+    "missed_s": 15.68999999999971,
+    "false_alarm_s": 2.2699999999999956,
+    "confusion_s": 7.0799999999998935,
+    "der": 0.11159639896606842
+  },
+  {
+    "meeting": "total",
+    "seconds": 900.0,
+    "reference_speakers": 11,
+    "hypothesis_speakers": 19,
+    "missed_s": 30.13999999999949,
+    "false_alarm_s": 14.969999999999814,
+    "confusion_s": 26.919999999999774,
+    "der": 0.1434089234873717
+  }
+]
