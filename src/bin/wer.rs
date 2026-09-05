@@ -1,11 +1,16 @@
 //! Word error rate for Ambient's own transcription path.
 //!
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
+//!                                     [--model <dir>]
 //!
 //! Scores the fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished track: the same model resolution, the
 //! same VAD turns, the same `transcribe_segments`. A harness with its own
 //! decode path would measure a pipeline no user has.
+//!
+//! `--model` overrides only the ASR directory, through the same
+//! `session::model_paths` a `record --model` goes through, so comparing two
+//! shipped models compares them at the one place the product chooses one.
 
 use ambient::{asr::Recognizer, features, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
@@ -49,17 +54,15 @@ fn default_manifest() -> PathBuf {
 fn main() -> Result<()> {
     let mut manifest = None;
     let mut json = None;
+    let mut model = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        let mut value = |flag: &str| {
-            args.next()
-                .map(PathBuf::from)
-                .with_context(|| format!("{flag} needs a path"))
-        };
+        let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a path"));
         match a.as_str() {
-            "--manifest" => manifest = Some(value("--manifest")?),
-            "--json" => json = Some(value("--json")?),
-            _ => bail!("usage: wer [--manifest <path>] [--json <path>]"),
+            "--manifest" => manifest = Some(PathBuf::from(value("--manifest")?)),
+            "--json" => json = Some(PathBuf::from(value("--json")?)),
+            "--model" => model = Some(value("--model")?),
+            _ => bail!("usage: wer [--manifest <path>] [--json <path>] [--model <dir>]"),
         }
     }
     let manifest = manifest.unwrap_or_else(default_manifest);
@@ -78,8 +81,8 @@ fn main() -> Result<()> {
 
     // The one resolution `record` uses, not a second copy: a harness pointed at
     // a different model measures a different product.
-    let (asr_dir, vad_path) = session::model_paths(None)
-        .context("the models `ambient record` uses are missing — run ./fetch-models.sh")?;
+    let (asr_dir, vad_path) = session::model_paths(model.as_deref())
+        .context("the models this run needs are missing — run ./fetch-models.sh")?;
     let asr_dir = asr_dir
         .to_str()
         .context("ASR model path is not valid UTF-8")?
