@@ -1,6 +1,7 @@
 pub mod asr;
 pub mod capture;
 pub mod config;
+pub mod der;
 pub mod diarize;
 pub mod fbank;
 pub mod features;
