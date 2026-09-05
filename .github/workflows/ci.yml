@@ -64,7 +64,7 @@ jobs:
           node-version: 24
       # The PreToolUse guards the landing loop runs under; see docs/developing/landing.md.
       - run: node --test ".claude/hooks/*.test.mjs"
-      - uses: crate-ci/typos@v1.50.0
+      - uses: crate-ci/typos@v1.50.1
       - uses: EmbarkStudios/cargo-deny-action@v2.1.1
         with:
           command: check
