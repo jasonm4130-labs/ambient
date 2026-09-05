@@ -527,17 +527,40 @@ pub fn record_into(
     transcribe_session(&path, model_dir, meter)
 }
 
+/// The four model files this crate loads, named relative to a models root.
+///
+/// One place that knows the filenames. `doctor` reports on all four while the
+/// verbs need two each, and a report that derived its paths separately would
+/// pass while the verb it is meant to explain still failed.
+pub struct ModelFiles {
+    pub asr_dir: PathBuf,
+    pub vad: PathBuf,
+    pub segmentation: PathBuf,
+    pub embedding: PathBuf,
+}
+
+/// The four paths under `root`. Says nothing about whether they exist —
+/// callers differ on what a missing one means.
+pub fn model_files(root: &Path) -> ModelFiles {
+    ModelFiles {
+        asr_dir: root.join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
+        vad: root.join("silero_vad.onnx"),
+        segmentation: root.join("pyannote-segmentation-3.0").join("model.onnx"),
+        embedding: root.join("wespeaker_en_voxceleb_resnet34_LM.onnx"),
+    }
+}
+
 /// Where the ASR and VAD models are, checked to exist. Called by both halves:
 /// the capture half so a missing model fails before the tap starts, and the
 /// transcription half because it is the one that loads them — and by the `wer`
 /// harness, so what it scores is the model a recording would have used.
 pub fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
-    let models = models_root()?;
+    let files = model_files(&models_root()?);
     let asr_dir = match model_dir {
         Some(d) => PathBuf::from(d),
-        None => models.join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
+        None => files.asr_dir,
     };
-    let vad_path = models.join("silero_vad.onnx");
+    let vad_path = files.vad;
     if !asr_dir.is_dir() {
         bail!(
             "no ASR model at {} — run ./fetch-models.sh",
@@ -1305,9 +1328,8 @@ pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
         );
     }
 
-    let root = models_root()?;
-    let seg = root.join("pyannote-segmentation-3.0").join("model.onnx");
-    let emb = root.join("wespeaker_en_voxceleb_resnet34_LM.onnx");
+    let files = model_files(&models_root()?);
+    let (seg, emb) = (files.segmentation, files.embedding);
     for p in [&seg, &emb] {
         if !p.exists() {
             bail!("missing {} — run ./fetch-models.sh", p.display());

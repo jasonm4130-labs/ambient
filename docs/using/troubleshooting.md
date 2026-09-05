@@ -13,6 +13,41 @@ warn you, because from its point of view nothing went wrong.
 If your call track is flat, work through this page before suspecting the
 recogniser or your microphone.
 
+## Start with doctor
+
+```
+ambient doctor
+```
+
+One pass over the install: the four model files, the config file, and the
+sessions folder. Every check is reported whichever way the others went, so a
+missing models directory does not hide an unwritable sessions folder — and it
+exits non-zero if anything failed, so a script can ask.
+
+```
+FAIL models/root                   no models/ directory found (looked in models, …)
+FAIL models/asr                    no models directory
+ok   config                        ~/Library/Application Support/Ambient/config.json
+ok   sessions/writable             ~/Documents/Ambient
+ok   sessions/awaiting-transcript  none
+ok   sessions/live                 none
+ok   sessions/stale-lock           none
+```
+
+`--json` prints the same checks as an array of `{name, ok, detail}`.
+
+Two of these are worth knowing about before you meet them.
+`sessions/awaiting-transcript` counts sessions whose audio was captured and
+whose transcript never was — what a crash mid-queue leaves behind.
+`sessions/stale-lock` fails when a session carries a `transcribing.lock` naming
+a process that no longer exists: nothing clears it until something transcribes
+that session again, so it can sit there for ever with no error anywhere. Delete
+the file it names.
+
+It reads the filesystem and nothing else. For the audio hardware and the
+permissions around it, that is [`ambient probe`](commands.md#probe), and
+the rest of this page.
+
 ## It recorded silence
 
 The two services then diverge, which is what makes this so confusing:
