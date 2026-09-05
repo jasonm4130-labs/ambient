@@ -143,6 +143,26 @@ find.
 A second run does no network and rewrites nothing; `--force` restitches from
 the extracted corpus without re-downloading it.
 
+## Word error rate on the fixture
+
+`cargo run --release --bin wer -- [--manifest <path>] [--json <path>]`, on
+v3-int8 and the default 30 s turn cap, measured 2026-09-05. The harness runs
+what `ambient record` runs for a finished track — `Vad::turns(.., 30)` then
+`transcribe_segments` on the models `session::model_paths` resolves — so the
+number is the one a user gets, not the one a friendlier path would give.
+
+| Speaker | Seconds | Words | S | I | D | WER | Decode | Realtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1089 | 302.11 | 721 | 3 | 0 | 0 | 0.42% | 16.35 s | 18.5× |
+| 1188 | 522.73 | 1296 | 29 | 2 | 4 | 2.70% | 30.67 s | 17.0× |
+| 121 | 88.89 | 135 | 7 | 1 | 1 | 6.67% | 5.86 s | 15.2× |
+| **total** | 913.73 | 2152 | 39 | 3 | 5 | **2.18%** | 52.88 s | 17.3× |
+
+The total is scored over the summed counts, not averaged across the rows: an
+average would weight the 89-second speaker like the 523-second one and move
+when the fixture's mix changes rather than when the pipeline does. `--json`
+writes these same rows, total included, for `scripts/quality` to compare.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still

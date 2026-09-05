@@ -516,8 +516,10 @@ pub fn record_into(
 
 /// Where the ASR and VAD models are, checked to exist. Called by both halves:
 /// the capture half so a missing model fails before the tap starts, and the
-/// transcription half because it is the one that loads them.
-fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
+/// transcription half because it is the one that loads them. Public because
+/// the `wer` harness scores what `record` actually runs, and a copy of this
+/// resolution there would eventually score a model nobody ships.
+pub fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
     let models = models_root()?;
     let asr_dir = match model_dir {
         Some(d) => PathBuf::from(d),
