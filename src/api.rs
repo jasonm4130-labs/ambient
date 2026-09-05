@@ -8,6 +8,7 @@
 
 use crate::config::Config;
 use crate::export;
+use crate::roster;
 use crate::session;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -109,6 +110,15 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
         "session.update" => session_update(&paths.root(), params),
         "session.delete" => session_delete(&paths.root(), params),
         "export" => export_session(&paths.root(), params),
+        "config.get" => Ok(config_get(paths)),
+        "config.set" => config_set(paths, params),
+        "roster.list" => Ok(roster_list(paths)),
+        "roster.add" => roster_add(paths, params),
+        "roster.remove" => roster_remove(paths, params),
+        "speakers.name" => speakers_name(paths, params),
+        "speakers.undo" => speakers_undo(paths, params),
+        "speakers.unnamed" => speakers_unnamed(paths, params),
+        "devices" => Ok(json!({"devices": input_device_names()})),
         other => Err(ApiError::InvalidParams(format!("no such method {other:?}"))),
     }
 }
@@ -319,6 +329,179 @@ fn export_session(root: &Path, params: &Value) -> Result<Value, ApiError> {
 
     let text = export::render(&dir, format).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
     Ok(json!({"session": id, "format": format_name, "text": text}))
+}
+
+/// Input device names, the shape both `config.get`'s `devices` field and the
+/// `devices` method want. `capture::input_devices()` hits real CoreAudio, so
+/// no test may assert its contents — only that the shape is an array.
+fn input_device_names() -> Vec<String> {
+    crate::capture::input_devices()
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// The `config.get` method: the settings payload the window's Settings page
+/// receives, built the same way [`crate::settings`]'s `push` does but reading
+/// only through `paths` — never `Config::load`, `roster::load` or
+/// `session::home()`, all of which reach the user's real files.
+fn config_get(paths: &Paths) -> Value {
+    let cfg = Config::load_from(&paths.config_file);
+    let home = std::env::var("HOME").unwrap_or_default();
+    let latest = session::latest(&paths.root());
+    json!({
+        "apps": cfg.apps,
+        "input_device": cfg.input_device,
+        "diarize": cfg.diarize,
+        "threshold": cfg.threshold,
+        "sessions_dir": cfg.sessions_dir,
+        "devices": input_device_names(),
+        "default_dir": format!("{home}/Documents/Ambient"),
+        "ask_before_recording": cfg.ask_before_recording,
+        "audio_retention": match cfg.audio_retention_days {
+            None => "forever".to_string(),
+            Some(n) => n.to_string(),
+        },
+        "roster": roster::load_from(&paths.roster_file),
+        "latest_session": latest
+            .as_deref()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_string()),
+    })
+}
+
+/// The `config.set` method: change one setting and hand back the fresh
+/// `config.get` payload. Refuses a `sessions_dir` change while a session is
+/// recording before anything is loaded, and refuses an unknown key before
+/// anything is saved — nothing is written on either refusal.
+fn config_set(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
+    let args = params.as_object().ok_or_else(|| {
+        ApiError::InvalidParams("`config.set` needs a string `key` and `value`".into())
+    })?;
+    let key = args
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`key` must be a string".into()))?;
+    let value = args
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`value` must be a string".into()))?;
+
+    let live = session::live_session_in(&paths.root());
+    crate::config::refuse_while_live(key, live.as_deref())
+        .map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+
+    let mut cfg = Config::load_from(&paths.config_file);
+    cfg.set(key, value)
+        .map_err(|e| ApiError::InvalidParams(format!("{e:#}")))?;
+    cfg.save_to(&paths.config_file)
+        .map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(config_get(paths))
+}
+
+/// The `roster.list` method: every name on the roster.
+fn roster_list(paths: &Paths) -> Value {
+    json!(roster::load_from(&paths.roster_file))
+}
+
+/// The `roster.add` method: add a name, then answer the roster.
+fn roster_add(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
+    let name = params
+        .as_object()
+        .and_then(|o| o.get("name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`name` must be a string".into()))?;
+    let mut names = roster::load_from(&paths.roster_file);
+    roster::add(&mut names, name);
+    roster::save_to(&paths.roster_file, &names).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(json!(names))
+}
+
+/// The `roster.remove` method: remove a name, then answer the roster.
+fn roster_remove(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
+    let name = params
+        .as_object()
+        .and_then(|o| o.get("name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`name` must be a string".into()))?;
+    let mut names = roster::load_from(&paths.roster_file);
+    roster::remove(&mut names, name);
+    roster::save_to(&paths.roster_file, &names).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(json!(names))
+}
+
+/// The `speakers.name` method: give every line labelled `label` the name
+/// `name`. Writes `edits.jsonl`, so the entry point claims the lock around
+/// the call the same way [`session_update`] does.
+fn speakers_name(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
+    let args = params.as_object().ok_or_else(|| {
+        ApiError::InvalidParams("`speakers.name` needs `session`, `label` and `name`".into())
+    })?;
+    let id = args
+        .get("session")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
+    let label = args
+        .get("label")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`label` must be a string".into()))?;
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`name` must be a string".into()))?;
+
+    let dir = session_dir(&paths.root(), id).map_err(ApiError::Failed)?;
+    if let Some(refusal) = symlinked(&dir) {
+        return Err(ApiError::Failed(refusal));
+    }
+    let _lock =
+        session::claim_transcription(&dir).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    let renamed =
+        session::name_speaker(&dir, label, name).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(json!({"renamed": renamed}))
+}
+
+/// The `speakers.undo` method: take back the newest batch of names a person
+/// typed for one session. Writes `edits.jsonl`, locked the same way
+/// [`speakers_name`] is.
+fn speakers_undo(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
+    let id = params
+        .as_object()
+        .and_then(|o| o.get("session"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
+
+    let dir = session_dir(&paths.root(), id).map_err(ApiError::Failed)?;
+    if let Some(refusal) = symlinked(&dir) {
+        return Err(ApiError::Failed(refusal));
+    }
+    let _lock =
+        session::claim_transcription(&dir).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    let reverted =
+        session::undo_last_naming(&dir).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(json!({"reverted": reverted}))
+}
+
+/// The `speakers.unnamed` method: speaker labels nobody has named yet, each
+/// with the first thing that voice said. Read-only, so no lock, but resolved
+/// through the same [`session_dir`]/[`symlinked`] containment as every other
+/// session-taking method.
+fn speakers_unnamed(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
+    let id = params
+        .as_object()
+        .and_then(|o| o.get("session"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
+
+    let dir = session_dir(&paths.root(), id).map_err(ApiError::Failed)?;
+    if let Some(refusal) = symlinked(&dir) {
+        return Err(ApiError::Failed(refusal));
+    }
+    let labels = session::unnamed_labels(&dir).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(json!(labels
+        .into_iter()
+        .map(|(label, sample)| json!({"label": label, "sample": sample}))
+        .collect::<Vec<_>>()))
 }
 
 /// `root/id`, or why that is not a session of this machine. An id is one path
@@ -690,5 +873,301 @@ mod tests {
         let (paths, _root) = temp_paths("roster-field");
         assert!(!paths.roster_file.exists());
         assert!(roster::path() != paths.roster_file);
+    }
+
+    /// A session fixture with two lines, both `SPEAKER_00`, one per track —
+    /// the same shape `session.rs`'s
+    /// `undoing_a_naming_puts_the_label_back_on_every_line_it_took` builds, so
+    /// `speakers.name` renames exactly 2 lines and not 1 or 3.
+    fn speaker_session(root: &Path, id: &str) -> PathBuf {
+        let dir = root.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = [
+            session::RawRecord {
+                track: session::Track::Call,
+                start_ms: 0,
+                end_ms: 2000,
+                text: "shall we start with the export spec".into(),
+                confidence: 0.9,
+            },
+            session::RawRecord {
+                track: session::Track::Room,
+                start_ms: 2100,
+                end_ms: 4000,
+                text: "yes, go ahead".into(),
+                confidence: 0.9,
+            },
+        ];
+        let body: String = raw
+            .iter()
+            .map(|r| format!("{}\n", serde_json::to_string(r).unwrap()))
+            .collect();
+        std::fs::write(dir.join("raw.jsonl"), body).unwrap();
+
+        let edits = [
+            session::Edit::Speaker {
+                target: session::Target {
+                    track: session::Track::Call,
+                    start_ms: 0,
+                },
+                name: "SPEAKER_00".into(),
+                by: session::DIARIZE_BY.into(),
+                at: "2026-01-01T09:00:00+00:00".into(),
+            },
+            session::Edit::Speaker {
+                target: session::Target {
+                    track: session::Track::Room,
+                    start_ms: 2100,
+                },
+                name: "SPEAKER_00".into(),
+                by: session::DIARIZE_BY.into(),
+                at: "2026-01-01T09:00:00+00:00".into(),
+            },
+        ];
+        let body: String = edits
+            .iter()
+            .map(|e| format!("{}\n", serde_json::to_string(e).unwrap()))
+            .collect();
+        std::fs::write(dir.join("edits.jsonl"), body).unwrap();
+        dir
+    }
+
+    /// The same shape as [`speaker_session`], but labelled `call-1`/`room-1`
+    /// — diarization's own generated labels, the shape `unnamed_labels`
+    /// requires. `SPEAKER_00` does not match `<track>-<n>` and so would leave
+    /// `speakers.unnamed` empty.
+    fn unnamed_session(root: &Path, id: &str) -> PathBuf {
+        let dir = root.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = [
+            session::RawRecord {
+                track: session::Track::Call,
+                start_ms: 0,
+                end_ms: 2000,
+                text: "shall we start with the export spec".into(),
+                confidence: 0.9,
+            },
+            session::RawRecord {
+                track: session::Track::Room,
+                start_ms: 2100,
+                end_ms: 4000,
+                text: "yes, go ahead".into(),
+                confidence: 0.9,
+            },
+        ];
+        let body: String = raw
+            .iter()
+            .map(|r| format!("{}\n", serde_json::to_string(r).unwrap()))
+            .collect();
+        std::fs::write(dir.join("raw.jsonl"), body).unwrap();
+
+        let edits = [
+            session::Edit::Speaker {
+                target: session::Target {
+                    track: session::Track::Call,
+                    start_ms: 0,
+                },
+                name: "call-1".into(),
+                by: session::DIARIZE_BY.into(),
+                at: "2026-01-01T09:00:00+00:00".into(),
+            },
+            session::Edit::Speaker {
+                target: session::Target {
+                    track: session::Track::Room,
+                    start_ms: 2100,
+                },
+                name: "room-1".into(),
+                by: session::DIARIZE_BY.into(),
+                at: "2026-01-01T09:00:00+00:00".into(),
+            },
+        ];
+        let body: String = edits
+            .iter()
+            .map(|e| format!("{}\n", serde_json::to_string(e).unwrap()))
+            .collect();
+        std::fs::write(dir.join("edits.jsonl"), body).unwrap();
+        dir
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`config.get\`` and
+    /// `## \`config.set\`` sections. Item 3's first named test: `diarize`
+    /// flips off through `config.set` and shows up off through `config.get`.
+    #[test]
+    fn config_set_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, _root) = temp_paths("config-set-docs");
+
+        let request: Value = serde_json::from_str(r#"{"key": "diarize", "value": "off"}"#).unwrap();
+        let set = call("config.set", &request, &paths).unwrap();
+        assert_eq!(set["diarize"], json!(false));
+
+        let got = call("config.get", &json!({}), &paths).unwrap();
+        assert_eq!(got["diarize"], json!(false));
+        let keys: std::collections::BTreeSet<&str> = got
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "apps",
+                "input_device",
+                "diarize",
+                "threshold",
+                "sessions_dir",
+                "devices",
+                "default_dir",
+                "ask_before_recording",
+                "audio_retention",
+                "roster",
+                "latest_session",
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<&str>>()
+        );
+        assert!(got["devices"].is_array());
+    }
+
+    /// Item 3's second named test: `config.set` of `sessions_dir` while a
+    /// session is recording is `Err(Failed)` mentioning "recording", and
+    /// nothing is written.
+    #[test]
+    fn config_set_of_sessions_dir_refuses_while_a_session_is_recording() {
+        let (paths, root) = temp_paths("config-set-live");
+        let dir = root.join("2026-09-05-1200").join("audio");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("room.native.wav"), b"live").unwrap();
+
+        let before = Config::load_from(&paths.config_file);
+        let err = call(
+            "config.set",
+            &json!({"key": "sessions_dir", "value": "/tmp/elsewhere"}),
+            &paths,
+        )
+        .unwrap_err();
+        match err {
+            ApiError::Failed(m) => assert!(m.contains("recording"), "{m}"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(Config::load_from(&paths.config_file), before);
+    }
+
+    #[test]
+    fn config_set_of_an_unknown_key_is_invalid_params() {
+        let (paths, _root) = temp_paths("config-set-unknown");
+        let err = call("config.set", &json!({"key": "nope", "value": "x"}), &paths).unwrap_err();
+        assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`roster.add\`` and
+    /// `## \`roster.list\`` sections.
+    #[test]
+    fn roster_add_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, _root) = temp_paths("roster-add-docs");
+
+        let request: Value = serde_json::from_str(r#"{"name": "Ana"}"#).unwrap();
+        let added = call("roster.add", &request, &paths).unwrap();
+        assert_eq!(added, json!(["Ana"]));
+
+        let listed = call("roster.list", &json!({}), &paths).unwrap();
+        assert_eq!(listed, json!(["Ana"]));
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`roster.remove\``
+    /// section.
+    #[test]
+    fn roster_remove_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, _root) = temp_paths("roster-remove-docs");
+        call("roster.add", &json!({"name": "Ana"}), &paths).unwrap();
+
+        let request: Value = serde_json::from_str(r#"{"name": "Ana"}"#).unwrap();
+        let got = call("roster.remove", &request, &paths).unwrap();
+        assert_eq!(got, json!([]));
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`speakers.name\``
+    /// and `## \`speakers.undo\`` sections. Item 3's remaining named tests:
+    /// `speakers.name` returns `{"renamed": 2}`, and `speakers.undo` run
+    /// after it in the same test (so `edits.jsonl` exists) returns
+    /// `{"reverted": 2}`.
+    #[test]
+    fn speakers_name_and_undo_answer_the_documented_request_with_the_documented_shape() {
+        let (paths, root) = temp_paths("speakers-name-docs");
+        speaker_session(&root, "2026-09-05-1200");
+
+        let request: Value = serde_json::from_str(
+            r#"{"session": "2026-09-05-1200", "label": "SPEAKER_00", "name": "Ana"}"#,
+        )
+        .unwrap();
+        let got = call("speakers.name", &request, &paths).unwrap();
+        assert_eq!(got, json!({"renamed": 2}));
+
+        let undo_request: Value =
+            serde_json::from_str(r#"{"session": "2026-09-05-1200"}"#).unwrap();
+        let got = call("speakers.undo", &undo_request, &paths).unwrap();
+        assert_eq!(got, json!({"reverted": 2}));
+    }
+
+    #[test]
+    fn speakers_unnamed_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, root) = temp_paths("speakers-unnamed-docs");
+        unnamed_session(&root, "2026-09-05-1200");
+
+        let request: Value = serde_json::from_str(r#"{"session": "2026-09-05-1200"}"#).unwrap();
+        let got = call("speakers.unnamed", &request, &paths).unwrap();
+        assert_eq!(
+            got,
+            json!([
+                {"label": "call-1", "sample": "shall we start with the export spec"},
+                {"label": "room-1", "sample": "yes, go ahead"}
+            ])
+        );
+    }
+
+    #[test]
+    fn devices_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, _root) = temp_paths("devices-docs");
+        let got = call("devices", &json!({}), &paths).unwrap();
+        assert!(got["devices"].is_array());
+    }
+
+    /// Item 3's last named test: the real config and roster files, which
+    /// this whole unit is forbidden from touching, are unchanged (or still
+    /// absent) after a run that exercises `config.*`, `roster.*` and
+    /// `speakers.*` end to end.
+    #[test]
+    fn the_real_config_and_roster_files_are_never_touched() {
+        let before_config = std::fs::read(crate::config::path()).ok();
+        let before_roster = std::fs::read(roster::path()).ok();
+
+        let (paths, root) = temp_paths("real-files-untouched");
+        speaker_session(&root, "2026-09-05-1200");
+        call(
+            "config.set",
+            &json!({"key": "diarize", "value": "off"}),
+            &paths,
+        )
+        .unwrap();
+        call("config.get", &json!({}), &paths).unwrap();
+        call("roster.add", &json!({"name": "Ana"}), &paths).unwrap();
+        call("roster.list", &json!({}), &paths).unwrap();
+        call(
+            "speakers.name",
+            &json!({"session": "2026-09-05-1200", "label": "SPEAKER_00", "name": "Ana"}),
+            &paths,
+        )
+        .unwrap();
+        call(
+            "speakers.undo",
+            &json!({"session": "2026-09-05-1200"}),
+            &paths,
+        )
+        .unwrap();
+
+        let after_config = std::fs::read(crate::config::path()).ok();
+        let after_roster = std::fs::read(roster::path()).ok();
+        assert_eq!(before_config, after_config);
+        assert_eq!(before_roster, after_roster);
     }
 }

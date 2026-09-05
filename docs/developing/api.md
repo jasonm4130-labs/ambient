@@ -198,6 +198,177 @@ Every format but `markdown` reads the raw transcript folded with
 speakerphone overlap keeps both copies where the markdown document would drop
 one.
 
+## `config.get`
+
+The settings payload behind the window's Settings page: the same shape
+`src/settings.rs`'s `push` sends it today, minus `unnamed` (now
+`speakers.unnamed`, which takes a `session`).
+
+Request:
+
+```json
+{}
+```
+
+Reply:
+
+```json
+{
+  "apps": [],
+  "input_device": null,
+  "diarize": true,
+  "threshold": 0.55,
+  "sessions_dir": null,
+  "devices": ["MacBook Pro Microphone"],
+  "default_dir": "/Users/ana/Documents/Ambient",
+  "ask_before_recording": true,
+  "audio_retention": "7",
+  "roster": ["Ana"],
+  "latest_session": "2026-09-05-1200"
+}
+```
+
+`devices` is whatever CoreAudio reports as attached microphones right now, so
+its contents vary between calls. `audio_retention` is a string (`"forever"`
+or a number of days as a string); the *settable* key is
+`audio_retention_days`, a number or `"forever"`.
+
+## `config.set`
+
+Change one setting, then answer the fresh `config.get` payload.
+
+Request:
+
+```json
+{"key": "diarize", "value": "off"}
+```
+
+Reply: `config.get`'s reply, with the change applied.
+
+Refuses `sessions_dir` while a session is recording, saying so; refuses a key
+`Config::set` does not recognise as `InvalidParams`. Nothing is written on
+either refusal.
+
+## `roster.list`
+
+Every name on the roster, alphabetically.
+
+Request:
+
+```json
+{}
+```
+
+Reply:
+
+```json
+["Ana"]
+```
+
+## `roster.add`
+
+Add a name to the roster (a no-op if it is already there), then answer the
+roster.
+
+Request:
+
+```json
+{"name": "Ana"}
+```
+
+Reply:
+
+```json
+["Ana"]
+```
+
+## `roster.remove`
+
+Remove a name from the roster, then answer the roster. Does not unname
+anyone in a past recording — those names live in each session's
+`edits.jsonl`.
+
+Request:
+
+```json
+{"name": "Ana"}
+```
+
+Reply:
+
+```json
+[]
+```
+
+## `speakers.name`
+
+Give every line labelled `label` in one session the name `name`. Appends to
+`edits.jsonl`; `raw.jsonl` is untouched.
+
+Request:
+
+```json
+{"session": "2026-09-05-1200", "label": "SPEAKER_00", "name": "Ana"}
+```
+
+Reply:
+
+```json
+{"renamed": 2}
+```
+
+## `speakers.undo`
+
+Take back the newest batch of names a person typed for one session.
+
+Request:
+
+```json
+{"session": "2026-09-05-1200"}
+```
+
+Reply:
+
+```json
+{"reverted": 2}
+```
+
+## `speakers.unnamed`
+
+Speaker labels nobody has named yet in one session, each with the first thing
+that voice said.
+
+Request:
+
+```json
+{"session": "2026-09-05-1200"}
+```
+
+Reply:
+
+```json
+[
+  {"label": "call-1", "sample": "shall we start with the export spec"},
+  {"label": "room-1", "sample": "yes, go ahead"}
+]
+```
+
+## `devices`
+
+Input device names, for the Settings page's device picker.
+
+Request:
+
+```json
+{}
+```
+
+Reply:
+
+```json
+{"devices": ["MacBook Pro Microphone"]}
+```
+
 ## `status`
 
 What Ambient is doing right now: the live session, if any, and what is
