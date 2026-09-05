@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { judge as routeJudge } from "./no-route-around-ci.mjs";
+import { judge as routeJudge, protectedBranches } from "./no-route-around-ci.mjs";
 import { judge as testsJudge } from "./tests-are-readonly.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -21,24 +21,69 @@ test("no-route-around-ci: the merge itself and every bypass of it are denied", (
   assert.ok(routeJudge("gh pr checks 12 --watch && gh pr merge 12", []).length);
   assert.ok(routeJudge("gh workflow disable land.yml", []).length);
   assert.ok(routeJudge("gh variable set LANDING_STATE --body run", []).length);
+  assert.ok(routeJudge("gh variable delete LANDING_STATE", []).length);
+  assert.ok(routeJudge("gh variable remove LANDING_STATE", []).length);
   assert.ok(routeJudge("git push --force origin land/x-t1", []).length);
   assert.ok(routeJudge("git push -f origin land/x-t1", []).length);
   assert.ok(routeJudge("git push origin +land/x-t1", []).length);
   assert.ok(routeJudge("git push origin main", []).length);
   assert.ok(routeJudge("git push origin HEAD:main", []).length);
   assert.ok(routeJudge("git push origin land/x:refs/heads/main", []).length);
+  assert.ok(routeJudge("git -C . push origin HEAD:main", []).length);
+  assert.ok(routeJudge("command git push origin HEAD:main", []).length);
+  assert.ok(routeJudge("exec git push origin main", []).length);
+  assert.ok(routeJudge("env GIT_DIR=.git git push origin HEAD:main", []).length);
+  assert.ok(routeJudge("\\git push origin HEAD:main", []).length);
+  assert.ok(routeJudge("/usr/bin/git push origin main", []).length);
+  assert.ok(routeJudge("cd x && 'git' push origin HEAD:main", []).length);
+  assert.ok(routeJudge("command git commit --no-verify -m x", []).length);
+  assert.ok(routeJudge("git -C /tmp/wt --no-pager push --force origin land/x-t1", []).length);
+  assert.ok(routeJudge("git --git-dir=.git commit --no-verify -m x", []).length);
+  assert.ok(routeJudge("git -c user.name=x commit -m x", [".github/workflows/ci.yml"]).length);
   assert.ok(routeJudge("git commit --no-verify -m x", []).length);
   assert.ok(routeJudge("git commit -m x", [".github/workflows/ci.yml"]).length);
+  assert.ok(routeJudge("git commit -m x", [".claude/hooks/no-route-around-ci.mjs"]).length);
+  assert.ok(routeJudge("git commit -m x", [".claude/settings.json"]).length);
+  assert.ok(routeJudge("gh api -X PUT repos/o/r/pulls/12/merge", []).length);
+  assert.ok(routeJudge("gh api --method PATCH repos/o/r/actions/variables/LANDING_STATE -f value=run", []).length);
+  assert.ok(routeJudge("gh api repos/o/r/git/refs -f ref=refs/heads/main -f sha=abc", []).length);
+  assert.ok(routeJudge("gh api repos/o/r/pulls/12/merge --input body.json", []).length);
+});
+
+test("no-route-around-ci: the configured base branch is protected like main", () => {
+  const bases = new Set(["main", "release"]);
+  assert.ok(routeJudge("git push origin HEAD:release", [], bases).length);
+  assert.ok(routeJudge("git push origin release", [], bases).length);
+  assert.deepEqual(routeJudge("git push origin HEAD:release", []), [], "unconfigured: only main");
+  const dir = mkdtempSync(join(tmpdir(), "ns-base-"));
+  try {
+    const git = (...a) => execFileSync("git", a, { cwd: dir, stdio: "ignore" });
+    git("init", "-q", "-b", "main"); git("config", "user.email", "t@x"); git("config", "user.name", "t"); git("config", "commit.gpgsign", "false");
+    mkdirSync(join(dir, "loop"));
+    writeFileSync(join(dir, "loop", "config"), ': "${PLAN:=p.md}"\n: "${BASE:=release}"\n');
+    assert.deepEqual([...protectedBranches(dir)], ["main"], "uncommitted config is not consulted");
+    git("add", "loop/config"); git("commit", "-q", "-m", "cfg");
+    assert.deepEqual([...protectedBranches(dir)].sort(), ["main", "release"]);
+    writeFileSync(join(dir, "loop", "config"), ': "${BASE:=scratch}"\n');
+    assert.deepEqual([...protectedBranches(dir)].sort(), ["main", "release"], "a working-copy edit changes nothing");
+    assert.ok(routeJudge("git commit -m x", ["loop/config"]).length, "and committing it is denied");
+    assert.deepEqual([...protectedBranches(join(tmpdir()))], ["main"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("no-route-around-ci: the loop's own commands pass", () => {
   assert.deepEqual(routeJudge("git push -u origin land/x-t1", []), []);
   assert.deepEqual(routeJudge("git push", []), []);
+  assert.deepEqual(routeJudge("git -C /tmp/wt push -u origin land/x-t1", []), []);
+  assert.deepEqual(routeJudge("command git push -u origin land/x-t1", []), []);
   assert.deepEqual(routeJudge("gh pr create --title '[task 1] x' --label land", []), []);
   assert.deepEqual(routeJudge("gh pr view 12 --json state", []), []);
   assert.deepEqual(routeJudge("gh variable get LANDING_STATE", []), []);
   assert.deepEqual(routeJudge("git commit -F - <<'EOF'\nx\nEOF", ["src/a.rs", "README.md"]), []);
-  assert.deepEqual(routeJudge("./merge-pr.sh 12", []), []);
+  assert.deepEqual(routeJudge("./loop/merge-pr.sh 12", []), []);
+  assert.deepEqual(routeJudge("gh api repos/o/r/pulls/12/checks", []), []);
+  assert.deepEqual(routeJudge("gh api -X GET repos/o/r/branches/main/protection", []), []);
+  assert.deepEqual(routeJudge("gh api repos/o/r/commits/abc/check-runs --jq '.check_runs[].name'", []), []);
   assert.deepEqual(routeJudge("git switch main && git pull --ff-only", []), []);
 });
 
@@ -69,6 +114,7 @@ function repo() {
   git("init", "-q", "-b", "main");
   git("config", "user.email", "t@example.com");
   git("config", "user.name", "t");
+  git("config", "commit.gpgsign", "false"); // a global signing key would prompt and hang the test
   mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(join(dir, "src", "a.rs"), "fn a() {}\n#[cfg(test)]\nmod t {\n    #[test]\n    fn x() {}\n}\n");
