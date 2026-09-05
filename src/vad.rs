@@ -21,7 +21,7 @@ const OFF: f32 = 0.35;
 const MIN_SPEECH_MS: usize = 250;
 const MIN_SILENCE_MS: usize = 400;
 /// Keep a little audio either side; consonants at a boundary are quiet.
-const PAD_MS: usize = 200;
+pub const PAD_MS: usize = 200;
 
 /// Silero reports 0.6–0.9 on quiet room noise — confidently enough that no
 /// probability threshold separates it from real speech at 0.92–1.00. Level
