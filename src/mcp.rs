@@ -11,11 +11,17 @@
 //! and sessions folder as arguments so the tests drive exactly what `main`
 //! drives, with buffers in place of pipes.
 
+use crate::api::{self, ApiError, Paths};
+use crate::config;
+use crate::roster;
+#[cfg(test)]
 use crate::session;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 /// The revision this server implements, and the only one it claims. A client
 /// offering any other gets this back rather than its own version, which is
@@ -117,35 +123,34 @@ fn initialize() -> Value {
     })
 }
 
+/// The three tools `tools/list` reports, selected out of [`api::methods`] by
+/// name rather than rendered wholesale: `tools_list_describes_the_three_tools`
+/// asserts this list by whole-array equality, so a later unit's new
+/// `api::methods()` entry must not silently appear here. `cargo test mcp::`
+/// staying green after later units add methods is the proof this held.
+const MCP_TOOLS: [&str; 3] = ["sessions", "transcript", "status"];
+
 fn tools() -> Value {
-    json!([
-        {
-            "name": "sessions",
-            "description": "Every recorded session on this machine, newest first.",
-            "inputSchema": {"type": "object", "properties": {}},
-        },
-        {
-            "name": "transcript",
-            "description": "The lines of one session, including one being recorded now.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "session": {"type": "string", "description": "The session id, as `sessions` reports it."},
-                    "since": {"type": "integer", "description": "Skip this many lines; pass back the previous reply's `next`."},
-                    "verbatim": {"type": "boolean", "description": "Return the words as recognised, before any naming edits."},
-                },
-                "required": ["session"],
-            },
-        },
-        {
-            "name": "status",
-            "description": "What Ambient is doing right now: the live session, if any, and what is waiting.",
-            "inputSchema": {"type": "object", "properties": {}},
-        },
-    ])
+    let all = api::methods();
+    let ordered: Vec<Value> = MCP_TOOLS
+        .iter()
+        .map(|name| {
+            let m = all.iter().find(|m| m.name == *name).unwrap_or_else(|| {
+                panic!("MCP_TOOLS names a method api::methods() does not have: {name}")
+            });
+            json!({
+                "name": m.name,
+                "description": m.description,
+                "inputSchema": m.input_schema,
+            })
+        })
+        .collect();
+    Value::Array(ordered)
 }
 
-/// `tools/call`. Arguments are validated before anything on disk is touched.
+/// `tools/call`. Arguments are validated before anything on disk is touched,
+/// then routed through [`api::call`] — the one dispatcher `ambient mcp` and
+/// (later) the window both call.
 fn call(params: Option<&Value>, root: &Path) -> Result<Value, Refusal> {
     let params = params
         .and_then(Value::as_object)
@@ -159,144 +164,18 @@ fn call(params: Option<&Value>, root: &Path) -> Result<Value, Refusal> {
     if params.get("arguments").is_some_and(|a| !a.is_object()) {
         return Err(invalid_params("`arguments` must be an object"));
     }
-    match name {
-        "status" => Ok(content(&status(root), false)),
-        "sessions" => Ok(content(&sessions(root), false)),
-        "transcript" => transcript(root, params.get("arguments")),
-        other => Err(invalid_params(format!("no such tool {other:?}"))),
-    }
-}
-
-/// The `sessions` tool: every session directory under the root, newest first.
-///
-/// Enumerated by [`session_dirs`] rather than by [`session::summaries`], which
-/// walks with `is_dir` and so would summarise — and read the `session.json` of
-/// — whatever a link in the folder points at. A session whose files include a
-/// symlink is listed with `error` set and no metadata: it is on this machine
-/// and a person should see it, but nothing behind that link is read.
-fn sessions(root: &Path) -> Value {
-    let listed: Vec<Value> = session_dirs(root)
-        .iter()
-        .rev()
-        .filter_map(|dir| match symlinked(dir) {
-            Some(refusal) => Some(session::SessionSummary {
-                id: dir.file_name()?.to_string_lossy().into_owned(),
-                dir: dir.clone(),
-                name: None,
-                started_at: None,
-                duration_s: None,
-                transcribed: dir.join("transcript.md").is_file(),
-                live: session::is_growing(&dir.join("audio").join("room.native.wav")),
-                transcribing: session::live_transcriber(dir).is_some(),
-                error: Some(refusal),
-            }),
-            None => session::summarise(dir),
-        })
-        .filter_map(|s| serde_json::to_value(s).ok())
-        .collect();
-    Value::Array(listed)
-}
-
-/// The `transcript` tool. Every argument's JSON type is checked here, before
-/// any of them reaches the filesystem: a wrong type is the client's bug and a
-/// protocol error, while a session that cannot be read is a tool result the
-/// model can act on.
-fn transcript(root: &Path, arguments: Option<&Value>) -> Result<Value, Refusal> {
-    let args = arguments
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_params("`transcript` needs a string `session`"))?;
-    let id = args
-        .get("session")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_params("`session` must be a string"))?;
-    let since = match args.get("since") {
-        None => 0,
-        Some(v) => v
-            .as_u64()
-            .ok_or_else(|| invalid_params("`since` must be a whole number of lines"))?,
+    let empty = json!({});
+    let arguments = params.get("arguments").unwrap_or(&empty);
+    let paths = Paths {
+        config_file: config::path(),
+        roster_file: roster::path(),
+        sessions_root: Some(root.to_path_buf()),
     };
-    let verbatim = match args.get("verbatim") {
-        None => false,
-        Some(v) => v
-            .as_bool()
-            .ok_or_else(|| invalid_params("`verbatim` must be true or false"))?,
-    };
-    Ok(match read(root, id, since, verbatim) {
-        Ok(value) => content(&value, false),
-        Err(message) => content(&Value::String(message), true),
-    })
-}
-
-/// One session from `since` lines on, or the reason it could not be read.
-///
-/// The cursor counts lines in the order `raw.jsonl` holds them, which is why
-/// this reads [`session::transcript_appended`] and not [`session::transcript`]:
-/// the room track is written before the call track and their clocks are
-/// independent, so a cursor on `start_ms` would step past call lines that
-/// arrived later and never show them. A session with no `raw.jsonl` yet is not
-/// a failure — it is a recording that has produced no words so far, and it
-/// answers with an empty list and a `next` of 0.
-fn read(root: &Path, id: &str, since: u64, verbatim: bool) -> Result<Value, String> {
-    let dir = session_dir(root, id)?;
-    if let Some(refusal) = symlinked(&dir) {
-        return Err(refusal);
+    match api::call(name, arguments, &paths) {
+        Ok(v) => Ok(content(&v, false)),
+        Err(ApiError::InvalidParams(m)) => Err(invalid_params(m)),
+        Err(ApiError::Failed(m)) => Ok(content(&Value::String(m), true)),
     }
-    let lines = if dir.join("raw.jsonl").exists() {
-        session::transcript_appended(&dir, verbatim).map_err(|e| format!("{e:#}"))?
-    } else {
-        Vec::new()
-    };
-    let next = lines.len() as u64;
-    let seen = usize::try_from(since).unwrap_or(usize::MAX);
-    let unseen: Vec<session::Line> = lines.into_iter().skip(seen).collect();
-    Ok(json!({"session": id, "state": state(&dir), "next": next, "lines": unseen}))
-}
-
-/// `root/id`, or why that is not a session of this machine. An id is one path
-/// segment: a separator or a `..` in it is a request for a path outside the
-/// sessions folder, and is answered before anything is opened. The directory
-/// itself is tested with `symlink_metadata`, so a link in the folder is no
-/// more a session here than it is to [`session_dirs`].
-fn session_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
-    if id.is_empty() || id == "." || id == ".." || id.contains('/') {
-        return Err(format!("{id:?} is not a session id"));
-    }
-    let dir = root.join(id);
-    if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
-        return Err(format!("no session {id}"));
-    }
-    Ok(dir)
-}
-
-/// The one word for what is happening to a session, in the order it is
-/// happening: a capture in flight outranks a transcriber, which outranks the
-/// `transcript.md` a previous run left. `pending` is the rest — captured, and
-/// waiting for the queue.
-fn state(dir: &Path) -> &'static str {
-    if session::is_growing(&dir.join("audio").join("room.native.wav")) {
-        "live"
-    } else if session::live_transcriber(dir).is_some() {
-        "transcribing"
-    } else if dir.join("transcript.md").is_file() {
-        "done"
-    } else {
-        "pending"
-    }
-}
-
-/// The files a tool reads out of a session directory.
-const READ_FROM_SESSIONS: [&str; 3] = ["session.json", "raw.jsonl", "edits.jsonl"];
-
-/// The refusal for the first of those files that exists and is not a regular
-/// file. Containment is the whole point: the directory being inside the root
-/// says nothing about where a file inside it points, and following one would
-/// serve a file from anywhere on disk as a session of this machine.
-fn symlinked(dir: &Path) -> Option<String> {
-    READ_FROM_SESSIONS
-        .iter()
-        .map(|name| dir.join(name))
-        .find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| !m.is_file()))
-        .map(|p| format!("refusing symlink {}", p.display()))
 }
 
 /// A tool result. The value is serialised compactly into one text block, which
@@ -307,60 +186,6 @@ fn content(value: &Value, is_error: bool) -> Value {
         other => other.to_string(),
     };
     json!({"content": [{"type": "text", "text": text}], "isError": is_error})
-}
-
-/// Every field of `status` is drawn from [`session_dirs`], and none of them
-/// from anywhere else.
-///
-/// `session::live_session_in` and `session::captured_awaiting_transcript` both
-/// enumerate the root with `is_dir`, which follows a symlink: left to
-/// themselves they will happily report a directory somewhere else on disk as a
-/// session of this machine. `live` repeats `live_session_in`'s rule here — the
-/// last id whose native scratch wav is still growing — rather than filtering
-/// its answer, because a link sorting after the real live session would
-/// otherwise not merely be excluded but hide it.
-fn status(root: &Path) -> Value {
-    let dirs = session_dirs(root);
-    let live = dirs
-        .iter()
-        .rev()
-        .find(|d| session::is_growing(&d.join("audio").join("room.native.wav")))
-        .and_then(|d| d.file_name().map(|n| json!({"id": n.to_string_lossy()})));
-    let awaiting = session::captured_awaiting_transcript(root)
-        .into_iter()
-        .filter(|d| dirs.contains(d))
-        .count();
-    json!({
-        "live": live,
-        "awaiting_transcript": awaiting,
-        "sessions": dirs.len(),
-    })
-}
-
-/// The directories under `root` that are sessions, sorted by id.
-///
-/// A directory counts when it holds a `session.json` or a growing native
-/// scratch wav — the two ends of a recording's life — which is what keeps a
-/// stray `notes` folder out of the count. Unlike [`session::list`] the test is
-/// `symlink_metadata`, so a link in the sessions folder is not a session
-/// whatever it points at. This is the server's containment, which is why
-/// [`status`] answers every one of its fields from this set, and why both
-/// `sessions` and `status.sessions` count it and so cannot disagree.
-fn session_dirs(root: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()))
-        .filter(|p| {
-            p.join("session.json").is_file()
-                || session::is_growing(&p.join("audio").join("room.native.wav"))
-        })
-        .collect();
-    dirs.sort();
-    dirs
 }
 
 #[cfg(test)]
