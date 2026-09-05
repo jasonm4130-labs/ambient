@@ -143,6 +143,27 @@ find.
 A second run does no network and rewrites nothing; `--force` restitches from
 the extracted corpus without re-downloading it.
 
+## Word error rate on the fixture
+
+`cargo run --release --bin wer -- [--manifest <path>] [--json <path>]`, on
+2026-09-05. The harness runs what `ambient record` runs for a finished track —
+`session::model_paths`, `Vad::turns(&samples, 30)`, `transcribe_segments` — so
+these are the numbers a user gets, on the shipped v3-int8 model.
+
+| Speaker | Seconds | Ref words | S | I | D | WER | Decode | Realtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1089 | 302.11 | 721 | 3 | 0 | 0 | 0.0042 | 6.61 s | 46x |
+| 1188 | 522.73 | 1296 | 29 | 2 | 4 | 0.0270 | 11.12 s | 47x |
+| 121 | 88.89 | 135 | 7 | 1 | 1 | 0.0667 | 2.03 s | 44x |
+| **total** | 913.74 | 2152 | 39 | 3 | 5 | **0.0218** | 19.77 s | 46x |
+
+The total is computed over the summed counts rather than averaged over the
+rows, so the 89-second speaker cannot outvote the 522-second one. Substitutions
+dominate at 39 against 3 insertions and 5 deletions: on clean read speech the
+segmenter is not losing words and the recogniser is not inventing them, it is
+getting them wrong. `--json` writes the same rows, the total among them with
+`speaker` reading `total`.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
