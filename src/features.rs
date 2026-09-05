@@ -174,3 +174,55 @@ pub fn read_wav(path: &str) -> anyhow::Result<Vec<f32>> {
         raw
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stationary but non-degenerate signal: silence would give every mel row
+    /// zero variance, which normalisation cannot rescale to unit std.
+    fn two_tones(len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|i| {
+                let t = i as f32 / SAMPLE_RATE;
+                0.5 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                    + 0.3 * (2.0 * std::f32::consts::PI * 1_750.0 * t).sin()
+            })
+            .collect()
+    }
+
+    /// Mean and unbiased standard deviation of one mel row over time.
+    fn row_stats(out: &[f32], frames: usize, m: usize) -> (f32, f32) {
+        let row = &out[m * frames..(m + 1) * frames];
+        let mean = row.iter().sum::<f32>() / frames as f32;
+        let var = row.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / (frames as f32 - 1.0);
+        (mean, var.sqrt())
+    }
+
+    fn expected_frames(len: usize) -> usize {
+        (len + 2 * (N_FFT / 2) - N_FFT) / HOP_LENGTH + 1
+    }
+
+    #[test]
+    fn shape_is_mel_major_over_centre_padded_frames() {
+        for len in [16_000, 23_517] {
+            let (out, frames) = log_mel(&two_tones(len));
+            assert_eq!(frames, expected_frames(len), "frames for {len} samples");
+            assert_eq!(
+                out.len(),
+                N_MELS * frames,
+                "output length for {len} samples"
+            );
+        }
+    }
+
+    #[test]
+    fn every_mel_row_is_zero_mean_unit_std() {
+        let (out, frames) = log_mel(&two_tones(16_000));
+        for m in 0..N_MELS {
+            let (mean, std) = row_stats(&out, frames, m);
+            assert!(mean.abs() < 1e-3, "row {m} mean {mean}");
+            assert!((std - 1.0).abs() < 1e-2, "row {m} std {std}");
+        }
+    }
+}
