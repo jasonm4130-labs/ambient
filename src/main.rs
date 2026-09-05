@@ -21,6 +21,7 @@ USAGE
                                        take back the last naming
   ambient meta <session-dir> name|notes|pinned|tag|untag <value>
                                        set the name/notes, pin, or add/remove a tag
+  ambient delete <session-dir> --yes   remove a session and its audio
   ambient export <session-dir> [--out <path>]
                                        write transcript.md
   ambient config [<key> <value>]       show or change settings
@@ -84,9 +85,11 @@ fn main() -> Result<()> {
             if dir.is_empty() || label.is_empty() || who.is_empty() {
                 bail!("{USAGE}");
             }
-            let n = ambient::session::name_speaker(std::path::Path::new(&dir), &label, &who)?;
+            let path = std::path::Path::new(&dir);
+            let _lock = ambient::session::claim_transcription(path)?;
+            let n = ambient::session::name_speaker(path, &label, &who)?;
             eprintln!("  {n} line(s) now attributed to {who}");
-            ambient::session::show(std::path::Path::new(&dir), false, false)
+            ambient::session::show(path, false, false)
         }
         Some("undo") => {
             let dir = args.next().unwrap_or_default();
@@ -107,6 +110,7 @@ fn main() -> Result<()> {
                 }
             }
             let path = std::path::Path::new(&dir);
+            let _lock = ambient::session::claim_transcription(path)?;
             let n = match seq {
                 Some(seq) => {
                     ambient::session::undo_seq(path, seq)?;
@@ -150,6 +154,35 @@ fn main() -> Result<()> {
                 meta.name.as_deref().unwrap_or("-"),
                 meta.tags.join(", ")
             );
+            Ok(())
+        }
+        Some("delete") => {
+            let dir = args.next().unwrap_or_default();
+            if dir.is_empty() {
+                bail!("{USAGE}");
+            }
+            let mut yes = false;
+            for a in args.by_ref() {
+                match a.as_str() {
+                    "--yes" => yes = true,
+                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+                }
+            }
+            if !yes {
+                bail!("this removes the session and its audio for good; add --yes to confirm");
+            }
+            let path = std::path::Path::new(&dir);
+            let root = path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("{dir:?} has no parent directory"))?;
+            let id = path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("{dir:?} has no session id"))?
+                .to_string_lossy()
+                .into_owned();
+            let lock = ambient::session::claim_transcription(path)?;
+            ambient::session::delete(root, &id, &lock)?;
+            println!("removed {}", path.display());
             Ok(())
         }
         Some("roster") => {
@@ -304,9 +337,11 @@ fn main() -> Result<()> {
                     other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
                 }
             }
-            let n = ambient::session::diarize_session(std::path::Path::new(&dir), threshold)?;
+            let path = std::path::Path::new(&dir);
+            let _lock = ambient::session::claim_transcription(path)?;
+            let n = ambient::session::diarize_session(path, threshold)?;
             eprintln!("  {n} edit(s) appended");
-            ambient::session::show(std::path::Path::new(&dir), false, false)
+            ambient::session::show(path, false, false)
         }
         // Read-only, and the whole of it is on stdin and stdout: nothing
         // else may print to stdout while this runs or the client sees a

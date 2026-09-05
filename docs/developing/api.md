@@ -145,6 +145,29 @@ A session still recording has no `session.json` yet and answers `Failed`
 saying so; a session a transcriber currently holds the lock on answers
 `Failed` saying it is being transcribed.
 
+## `session.delete`
+
+Remove a session directory and its audio entirely. The window shows its own
+confirm dialog before calling this; the API does not ask again.
+
+Request:
+
+```json
+{"session": "2026-09-05-1200"}
+```
+
+Reply:
+
+```json
+{"session": "2026-09-05-1200", "deleted": true}
+```
+
+Refuses a live capture — the session recording now, or either native scratch
+track still growing — saying the session is still recording, and a session a
+transcriber currently holds the lock on answers `Failed` saying it is being
+transcribed. A directory with no `session.json` and no fresh audio is a
+failed capture and is removed like any other.
+
 ## `status`
 
 What Ambient is doing right now: the live session, if any, and what is

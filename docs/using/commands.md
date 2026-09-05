@@ -200,8 +200,9 @@ of labels. Running `diarize` once more labels it again.
 
 Only names a person typed are candidates; taking back diarization's own labels
 is what re-running `diarize` does. A session where nothing has been named
-answers `nothing to undo` — naming the directory it looked in, which is also
-how a mistyped path reads.
+answers `nothing to undo` — naming the directory it looked in. A mistyped path
+fails earlier, at the lock every `undo` now claims around its call, saying it
+could not write there.
 
 `--seq <n>` reverts one edit instead, addressed by its zero-based line in
 `edits.jsonl` — the way to reach a repair, or one line of a naming. Asking for
@@ -222,6 +223,18 @@ Sets the session's name or notes, pins or unpins it, or adds/removes one tag
 or removing one that is not is a no-op rather than an error. Rewrites
 `session.json` only. A session still being captured has no `session.json` yet
 and refuses, saying so. See [the session API](../developing/api.md).
+
+## delete
+
+```sh
+ambient delete <session-dir> --yes
+```
+
+Removes the session directory and its audio for good. Without `--yes` it
+refuses and tells you to add it. Refuses a session that is still recording,
+and one a transcriber currently holds the lock on. A directory with no
+`session.json` and no fresh audio — a failed capture — deletes like any other.
+See [the session API](../developing/api.md).
 
 ## diarize
 

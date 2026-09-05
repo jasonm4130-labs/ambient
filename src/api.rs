@@ -106,6 +106,7 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
         "transcript" => transcript(&paths.root(), params),
         "search" => search(&paths.root(), params),
         "session.update" => session_update(&paths.root(), params),
+        "session.delete" => session_delete(&paths.root(), params),
         other => Err(ApiError::InvalidParams(format!("no such method {other:?}"))),
     }
 }
@@ -252,6 +253,34 @@ fn session_update(root: &Path, params: &Value) -> Result<Value, ApiError> {
     let meta =
         session::update_meta(&dir, &patch).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
     serde_json::to_value(meta).map_err(|e| ApiError::Failed(format!("{e}")))
+}
+
+/// The `session.delete` method: remove a session directory and its audio.
+/// `session` is required and must be a string. The window shows its own
+/// confirm dialog before calling this; the API does not ask again.
+///
+/// Resolved through [`session_dir`] and [`symlinked`], the same containment
+/// [`read`] and [`session_update`] use, before the lock is claimed once here
+/// at the entry point: [`session::delete`] stays lock-free so it joins the
+/// same protocol every other writer here follows.
+fn session_delete(root: &Path, params: &Value) -> Result<Value, ApiError> {
+    let args = params.as_object().ok_or_else(|| {
+        ApiError::InvalidParams("`session.delete` needs a string `session`".into())
+    })?;
+    let id = args
+        .get("session")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
+
+    let dir = session_dir(root, id).map_err(ApiError::Failed)?;
+    if let Some(refusal) = symlinked(&dir) {
+        return Err(ApiError::Failed(refusal));
+    }
+
+    let lock =
+        session::claim_transcription(&dir).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    session::delete(root, id, &lock).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(json!({"session": id, "deleted": true}))
 }
 
 /// `root/id`, or why that is not a session of this machine. An id is one path
@@ -516,6 +545,49 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`session.delete\``
+    /// section, so the doc and the dispatcher cannot drift apart.
+    #[test]
+    fn session_delete_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, root) = temp_paths("session-delete-docs");
+        let dir = root.join("2026-09-05-1200");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("session.json"), "{}").unwrap();
+        std::fs::write(dir.join("transcript.md"), "# transcript\n").unwrap();
+
+        let request: Value = serde_json::from_str(r#"{"session": "2026-09-05-1200"}"#).unwrap();
+        let got = call("session.delete", &request, &paths).unwrap();
+        assert_eq!(got, json!({"session": "2026-09-05-1200", "deleted": true}));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn session_delete_under_a_transcriber_lock_errors_and_leaves_the_directory() {
+        let (paths, root) = temp_paths("session-delete-lock");
+        let dir = root.join("2026-09-05-1200");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("session.json"), "{}").unwrap();
+        std::fs::write(dir.join("transcript.md"), "# transcript\n").unwrap();
+        std::fs::write(
+            dir.join(crate::session::TRANSCRIBING_LOCK),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        let err = call(
+            "session.delete",
+            &json!({"session": "2026-09-05-1200"}),
+            &paths,
+        )
+        .unwrap_err();
+        let message = match err {
+            ApiError::Failed(m) => m,
+            other => panic!("expected Failed, got {other:?}"),
+        };
+        assert!(message.contains("being transcribed"), "{message}");
+        assert!(dir.exists());
     }
 
     #[test]

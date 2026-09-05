@@ -1241,6 +1241,48 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
     removed
 }
 
+/// Remove a session directory and everything under it — the audio, every
+/// transcript layer, the lock file itself. Takes proof of
+/// [`claim_transcription`] rather than claiming it, following the protocol
+/// every writer here does: the *entry point* (the `api` method, the CLI arm)
+/// claims the lock once and passes the guard in, so this function stays
+/// lock-free and cannot self-conflict with a caller who is already holding it.
+///
+/// `id` is validated before anything is opened: empty, `.`, `..`, or
+/// containing a `/` is a request for something other than one directory
+/// directly under `root`, refused before it can escape it. The directory
+/// itself is tested with `symlink_metadata`, so a symlink placed at that name
+/// is refused rather than followed and its target destroyed.
+///
+/// A live capture is never removed: [`live_session_in`] naming this directory,
+/// or either native scratch track still growing, refuses with a message
+/// containing "still recording" — [`is_growing`]'s window is 10s, not the 5s
+/// this rule is sometimes described with, but that still separates a fresh
+/// file from an hour-old one. A directory with no `session.json` and no fresh
+/// audio on either track is a failed capture, and is deleted like any other.
+///
+/// Then `std::fs::remove_dir_all` while the caller still holds the lock — the
+/// lock file goes with the directory, and [`TranscribeLock`]'s `Drop` already
+/// tolerates a missing file.
+pub fn delete(root: &Path, id: &str, _lock: &TranscribeLock) -> Result<()> {
+    if id.is_empty() || id == "." || id == ".." || id.contains('/') {
+        bail!("{id:?} is not a session id");
+    }
+    let dir = root.join(id);
+    if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
+        bail!("{} is not a session directory", dir.display());
+    }
+    let audio = dir.join("audio");
+    if live_session_in(root).as_deref() == Some(dir.as_path())
+        || is_growing(&audio.join("room.native.wav"))
+        || is_growing(&audio.join("call.native.wav"))
+    {
+        bail!("{} is still recording", dir.display());
+    }
+    std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+    Ok(())
+}
+
 /// A raw record with whatever the edit layer has said about it. `Serialize`
 /// is what `show --json` hands to scripts, so the field names and the
 /// `room`/`call` spelling are a contract.
@@ -3127,6 +3169,192 @@ mod meta_tests {
 
         let after = std::fs::read_to_string(dir.join("session.json")).unwrap();
         assert_eq!(before, after);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+/// A module of its own for the same reason [`search_tests`] and
+/// [`meta_tests`] are: `cargo test session::delete` selects a test by
+/// substring of its full path, and only a module named `delete` puts
+/// `session::delete` in every one of these.
+#[cfg(test)]
+mod delete_tests {
+    use super::*;
+
+    fn fixture(test: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ambient-{test}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn write_session(dir: &Path, id: &str, started_at: &str, name: Option<&str>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let meta = SessionMeta {
+            id: id.into(),
+            name: name.map(str::to_string),
+            started_at: started_at.into(),
+            ended_at: started_at.into(),
+            duration_s: 42.0,
+            device_hz: 48000,
+            mic_hz: 48000,
+            channels: 1,
+            mic_channels: 1,
+            apps: Vec::new(),
+            model: "parakeet".into(),
+            warnings: Vec::new(),
+            tags: Vec::new(),
+            notes: String::new(),
+            pinned: false,
+        };
+        std::fs::write(
+            dir.join("session.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// An hour old — well outside [`is_growing`]'s 10s window, but nowhere
+    /// near the 7-day retention sweep either.
+    fn backdate(p: &Path) {
+        let f = std::fs::File::options().write(true).open(p).unwrap();
+        f.set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3600)),
+        )
+        .unwrap();
+    }
+
+    fn write_track(dir: &Path, name: &str) -> PathBuf {
+        let audio = dir.join("audio");
+        std::fs::create_dir_all(&audio).unwrap();
+        let p = audio.join(name);
+        std::fs::write(&p, b"not really a wav").unwrap();
+        p
+    }
+
+    #[test]
+    fn a_finished_session_is_removed() {
+        let root = fixture("delete-finished");
+        let dir = root.join("2026-01-01T0900");
+        write_session(&dir, "2026-01-01T0900", "2026-01-01T09:00:00+00:00", None);
+        std::fs::write(dir.join("transcript.md"), "# transcript\n").unwrap();
+
+        let lock = claim_transcription(&dir).unwrap();
+        delete(&root, "2026-01-01T0900", &lock).unwrap();
+        assert!(!dir.exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_failed_capture_with_no_session_json_and_stale_tracks_is_removed() {
+        let root = fixture("delete-failed-capture");
+        let dir = root.join("2026-01-01T0900");
+        std::fs::create_dir_all(&dir).unwrap();
+        backdate(&write_track(&dir, "room.native.wav"));
+        backdate(&write_track(&dir, "call.native.wav"));
+
+        let lock = claim_transcription(&dir).unwrap();
+        delete(&root, "2026-01-01T0900", &lock).unwrap();
+        assert!(!dir.exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_fresh_room_track_refuses() {
+        let root = fixture("delete-fresh-room");
+        let dir = root.join("2026-01-01T0900");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_track(&dir, "room.native.wav");
+
+        let lock = claim_transcription(&dir).unwrap();
+        let err = delete(&root, "2026-01-01T0900", &lock).unwrap_err();
+        assert!(format!("{err:#}").contains("still recording"), "{err:#}");
+        assert!(dir.exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_stale_room_track_with_a_fresh_call_track_also_refuses() {
+        let root = fixture("delete-fresh-call");
+        let dir = root.join("2026-01-01T0900");
+        std::fs::create_dir_all(&dir).unwrap();
+        backdate(&write_track(&dir, "room.native.wav"));
+        write_track(&dir, "call.native.wav");
+
+        let lock = claim_transcription(&dir).unwrap();
+        let err = delete(&root, "2026-01-01T0900", &lock).unwrap_err();
+        assert!(format!("{err:#}").contains("still recording"), "{err:#}");
+        assert!(dir.exists());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn dot_dot_slash_refuses() {
+        let root = fixture("delete-dotdot");
+        let throwaway = root.join("_lock");
+        std::fs::create_dir_all(&throwaway).unwrap();
+        // Id validation runs before the directory is ever touched, which is
+        // the only reason claiming the lock on an unrelated directory is
+        // valid proof here.
+        let lock = claim_transcription(&throwaway).unwrap();
+        let err = delete(&root, "../x", &lock).unwrap_err();
+        assert!(format!("{err:#}").contains("not a session id"), "{err:#}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_symlinked_entry_refuses() {
+        let root = fixture("delete-symlink");
+        let target = root.join("real-target");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = root.join("2026-01-01T0900");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let throwaway = root.join("_lock");
+        std::fs::create_dir_all(&throwaway).unwrap();
+        let lock = claim_transcription(&throwaway).unwrap();
+        let err = delete(&root, "2026-01-01T0900", &lock).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a session directory"),
+            "{err:#}"
+        );
+        assert!(target.exists(), "the symlink's target must survive");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_live_transcriber_lock_refuses_the_api_delete_and_leaves_the_directory() {
+        let root = fixture("delete-lock");
+        let dir = root.join("2026-01-01T0900");
+        write_session(&dir, "2026-01-01T0900", "2026-01-01T09:00:00+00:00", None);
+        std::fs::write(dir.join("transcript.md"), "# transcript\n").unwrap();
+        std::fs::write(dir.join(TRANSCRIBING_LOCK), std::process::id().to_string()).unwrap();
+
+        let paths = crate::api::Paths {
+            config_file: root.join("config.json"),
+            roster_file: root.join("roster.json"),
+            sessions_root: Some(root.clone()),
+        };
+        let err = crate::api::call(
+            "session.delete",
+            &serde_json::json!({"session": "2026-01-01T0900"}),
+            &paths,
+        )
+        .unwrap_err();
+        let message = match err {
+            crate::api::ApiError::Failed(m) => m,
+            other => panic!("expected Failed, got {other:?}"),
+        };
+        assert!(message.contains("being transcribed"), "{message}");
+        assert!(dir.exists());
 
         std::fs::remove_dir_all(&root).ok();
     }
