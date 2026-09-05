@@ -175,6 +175,19 @@ pub fn models_root() -> Result<PathBuf> {
     )
 }
 
+/// A model path as this crate's loaders want it. `Vad::load` and
+/// `Diarizer::load` take `&str` — a narrowing this crate chose, since the `ort`
+/// session builder underneath accepts any `AsRef<Path>` — so until those
+/// signatures widen, a path whose bytes are not UTF-8 cannot reach them. The
+/// error names the path because the reader cannot otherwise tell which one it
+/// is: `models_root` derives candidates from `AMBIENT_MODELS` and from the
+/// executable's own parents, so the offending bytes need not be anything the
+/// user typed.
+pub fn utf8_path(p: &Path) -> Result<&str> {
+    p.to_str()
+        .ok_or_else(|| anyhow!("path is not UTF-8: {}", p.display()))
+}
+
 fn slugify(s: &str) -> String {
     let mut out = String::new();
     let mut dash = false;
@@ -532,7 +545,10 @@ pub fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
         );
     }
     if !vad_path.is_file() {
-        bail!("no VAD model at {}", vad_path.display());
+        bail!(
+            "no VAD model at {} — run ./fetch-models.sh",
+            vad_path.display()
+        );
     }
     Ok((asr_dir, vad_path))
 }
@@ -843,7 +859,7 @@ fn transcribe_inner(
     let mut raw = std::fs::File::create(&raw_path)?;
     let mut lines = 0usize;
 
-    let mut vad = crate::vad::Vad::load(vad_path.to_str().unwrap())?;
+    let mut vad = crate::vad::Vad::load(utf8_path(&vad_path)?)?;
     let mut rec = crate::asr::Recognizer::load(
         asr_dir
             .to_str()
@@ -1297,10 +1313,7 @@ pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
             bail!("missing {} — run ./fetch-models.sh", p.display());
         }
     }
-    let mut diar = crate::diarize::Diarizer::load(
-        seg.to_str().ok_or_else(|| anyhow!("bad model path"))?,
-        emb.to_str().ok_or_else(|| anyhow!("bad model path"))?,
-    )?;
+    let mut diar = crate::diarize::Diarizer::load(utf8_path(&seg)?, utf8_path(&emb)?)?;
 
     let now = chrono::Local::now().to_rfc3339();
     let mut appended: Vec<Edit> = Vec::new();
@@ -2444,6 +2457,22 @@ mod tests {
         );
         drop(taken);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn utf8_path_names_the_offending_path() {
+        assert_eq!(utf8_path(Path::new("/a/b")).unwrap(), "/a/b");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bad = Path::new(std::ffi::OsStr::from_bytes(b"/a/\xff"));
+            let err = utf8_path(bad).expect_err("a non-UTF-8 path has no &str form");
+            assert!(
+                err.to_string().contains("not UTF-8"),
+                "the error must say what is wrong with the path, got: {err}"
+            );
+        }
     }
 
     /// `sessions` answers with what is on disk, which includes the sessions
