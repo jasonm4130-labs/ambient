@@ -1335,7 +1335,7 @@ pub struct Hit {
 /// Enumeration is defensive: a candidate is a directory found with
 /// [`std::fs::symlink_metadata`] (never one `is_dir()` alone would find,
 /// which follows a link), and a session whose `raw.jsonl` is missing, not a
-/// regular file, or unparseable — a live capture, a failed one, or a
+/// regular file, or unparsable — a live capture, a failed one, or a
 /// half-written directory — is skipped rather than failing the whole query.
 pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Hit>> {
     if query.trim().is_empty() {
