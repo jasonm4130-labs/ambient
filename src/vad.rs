@@ -245,9 +245,11 @@ impl Vad {
                 // Look for the quietest frame in the last quarter of the window.
                 let target = start + max;
                 let lo = (target - max / 4).max(start + SR);
-                let cut = (lo / FRAME..(target / FRAME).min(probs.len()))
-                    .min_by(|&a, &b| probs[a].partial_cmp(&probs[b]).unwrap())
-                    .map(|f| f * FRAME)
+                let (lo_f, hi_f) = (lo / FRAME, (target / FRAME).min(probs.len()));
+                let cut = probs
+                    .get(lo_f..hi_f)
+                    .and_then(crate::features::argmin)
+                    .map(|f| (lo_f + f) * FRAME)
                     .unwrap_or(target);
                 split.push(Segment { start, end: cut });
                 start = cut;

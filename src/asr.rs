@@ -266,20 +266,13 @@ impl Recognizer {
                 let (_, logits) = j["outputs"].try_extract_tensor::<f32>().a()?;
 
                 let n_tok = self.tokens.len(); // 8193 incl. blank
-                let (tok, best) = logits[..n_tok]
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                    .unwrap();
+                let tok = crate::features::argmax(&logits[..n_tok]).context("empty logits")?;
                 // Softmax only where it is needed: the winning token's share.
-                let max = *best;
+                let max = logits[tok];
                 let denom: f32 = logits[..n_tok].iter().map(|l| (l - max).exp()).sum();
                 let prob = 1.0 / denom;
-                let (dur_idx, _) = logits[n_tok..n_tok + DURATIONS.len()]
-                    .iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                    .unwrap();
+                let dur_idx = crate::features::argmax(&logits[n_tok..n_tok + DURATIONS.len()])
+                    .context("empty logits")?;
                 let dur = DURATIONS[dur_idx];
                 drop(j);
 

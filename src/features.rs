@@ -5,6 +5,7 @@
 //! so the constants here mirror NeMo's defaults rather than being tuned.
 
 use rustfft::{num_complex::Complex32, FftPlanner};
+use std::cmp::Ordering;
 
 pub const SAMPLE_RATE: f32 = 16_000.0;
 pub const N_FFT: usize = 512;
@@ -149,6 +150,34 @@ pub fn log_mel(samples: &[f32]) -> (Vec<f32>, usize) {
     (out, frames)
 }
 
+/// Index of the largest value, or `None` if there is no finite one to pick.
+///
+/// `partial_cmp().unwrap()` panics the moment a model emits a NaN, so ordering
+/// goes through `total_cmp` and NaNs are dropped rather than compared: a NaN
+/// never wins and never poisons the comparison. Ties keep the first index.
+pub fn argmax(xs: &[f32]) -> Option<usize> {
+    best_by(xs, Ordering::Greater)
+}
+
+/// Index of the smallest value, with the same NaN and tie rules as [`argmax`].
+pub fn argmin(xs: &[f32]) -> Option<usize> {
+    best_by(xs, Ordering::Less)
+}
+
+fn best_by(xs: &[f32], want: Ordering) -> Option<usize> {
+    xs.iter()
+        .enumerate()
+        .filter(|(_, x)| !x.is_nan())
+        .reduce(|best, cur| {
+            if cur.1.total_cmp(best.1) == want {
+                cur
+            } else {
+                best
+            }
+        })
+        .map(|(i, _)| i)
+}
+
 /// Read a mono 16 kHz WAV into normalised f32 samples.
 pub fn read_wav(path: &str) -> anyhow::Result<Vec<f32>> {
     let mut r = hound::WavReader::open(path)?;
@@ -224,5 +253,18 @@ mod tests {
             assert!(mean.abs() < 1e-3, "row {m} mean {mean}");
             assert!((std - 1.0).abs() < 1e-2, "row {m} std {std}");
         }
+    }
+
+    #[test]
+    fn argmax_is_nan_safe_and_prefers_the_first_of_a_tie() {
+        assert_eq!(argmax(&[]), None);
+        assert_eq!(argmax(&[1.0, 3.0, 3.0]), Some(1));
+        assert_eq!(argmax(&[f32::NAN, 2.0, 1.0]), Some(1));
+        assert_eq!(argmax(&[f32::NAN]), None);
+    }
+
+    #[test]
+    fn argmin_skips_nan() {
+        assert_eq!(argmin(&[2.0, f32::NAN, 1.0]), Some(2));
     }
 }

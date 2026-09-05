@@ -87,11 +87,7 @@ impl Diarizer {
         Ok((0..frames)
             .map(|f| {
                 let row = &y[f * classes..(f + 1) * classes];
-                row.iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap_or(0)
+                crate::features::argmax(row).unwrap_or(0)
             })
             .collect())
     }
