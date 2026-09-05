@@ -1485,6 +1485,115 @@ pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
     Ok(targets.len())
 }
 
+/// `edits.jsonl` as a list. The index of a line *is* its `target_seq`, which
+/// is why this reads the whole file rather than streaming it. A session
+/// nobody has edited has no file at all, and that is an empty list, not an
+/// error.
+fn read_edits(dir: &Path) -> Result<Vec<Edit>> {
+    let path = dir.join("edits.jsonl");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).context("parsing edits.jsonl"))
+        .collect()
+}
+
+/// The seqs an existing `revert` already names — the set `transcript` skips.
+fn reverted_seqs(edits: &[Edit]) -> std::collections::HashSet<usize> {
+    edits
+        .iter()
+        .filter_map(|e| match e {
+            Edit::Revert { target_seq, .. } => Some(*target_seq),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Append one `revert` per seq, all sharing an `at` so a batch stays legible
+/// as a batch, then rewrite `transcript.md` the way [`name_speaker`] does.
+fn append_reverts(dir: &Path, seqs: &[usize]) -> Result<()> {
+    let now = chrono::Local::now().to_rfc3339();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("edits.jsonl"))?;
+    for &target_seq in seqs {
+        let e = Edit::Revert {
+            target_seq,
+            by: USER_BY.into(),
+            at: now.clone(),
+        };
+        writeln!(f, "{}", serde_json::to_string(&e)?)?;
+    }
+    f.flush()?;
+    drop(f);
+    std::fs::write(dir.join("transcript.md"), markdown(dir)?)?;
+    Ok(())
+}
+
+/// Take back the newest batch of names a person typed, returning how many
+/// edits were reverted.
+///
+/// [`name_speaker`] appends one edit per line, all carrying the same `at`, so
+/// the thing a person means by "the last name I set" is that whole batch and
+/// not its final line. Undoing appends like every other change here —
+/// `edits.jsonl` only grows — and whatever speaker edit is still live for the
+/// line surfaces again. That is usually diarization's, but a `diarize` re-run
+/// reverts its own previous labels and writes no replacement for a line
+/// somebody has named, so after a retune a line can come back with no speaker
+/// until `diarize` runs again. Only `user` edits are candidates: reverting
+/// diarization's labels is what re-running `diarize` does, and it is not what
+/// somebody asking to undo a naming means.
+pub fn undo_last_naming(dir: &Path) -> Result<usize> {
+    let edits = read_edits(dir)?;
+    let reverted = reverted_seqs(&edits);
+    let live_namings = || {
+        edits
+            .iter()
+            .enumerate()
+            .filter(|(seq, _)| !reverted.contains(seq))
+            .filter_map(|(seq, e)| match e {
+                Edit::Speaker { by, at, .. } if by == USER_BY => Some((seq, at.as_str())),
+                _ => None,
+            })
+    };
+    let newest = live_namings()
+        .map(|(_, at)| at)
+        .max()
+        .ok_or_else(|| anyhow!("nothing to undo in {}", dir.display()))?
+        .to_string();
+    let batch: Vec<usize> = live_namings()
+        .filter(|(_, at)| *at == newest)
+        .map(|(seq, _)| seq)
+        .collect();
+    append_reverts(dir, &batch)?;
+    Ok(batch.len())
+}
+
+/// Revert one edit by its zero-based line in `edits.jsonl` — the way to reach
+/// a change [`undo_last_naming`] does not address, such as a repair or a
+/// single line of a naming batch.
+pub fn undo_seq(dir: &Path, seq: usize) -> Result<()> {
+    let edits = read_edits(dir)?;
+    let edit = edits
+        .get(seq)
+        .ok_or_else(|| anyhow!("no edit {seq} in {}", dir.join("edits.jsonl").display()))?;
+    // Reverting a revert would mean redo, which is a different verb and a
+    // different question about what "current" means. Say so rather than
+    // writing a record `transcript` would fold in a way nobody predicted.
+    if matches!(edit, Edit::Revert { .. }) {
+        bail!("edit {seq} is itself a revert — undo the edit it names instead");
+    }
+    if reverted_seqs(&edits).contains(&seq) {
+        bail!("edit {seq} is already reverted");
+    }
+    append_reverts(dir, &[seq])
+}
+
 /// The session currently being captured, if any.
 ///
 /// The native-rate scratch files exist only between the start of a capture and
@@ -2090,6 +2199,63 @@ mod tests {
             serde_json::to_string(&lines).unwrap(),
             r#"[{"track":"room","start_ms":0,"end_ms":1000,"speaker":"Ana","text":"hello"},{"track":"call","start_ms":1000,"end_ms":2000,"speaker":null,"text":"hi"}]"#
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Undo has to move the whole naming: `name_speaker` appends one edit per
+    /// line, so taking a name back one edit at a time would leave a session
+    /// half-renamed. The labels underneath come back because diarization's own
+    /// edits were never touched.
+    #[test]
+    fn undoing_a_naming_puts_the_label_back_on_every_line_it_took() {
+        let root = sweep_root("undo-batch");
+        let dir = session_with(
+            &root,
+            &[
+                spoken_by(Track::Call, 0, "SPEAKER_00", DIARIZE_BY),
+                spoken_by(Track::Room, 2100, "SPEAKER_00", DIARIZE_BY),
+            ],
+        );
+        assert_eq!(name_speaker(&dir, "SPEAKER_00", "Ana").unwrap(), 2);
+
+        assert_eq!(undo_last_naming(&dir).unwrap(), 2);
+        let lines = transcript(&dir, false).unwrap();
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.speaker.as_deref() == Some("SPEAKER_00")),
+            "{lines:?}"
+        );
+
+        // Diarization's labels are not something a person typed, so with the
+        // naming gone there is nothing left for `undo` to address.
+        let e = undo_last_naming(&dir).unwrap_err();
+        assert!(e.to_string().contains("nothing to undo"), "{e}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The `--seq` form addresses one line of `edits.jsonl`, including edits no
+    /// person typed — and refuses both ways of naming a line that is not there
+    /// to revert.
+    #[test]
+    fn undoing_one_seq_reverts_it_once_and_then_refuses() {
+        let root = sweep_root("undo-seq");
+        let dir = session_with(
+            &root,
+            &[
+                spoken_by(Track::Call, 0, "SPEAKER_00", DIARIZE_BY),
+                spoken_by(Track::Room, 2100, "SPEAKER_01", DIARIZE_BY),
+            ],
+        );
+        undo_seq(&dir, 0).unwrap();
+        let lines = transcript(&dir, false).unwrap();
+        assert_eq!(lines[0].speaker, None);
+        assert_eq!(lines[1].speaker.as_deref(), Some("SPEAKER_01"));
+
+        let e = undo_seq(&dir, 0).unwrap_err();
+        assert!(e.to_string().contains("already reverted"), "{e}");
+        let e = undo_seq(&dir, 99).unwrap_err();
+        assert!(e.to_string().contains("no edit 99"), "{e}");
         std::fs::remove_dir_all(&root).ok();
     }
 
