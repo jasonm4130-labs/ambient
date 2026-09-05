@@ -39,9 +39,6 @@ pub struct Lag {
     pub max_lag_s: f64,
     /// The lag of the **last job processed** — with `tracks > 1` that is the
     /// last of the `tracks` copies of the last row, not the last row itself.
-    /// Acceptance pins this value only at one track; the doc comment says so
-    /// because unit 2 prints `tracks=2` pairs and must not guess which copy
-    /// this field means.
     pub final_lag_s: f64,
 }
 
