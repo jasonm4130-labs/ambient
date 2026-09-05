@@ -42,7 +42,7 @@ repo=$(cd "$here/.." && pwd)
 : "${GEN_TIMEOUT:=45m}"
 : "${CHECK_TIMEOUT:=30m}"
 : "${SKEPTIC_TIMEOUT:=15m}"
-: "${MERGE_CMD:=./merge-pr.sh --stay}"
+: "${MERGE_CMD:=./loop/merge-pr.sh --stay}"
 : "${MERGE_TIMEOUT:=45m}"
 : "${DEADLINE:=6h}"
 : "${BRANCH_PREFIX:=land}"
@@ -103,10 +103,16 @@ plan_tasks() {
     | sed -E 's/^#+[[:space:]]+Task[[:space:]]+([0-9]+)[[:space:]:.–-]*/\1\t/'
 }
 
-# Task N is done when a merge commit on origin/<base> names its branch.
+# Task N is done when a merge commit on origin/<base> names its branch. GitHub
+# writes "Merge pull request #12 from <owner>/<branch>", so a slash may precede
+# the branch name; only a longer branch name (land/x-t1 vs land/x-t10) may not
+# follow it. The log is captured first: under pipefail, `grep -q` closing the
+# pipe on an early match makes git exit 141 and the task read as not done.
 task_done() {
-  git -C "$repo" log "origin/$BASE" --merges --format=%s%n%b \
-    | grep -E "(^|[^A-Za-z0-9-])$(branch_for "$1")([^A-Za-z0-9-]|$)" >/dev/null # not -q: with pipefail, grep quitting early fails the pipeline
+  local merges b
+  merges=$(git -C "$repo" log "origin/$BASE" --merges --format=%s%n%b)
+  b=$(printf '%s' "$(branch_for "$1")" | sed 's/[][\.*^$+?(){}|]/\\&/g')  # literal, not ERE
+  grep -qE "(^|[^A-Za-z0-9])$b([^A-Za-z0-9-]|$)" <<<"$merges"
 }
 
 # The open PR on task N's branch: "number<TAB>draft<TAB>labels" or nothing.
@@ -119,6 +125,11 @@ open_pr() {
 closed_unmerged_pr() {
   gh pr list --state closed --head "$(branch_for "$1")" --base "$BASE" \
     --json number,mergedAt,labels --jq ".[] | select(.mergedAt == null) | select([.labels[].name] | index(\"$RETRY_LABEL\") | not) | .number" 2>/dev/null | head -1
+}
+# Any closed PR on the branch, retry-labelled or not: its commits live on in
+# the PR, so the remote branch can be freed without losing anything.
+any_closed_pr() {
+  gh pr list --state closed --head "$(branch_for "$1")" --base "$BASE" --json number --jq '.[0].number' 2>/dev/null
 }
 
 fill() { # fill <template-file> KEY=VALUE...  ({{KEY}} → VALUE, values may be multi-line)
@@ -134,20 +145,19 @@ fill() { # fill <template-file> KEY=VALUE...  ({{KEY}} → VALUE, values may be 
 # loop must behave the same from launchd, a terminal, or a session, so those
 # variables are dropped for the child. --add-dir lets it read the brief, which
 # lives outside the worktree on purpose.
-# Commits here are signed through the 1Password SSH agent, which answers only
-# while the app is unlocked, and at 02:00 it is not. The generator's commits go
-# unsigned; the merge commit is GitHub's and the PR is the audit trail.
+# Commits are unsigned: a signing key behind an agent (1Password, gpg-agent)
+# answers only while unlocked, and at 02:00 it is not. The merge commit is
+# GitHub's and the PR is the audit trail.
 unsigned=(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false)
 scrub=(-u CLAUDECODE -u CLAUDE_CODE_SUBPROCESS_ENV_SCRUB -u CLAUDE_CODE_CHILD_SESSION
   -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET
   -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_PID -u CLAUDE_EFFORT)
 
-# stdin is /dev/null: claude -p reads stdin even with a prompt argument, and the
-# task list is on stdin while the night loop runs, so a generator once ate the
-# remaining tasks and the night ended after one.
 # One claude -p call. Writes the JSON envelope and the text result to run_dir,
 # logs the cost, and prints the result text. Never fails the script: the caller
-# judges by what is in git, not by the exit code.
+# judges by what is in git, not by the exit code. stdin is /dev/null: claude -p
+# reads stdin even with a prompt argument, and the task list is on stdin while
+# the night loop runs, so a generator once ate the remaining tasks.
 ask() { # ask <name> <permission-mode> <budget> <timeout> <prompt>
   local name=$1 mode=$2 budget=$3 t=$4 prompt=$5
   local out=$run_dir/$name.json
@@ -165,7 +175,9 @@ ask() { # ask <name> <permission-mode> <budget> <timeout> <prompt>
 
 ensure_worktree() {
   git -C "$repo" fetch -q origin
-  if ! git -C "$repo" worktree list --porcelain | grep -qx "worktree $(cd "$WORKTREE" 2>/dev/null && pwd || echo "$WORKTREE")"; then
+  local worktrees
+  worktrees=$(git -C "$repo" worktree list --porcelain)
+  if ! grep -qx "worktree $(cd "$WORKTREE" 2>/dev/null && pwd || echo "$WORKTREE")" <<<"$worktrees"; then
     git -C "$repo" worktree add --detach "$WORKTREE" "origin/$BASE" >/dev/null || die "cannot add worktree at $WORKTREE"
   fi
   gw reset -q --hard && gw clean -fdq
@@ -174,13 +186,23 @@ ensure_worktree() {
 fresh_branch() { # fresh_branch <branch>: the branch at origin/<base>, no leftovers
   gw switch -q --detach "origin/$BASE"
   gw branch -q -D "$1" 2>/dev/null || true
-  # A retry after a closed PR finds the old branch still on the remote (GitHub
-  # deletes only on merge) and the push is refused as non-fast-forward. This is
-  # only reached when no PR is open on the branch, so the remote copy belongs
-  # to a closed PR, which keeps its own commits.
+  # Only reached when no PR is open for this task. A remote branch here is
+  # either a retry after a closed PR (GitHub deletes branches only on merge; the
+  # PR keeps the commits, so the branch is simply freed) or a run that died
+  # between push and `gh pr create` (no PR at all: the commits are kept under a
+  # dated name first). Without this the fresh branch's push is rejected as
+  # non-fast-forward and the night stops.
   if gw ls-remote --exit-code --heads origin "$1" >/dev/null 2>&1; then
-    log "  deleting stale remote branch $1"
-    gw push -q origin --delete "$1" || die "cannot delete stale remote branch $1"
+    local n=${1##*-t}
+    if [ -n "$(any_closed_pr "$n")" ]; then
+      log "  deleting remote branch $1 left by a closed PR"
+    else
+      local keep="$1-stranded-$(date +%Y%m%d%H%M%S)"
+      gw push -q origin "refs/remotes/origin/$1:refs/heads/$keep" 2>/dev/null \
+        || die "stranded remote branch $1 (no PR) could not be kept as $keep; a human decides what to do with it"
+      log "  stranded remote branch $1 (no PR); kept as $keep"
+    fi
+    gw push -q origin --delete "$1" 2>/dev/null || die "could not free branch name $1"
   fi
   gw switch -q -c "$1" "origin/$BASE"
 }
@@ -226,8 +248,9 @@ EOF
 land_pr() { # land_pr <n> <pr>
   local n=$1 pr=$2 rc=0
   if [ -n "$MERGE_CMD" ]; then
+    # NIGHTSHIFT=1 tells merge-pr.sh to re-read the kill switch after the wait.
     # shellcheck disable=SC2086
-    (cd "$WORKTREE" && bounded "$MERGE_TIMEOUT" $MERGE_CMD "$pr" </dev/null) >"$run_dir/merge.log" 2>&1 || rc=$?
+    (cd "$WORKTREE" && NIGHTSHIFT=1 bounded "$MERGE_TIMEOUT" $MERGE_CMD "$pr" </dev/null) >"$run_dir/merge.log" 2>&1 || rc=$?
   else
     local waited=0 st
     while :; do
@@ -346,6 +369,8 @@ while IFS=$'\t' read -r n title; do
       true,*|*"$BLOCKED_LABEL"*) stop "task $n: PR #$pr is blocked, waiting for a human" ;;
     esac
     [ $dry = 1 ] && stop "would wait on open PR #$pr for task $n"
+    [ "$landed" -lt "$MAX" ] || stop "$MAX task(s) landed, that is the night"
+    past_deadline && stop "deadline $DEADLINE reached"
     log "task $n: resuming on open PR #$pr"
     run_dir=$STATE_DIR/$(date +%F)-t$n; mkdir -p "$run_dir"; round=0
     land_pr "$n" "$pr" || stop "task $n did not land"

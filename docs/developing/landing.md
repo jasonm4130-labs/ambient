@@ -35,7 +35,7 @@ says where it stopped.
    failure pushes the branch as a draft PR labelled `land:blocked` with the
    evidence in its body, and the night stops.
 5. Otherwise the branch is pushed, a PR titled `[task N] …` opens with the
-   label `land`, and `./merge-pr.sh --stay` waits for CI and merges it. CI red
+   label `land`, and `./loop/merge-pr.sh --stay` waits for CI and merges it. CI red
    turns the PR into a blocked draft.
 6. Repeat until `MAX` tasks have landed, the deadline passes, or something
    stops it.

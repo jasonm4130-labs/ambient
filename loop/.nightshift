@@ -1,0 +1,23 @@
+{
+  "version": "0.1.2",
+  "vars": {
+    "PLAN": "docs/plans/2026-09-04-nightshift-smoke.md",
+    "MERGE_MODE": "wait",
+    "BASE": "main",
+    "NAME": "wt-ambient-adopt"
+  },
+  "files": {
+    "loop/land.sh": "9904ab4d338ee018dc2f5fd47b82aef311925f24d55f77761e9982baa0b504e8",
+    "loop/config": "5e74f215b958a45f454b475d031adb12cd296d3ad6f4485b7281f5cf3191d354",
+    "loop/PROMPT.md": "56d9db86dbf8a42d598d449aa56d78773041a7eda7cf735484fa76f9f090ecb4",
+    "loop/SKEPTIC.md": "0388ffa5e1f97a5771d97e6ac1a4f4bf520f8c0b7a4053533326ef8d07fd2b95",
+    "loop/task-brief": "572c44861dda267be159f71368cbe9b8bc5ed3680ab17307dd9344a951f2fd16",
+    "loop/merge-pr.sh": "03612dd4ae66c4c4a798594c26045a24cc6acf32949ccf849dcf2f7968225843",
+    "loop/launchd.plist": "2f3ecc2c3d4c4a9580cc5c66575e35d175fde5ef39cdf1f9f3a0f7c6c1b25092",
+    ".claude/hooks/no-route-around-ci.mjs": "dd47fd7941ef3c91ae9830d446cb62fbbc78821580e3c2a4f1974cac7ea8f104",
+    ".claude/hooks/tests-are-readonly.mjs": "f073053adf9326334f89445f39b5c8f5e8333da23d0bb5f8029e0d2b09c5403b",
+    ".claude/hooks/hooks.test.mjs": "1e1f8e46c720b96f8397cd1dfe831c77d620f53638f1812974c627472ed390b7",
+    "scripts/check": "3f3c0b42a06b324e930a914f290d7d903735a09923c0f132bc1f10673b82cb07",
+    "docs/developing/landing.md": "eac51169ddb06595599f1fdace278f69a47a15c91fe1726ef8a4261065fe7c64"
+  }
+}
