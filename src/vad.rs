@@ -189,10 +189,13 @@ impl Vad {
         let mut silence_run = 0usize;
 
         for (i, &p) in probs.iter().enumerate() {
-            // NaN compares false against both thresholds, so an unguarded one
-            // holds a segment open to the end of the recording; +inf clears ON
-            // and opens one. Read any non-finite value as silence and let the
-            // hysteresis decide.
+            // A non-finite probability is a model fault, not a judgement about
+            // the audio. Unguarded, each one meant something different: NaN
+            // compares false against both thresholds, so it fell to the `else`
+            // below and reset `silence_run`, absorbing its own run without
+            // closing or opening anything; +inf clears ON and opened a turn;
+            // -inf is below OFF and already read as silence. Map all three to
+            // silence so the hysteresis sees one consistent value.
             let p = if p.is_finite() { p } else { 0.0 };
             let at = i * FRAME;
             if !in_speech {
