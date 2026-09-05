@@ -27,6 +27,7 @@ USAGE
   ambient config [<key> <value>]       show or change settings
   ambient mcp                          serve sessions over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
+  ambient doctor [--json]              say which of ten things is missing
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
@@ -372,6 +373,35 @@ fn main() -> Result<()> {
             std::io::stdout().lock(),
             &ambient::session::home(),
         ),
+        Some("doctor") => {
+            let flags: Vec<String> = args.collect();
+            let json = flags.iter().any(|a| a == "--json");
+            if let Some(other) = flags.iter().find(|a| *a != "--json") {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
+            }
+            let checks = ambient::doctor::run(
+                ambient::session::models_root(),
+                &ambient::config::path(),
+                &ambient::session::home(),
+            );
+            let failed = checks.iter().filter(|c| !c.ok).count();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&checks)?);
+            } else {
+                for c in &checks {
+                    println!(
+                        "{:<4} {:<28}  {}",
+                        if c.ok { "ok" } else { "FAIL" },
+                        c.name,
+                        c.detail
+                    );
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} check(s) failed");
+            }
+            Ok(())
+        }
         Some("probe") => {
             ambient::probe::run()?;
             Ok(())

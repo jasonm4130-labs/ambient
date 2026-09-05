@@ -13,6 +13,16 @@ warn you, because from its point of view nothing went wrong.
 If your call track is flat, work through this page before suspecting the
 recogniser or your microphone.
 
+## Start with doctor
+
+```sh
+ambient doctor
+```
+
+It names which of ten things — model files, config, sessions directory
+state — is actually missing, so it is cheaper than reading the rest of this
+page. See the [verb reference](commands.md) for what each check covers.
+
 ## It recorded silence
 
 The two services then diverge, which is what makes this so confusing:
