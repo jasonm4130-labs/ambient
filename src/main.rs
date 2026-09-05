@@ -16,6 +16,8 @@ USAGE
                                        assign speakers to a recorded session
   ambient name <session-dir> <label> <name>
                                        name a speaker, e.g. call-1 Priya
+  ambient undo <session-dir> [--seq <n>]
+                                       take back the last naming
   ambient export <session-dir> [--out <path>]
                                        write transcript.md
   ambient config [<key> <value>]       show or change settings
@@ -81,6 +83,35 @@ fn main() -> Result<()> {
             let n = ambient::session::name_speaker(std::path::Path::new(&dir), &label, &who)?;
             eprintln!("  {n} line(s) now attributed to {who}");
             ambient::session::show(std::path::Path::new(&dir), false, false)
+        }
+        Some("undo") => {
+            let dir = args.next().unwrap_or_default();
+            if dir.is_empty() {
+                bail!("{USAGE}");
+            }
+            let mut seq: Option<usize> = None;
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--seq" => {
+                        seq = Some(
+                            args.next()
+                                .ok_or_else(|| anyhow::anyhow!("--seq needs a value"))?
+                                .parse()?,
+                        )
+                    }
+                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+                }
+            }
+            let path = std::path::Path::new(&dir);
+            let n = match seq {
+                Some(seq) => {
+                    ambient::session::undo_seq(path, seq)?;
+                    1
+                }
+                None => ambient::session::undo_last_naming(path)?,
+            };
+            eprintln!("reverted {n} edits");
+            Ok(())
         }
         Some("roster") => {
             let mut names = ambient::roster::load();

@@ -163,6 +163,30 @@ run `ambient diarize` first``. What it lists is the labels as they stand now, so
 once `call-1` has been named Priya it is `Priya` that comes back, not the label
 she replaced. See [diarization](../developing/diarization.md).
 
+## undo
+
+```sh
+ambient undo <session-dir> [--seq <n>]
+```
+
+Takes back the newest naming and reports `reverted <n> edits`. `name` appends
+one `speaker` edit per line, so undo reverts that whole batch — every edit
+sharing the newest timestamp among the ones you typed — and the label
+underneath, usually diarization's, comes back because its own edits were never
+touched. Undoing appends: `edits.jsonl` only ever grows, and `raw.jsonl` is
+untouched, so a second `undo` takes back the naming before it rather than
+redoing anything.
+
+Only names a person typed are candidates; taking back diarization's own labels
+is what re-running `diarize` does. A session where nothing has been named
+answers `nothing to undo`.
+
+`--seq <n>` reverts one edit instead, addressed by its zero-based line in
+`edits.jsonl` — the way to reach a repair, or one line of a naming. Asking for
+a line that does not exist answers `no edit <n>`, a line already reverted
+answers `already reverted`, and a line that is itself a `revert` is refused:
+undo the edit it names.
+
 ## diarize
 
 ```sh
