@@ -145,10 +145,12 @@ the extracted corpus without re-downloading it.
 
 ## Word error rate on the fixture
 
-`cargo run --release --bin wer -- [--manifest <path>] [--json <path>]`, on
-2026-09-05. The harness runs what `ambient record` runs for a finished track —
-`session::model_paths`, `Vad::turns(&samples, 30)`, `transcribe_segments` — so
-these are the numbers a user gets, on the shipped v3-int8 model.
+`cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
+[--model <dir>]`, on 2026-09-05. The harness runs what `ambient record` runs
+for a finished track — `session::model_paths`, `Vad::turns(&samples, 30)`,
+`transcribe_segments` — so these are the numbers a user gets, on the shipped
+v3-int8 model. The decode column is one run; see the section below for how far
+it moves between runs.
 
 | Speaker | Seconds | Ref words | S | I | D | WER | Decode | Realtime |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -163,6 +165,49 @@ dominate at 39 against 3 insertions and 5 deletions: on clean read speech the
 segmenter is not losing words and the recogniser is not inventing them, it is
 getting them wrong. `--json` writes the same rows, the total among them with
 `speaker` reading `total`.
+
+## The two shipped models on the same fixture
+
+Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the
+only difference — on 2026-09-05, this machine. Three runs of each, interleaved
+so both models see the same machine load; the table is each model's median run
+by total decode.
+
+| Model | Speaker | Seconds | Ref words | S | I | D | WER | Decode | Realtime |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| v3 int8 | 1089 | 302.11 | 721 | 3 | 0 | 0 | 0.0042 | 7.73 s | 39x |
+| v3 int8 | 1188 | 522.73 | 1296 | 29 | 2 | 4 | 0.0270 | 12.69 s | 41x |
+| v3 int8 | 121 | 88.89 | 135 | 7 | 1 | 1 | 0.0667 | 2.16 s | 41x |
+| **v3 int8** | **total** | 913.74 | 2152 | 39 | 3 | 5 | **0.0218** | **22.58 s** | **40x** |
+| v2 fp16 | 1089 | 302.11 | 721 | 1 | 0 | 0 | 0.0014 | 6.50 s | 46x |
+| v2 fp16 | 1188 | 522.73 | 1296 | 26 | 1 | 1 | 0.0216 | 14.84 s | 35x |
+| v2 fp16 | 121 | 88.89 | 135 | 4 | 1 | 1 | 0.0444 | 3.50 s | 25x |
+| **v2 fp16** | **total** | 913.74 | 2152 | 31 | 2 | 2 | **0.0163** | **24.84 s** | **37x** |
+
+The two columns are not equally trustworthy, and the runs say which is which.
+Every run of a model returned the same counts to the last substitution — v3 at
+39/3/5 and v2 at 31/2/2, v3's reproducing `quality/wer.json` exactly — so the
+accuracy gap is a property of the models: 0.0163 against 0.0218, half a point
+of word error rate, and v2 fp16 wins on each speaker individually rather than
+on one fixture carrying it.
+
+Decode seconds are the opposite. Across the three runs the total moved between
+21.59 s and 27.44 s for v3 and between 20.80 s and 26.15 s for v2 — ranges that
+overlap for most of their length, on a machine with other work on it. The
+19.77 s recorded for v3 in the section above is a further run of the same
+binary on the same fixture, and it sits below all three here. So this fixture
+on this machine does not separate the two models on speed at all, and any
+decode figure quoted from a single run, including the ones in the table above,
+is worth roughly ±3 s. That is why `scripts/quality` gates the counts and not
+the timings.
+
+Accuracy and speed are not the whole decision, and here only accuracy is
+measured well. The Phase 0 table above puts v2 fp16 at 3745 MB peak against v3
+int8's 2594 MB for the same 60 s of audio, and the 16 GB target is still
+[unmeasured](porting.md). The default stays v3 int8 — `session::model_paths`
+with no `--model` — because switching spends 1.1 GB of headroom on a machine
+nobody has run this on to buy half a point of word error rate. Measure the port
+first; the table says which way it should then go.
 
 ---
 

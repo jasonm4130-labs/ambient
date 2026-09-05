@@ -9,6 +9,7 @@ USAGE
   ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>]
                  [--seconds <n>]       record until stopped, then transcribe
   ambient stop [<session-dir>]         stop the recording in progress
+  ambient sessions [--json]            list the sessions on disk
   ambient show <session-dir> [--verbatim] [--json]
                                        print a recorded session
   ambient diarize <session-dir> [--threshold <f>]
@@ -136,6 +137,36 @@ fn main() -> Result<()> {
             }
             std::fs::write(&out, ambient::session::markdown(dir)?)?;
             println!("{}", out.display());
+            Ok(())
+        }
+        Some("sessions") => {
+            let flags: Vec<String> = args.collect();
+            let json = flags.iter().any(|a| a == "--json");
+            if let Some(other) = flags.iter().find(|a| *a != "--json") {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
+            }
+            let home = ambient::session::home();
+            let rows = ambient::session::summaries(&home);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            if rows.is_empty() {
+                eprintln!("no sessions in {}", home.display());
+                return Ok(());
+            }
+            for s in &rows {
+                println!(
+                    "{:<24}  {:<25}  {:>8}  {:<20}  {}",
+                    s.id,
+                    s.started_at.as_deref().unwrap_or("-"),
+                    s.duration_s
+                        .map(|d| format!("{d:.1}s"))
+                        .unwrap_or_else(|| "-".into()),
+                    s.name.as_deref().unwrap_or("-"),
+                    s.state()
+                );
+            }
             Ok(())
         }
         Some("show") => {
