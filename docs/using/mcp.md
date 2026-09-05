@@ -92,12 +92,12 @@ No arguments. Every session on this machine, newest first — the same rows
 [
   {
     "dir": "/Users/…/Documents/Ambient/2026-09-05-1608",
-    "duration_s": 92.0,
+    "duration_s": null,
     "error": null,
     "id": "2026-09-05-1608",
     "live": true,
     "name": null,
-    "started_at": "2026-09-05T16:08:11Z",
+    "started_at": null,
     "transcribed": false,
     "transcribing": false
   },
@@ -115,10 +115,12 @@ No arguments. Every session on this machine, newest first — the same rows
 ]
 ```
 
-A session being recorded has no `session.json` yet and comes back with empty
-metadata; one whose `session.json` will not parse comes back with `error` set
-rather than being hidden. Symlinks are skipped: only real directories under the
-sessions folder are listed.
+That first row is the session being recorded, and its `name`, `started_at` and
+`duration_s` are `null` because `session.json` is written when capture ends —
+a live row carries its `id` and `live: true` and nothing more. A session whose
+`session.json` will not parse comes back with `error` set rather than being
+hidden. Symlinks are skipped: only real directories under the sessions folder
+are listed.
 
 ### `transcript`
 
@@ -130,8 +132,8 @@ heard).
 {
   "lines": [
     {"end_ms": 3120, "speaker": null, "start_ms": 0, "text": "Right, shall we start with the migration?", "track": "room"},
-    {"end_ms": 7980, "speaker": "Priya", "start_ms": 3400, "text": "Yes. I pushed the schema change on Friday.", "track": "call"},
-    {"end_ms": 11040, "speaker": null, "start_ms": 8200, "text": "Did the backfill finish?", "track": "room"}
+    {"end_ms": 11040, "speaker": null, "start_ms": 8200, "text": "Did the backfill finish?", "track": "room"},
+    {"end_ms": 7980, "speaker": "Priya", "start_ms": 3400, "text": "Yes. I pushed the schema change on Friday.", "track": "call"}
   ],
   "next": 3,
   "session": "2026-09-05-1412",
@@ -141,7 +143,10 @@ heard).
 
 `track` is `room` for the microphone and `call` for what the tap heard, and
 `speaker` is `null` until something has named it — the same fields
-[`ambient show --json`](commands.md#show) prints.
+[`ambient show --json`](commands.md#show) prints. The lines arrive in the order
+they were written, every room line then every call line, which is why the call
+line above sits after a room line with a later `start_ms`; sort on `start_ms`
+if you want the clock.
 
 ## Following a session as it is recorded
 
