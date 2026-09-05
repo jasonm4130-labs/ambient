@@ -76,4 +76,4 @@ the record lands unplaced in the nav, which is nearly as good as unwritten.
 | 0013 | [Nimbus and Cirrus, not mdBook](0013-nimbus-over-mdbook.md) |
 | 0014 | [Developer ID and notarisation, not a self-signed identity](0014-developer-id-and-notarization.md) |
 | 0015 | [Capture and transcription are separate work, joined by a serial queue](0015-capture-and-transcription-are-separate.md) |
-| 0016 | [An `ambient mcp` verb is how other programs read sessions](0016-mcp-verb-for-live-reading.md) |
+| 0017 | [The window is one web page; Rust keeps the menu bar, the bridge and the state](0017-one-web-page-for-the-window.md) |
