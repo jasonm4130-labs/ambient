@@ -6,6 +6,22 @@ sidebar:
 
 # When it does not work
 
+## Start with doctor
+
+```sh
+ambient doctor
+```
+
+One pass over everything a recording needs — the four model files, the config
+file, and the sessions folder — printing `ok` or `FAIL` with the path or the
+error for each, and exiting non-zero if anything failed. `--json` prints the
+same checks as an array for a script to read.
+
+It is worth running first because most of what follows on this page announces
+itself as something else: a missing model reads as a failed recording, and a
+config file with a typo in it is ignored in silence and reads as a setting that
+will not stick.
+
 Almost every first-run failure here is the same one wearing different clothes:
 the recording completes, reports success, and contains silence. macOS does not
 warn you, because from its point of view nothing went wrong.

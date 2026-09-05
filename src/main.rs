@@ -23,6 +23,7 @@ USAGE
   ambient config [<key> <value>]       show or change settings
   ambient roster [add|rm <name>]       the people you record with
   ambient probe                        check this machine is viable
+  ambient doctor [--json]              check models, config and sessions
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
   ambient vad <a.wav>                  show detected speech segments
@@ -234,6 +235,36 @@ fn main() -> Result<()> {
         }
         Some("probe") => {
             ambient::probe::run()?;
+            Ok(())
+        }
+        Some("doctor") => {
+            let flags: Vec<String> = args.collect();
+            let json = flags.iter().any(|a| a == "--json");
+            if let Some(other) = flags.iter().find(|a| *a != "--json") {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
+            }
+            let checks = ambient::doctor::run(
+                ambient::session::models_root(),
+                &ambient::config::path(),
+                &ambient::session::home(),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&checks)?);
+            } else {
+                for c in &checks {
+                    println!(
+                        "{}  {:<28}  {}",
+                        if c.ok { "ok  " } else { "FAIL" },
+                        c.name,
+                        c.detail
+                    );
+                }
+            }
+            // A failed check is the whole point of the verb, so it has to be
+            // visible to a script that never reads the output.
+            if checks.iter().any(|c| !c.ok) {
+                std::process::exit(1);
+            }
             Ok(())
         }
         Some("transcribe") => {

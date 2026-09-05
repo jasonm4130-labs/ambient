@@ -2,6 +2,7 @@ pub mod asr;
 pub mod capture;
 pub mod config;
 pub mod diarize;
+pub mod doctor;
 pub mod fbank;
 pub mod features;
 pub mod menubar;
