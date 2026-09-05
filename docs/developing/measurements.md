@@ -146,7 +146,7 @@ the extracted corpus without re-downloading it.
 ## Word error rate on the fixture
 
 `cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
-[--model <dir>]`, on 2026-09-05. The harness runs what `ambient record` runs
+[--model <dir>] [--via <hz>]`, on 2026-09-05. The harness runs what `ambient record` runs
 for a finished track — `session::model_paths`, `Vad::turns(&samples, 30)`,
 `transcribe_segments` — so these are the numbers a user gets, on the shipped
 v3-int8 model. The decode column is one run; see the section below for how far
@@ -165,6 +165,57 @@ dominate at 39 against 3 insertions and 5 deletions: on clean read speech the
 segmenter is not losing words and the recogniser is not inventing them, it is
 getting them wrong. `--json` writes the same rows, the total among them with
 `speaker` reading `total`.
+
+## What the resampler costs: native, 48 k and 44.1 k
+
+`cargo run --release --bin wer -- --via <hz>` upsamples each fixture wav to
+`<hz>` with `ffmpeg`, caches it under `~/.cache/ambient/fixtures/via/<hz>/`,
+and reads it back through `resample::to_16k` before the same VAD turns and the
+same decode. The fixture is native 16 kHz, so without `--via` the resampler
+every real recording goes through — Core Audio delivers 48 kHz — never runs at
+all. Measured on 2026-09-05, this machine, v3-int8.
+
+| Path | Speaker | Ref words | S | I | D | WER |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| native 16 k | 1089 | 721 | 3 | 0 | 0 | 0.0042 |
+| native 16 k | 1188 | 1296 | 29 | 2 | 4 | 0.0270 |
+| native 16 k | 121 | 135 | 7 | 1 | 1 | 0.0667 |
+| **native 16 k** | **total** | 2152 | 39 | 3 | 5 | **0.0218** |
+| via 48 k | 1089 | 721 | 3 | 3 | 0 | 0.0083 |
+| via 48 k | 1188 | 1296 | 36 | 4 | 5 | 0.0347 |
+| via 48 k | 121 | 135 | 6 | 1 | 1 | 0.0593 |
+| **via 48 k** | **total** | 2152 | 45 | 8 | 6 | **0.0274** |
+| via 44.1 k | 1089 | 721 | 4 | 3 | 0 | 0.0097 |
+| via 44.1 k | 1188 | 1296 | 35 | 2 | 4 | 0.0316 |
+| via 44.1 k | 121 | 135 | 9 | 1 | 1 | 0.0815 |
+| **via 44.1 k** | **total** | 2152 | 48 | 6 | 5 | **0.0274** |
+
+The round trip costs 0.0056 of word error rate — 0.0218 native against 0.0274
+at either rate — which is over the half-point line this plan uses to call a
+change real. Both rates land on the same total from different mistakes, and
+neither rate is the culprit: 48 k is an exact 3:1 ratio and 44.1 k is not, so a
+ratio-specific bug would have separated them. What they share is the code
+under test.
+
+The damage is not evenly spread. Insertions nearly triple at 48 k, 3 to 8, and
+speaker 1089 goes from a clean zero to three invented words: the resampler is
+handing the recogniser something it reads as speech in places the native file
+does not. Speaker 121 moves the other way at 48 k, 0.0667 to 0.0593, which is
+one substitution on 135 reference words and is noise at that size.
+
+An upsample-then-downsample round trip is not free even in a correct
+implementation — it is two band-limiting passes where a real recording has one
+— so this is an upper bound on what a 48 kHz microphone actually costs, not a
+measurement of it. It is still the only end-to-end number there is for
+`resample::to_16k`, and it points at the resampler rather than at the fixture.
+Fixing it is its own task with its own number.
+
+The decode timings from this run are not on this table on purpose: it ran with
+a load average near 40 on 18 cores and returned 6x realtime against the 46x
+recorded above for the identical native run. A second run of both rates
+returned every count identically — 45/8/6 and 48/6/5 — while its totals moved
+from 166 s to 153 s and from 138 s to 101 s. The counts are what this table
+needs and they are solid under that load; the clock is not.
 
 ## The two shipped models on the same fixture
 
