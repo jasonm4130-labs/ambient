@@ -400,3 +400,85 @@ impl SettingsPane {
         )
     }
 }
+
+/// The bridge's half of the contract with `assets/settings.html`: what the page
+/// may send and what happens to a message that is not that. The page is the
+/// only writer, so a change here is a change to a wire format whose other end
+/// ships in the same binary — these pin it so the break is a red test rather
+/// than a line on stderr nobody is reading.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(json: &str) -> Result<Patch, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    #[test]
+    fn an_empty_message_changes_nothing() {
+        let p = parse("{}").expect("an empty object is a valid patch");
+        assert!(p.scope.is_none());
+        assert!(p.input_device.is_none());
+        assert!(p.diarize.is_none());
+        assert!(p.threshold.is_none());
+        assert!(p.remove_app.is_none());
+        assert!(p.action.is_none());
+        assert!(p.ask_before_recording.is_none());
+        assert!(p.audio_retention.is_none());
+        assert!(p.add_person.is_none());
+        assert!(p.remove_person.is_none());
+        assert!(p.assign.is_none());
+    }
+
+    #[test]
+    fn a_patch_carries_the_fields_it_names_and_no_others() {
+        let p = parse(r#"{"threshold":0.6,"diarize":false}"#).expect("two known fields");
+        assert_eq!(p.threshold, Some(0.6));
+        assert_eq!(p.diarize, Some(false));
+        assert!(p.scope.is_none());
+        assert!(p.action.is_none());
+    }
+
+    #[test]
+    fn an_assignment_carries_the_session_it_was_chosen_in() {
+        let p =
+            parse(r#"{"assign":{"label":"SPEAKER_00","name":"Ana","session":"2026-09-05-1200"}}"#)
+                .expect("a complete assignment");
+        let a = p.assign.expect("assign is present");
+        assert_eq!(a.label, "SPEAKER_00");
+        assert_eq!(a.name, "Ana");
+        assert_eq!(a.session, "2026-09-05-1200");
+    }
+
+    #[test]
+    fn a_half_written_assignment_is_refused_rather_than_half_applied() {
+        let e = parse(r#"{"assign":{"label":"a"}}"#).expect_err("name and session are required");
+        assert!(
+            e.to_string().contains("name"),
+            "the error should name the missing field, got {e}"
+        );
+    }
+
+    #[test]
+    fn a_threshold_sent_as_a_string_is_refused() {
+        // The page's slider sends a number. A string here means the page and
+        // this struct have drifted, and reading "0.6" as 0.6 would hide that.
+        parse(r#"{"threshold":"0.6"}"#).expect_err("a string is not a number");
+    }
+
+    #[test]
+    fn forever_stays_a_word_all_the_way_through_the_bridge() {
+        let p = parse(r#"{"audio_retention":"forever"}"#).expect("a retention word");
+        assert_eq!(p.audio_retention.as_deref(), Some("forever"));
+    }
+
+    #[test]
+    fn an_unknown_key_is_ignored_rather_than_failing_the_whole_message() {
+        // Today's rule, stated so that adding `deny_unknown_fields` is a
+        // deliberate change to this test and not a silent one: a page sending
+        // a key this build does not know still gets the rest of its edit
+        // applied.
+        let p = parse(r#"{"unknown":1,"diarize":true}"#).expect("unknown keys are skipped");
+        assert_eq!(p.diarize, Some(true));
+    }
+}
