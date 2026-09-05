@@ -1,0 +1,34 @@
+[
+  {
+    "speaker": "1089",
+    "reference_words": 721,
+    "substitutions": 3,
+    "insertions": 0,
+    "deletions": 0,
+    "wer": 0.004160887656033287
+  },
+  {
+    "speaker": "1188",
+    "reference_words": 1296,
+    "substitutions": 29,
+    "insertions": 2,
+    "deletions": 4,
+    "wer": 0.02700617283950617
+  },
+  {
+    "speaker": "121",
+    "reference_words": 135,
+    "substitutions": 7,
+    "insertions": 1,
+    "deletions": 1,
+    "wer": 0.06666666666666667
+  },
+  {
+    "speaker": "total",
+    "reference_words": 2152,
+    "substitutions": 39,
+    "insertions": 3,
+    "deletions": 5,
+    "wer": 0.02184014869888476
+  }
+]
