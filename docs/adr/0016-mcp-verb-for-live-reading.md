@@ -1,4 +1,10 @@
-# 0016. An `ambient mcp` verb is how other programs read sessions
+---
+title: "16. An `ambient mcp` verb is how other programs read sessions"
+sidebar:
+  order: 56
+---
+
+# 16. An `ambient mcp` verb is how other programs read sessions
 
 **Status:** accepted · **Date:** 2026-09-05 · **Supersedes:** —
 
