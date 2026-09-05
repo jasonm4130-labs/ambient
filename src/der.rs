@@ -48,10 +48,13 @@ impl Der {
     /// diarization error rate. Not capped at 1.0: a system that invents
     /// speakers over silence can legitimately score above it, and clamping
     /// would hide exactly the failure worth seeing.
+    ///
+    /// Divides unconditionally: when the collar or an empty-in-practice
+    /// reference leaves no reference seconds to be a proportion of, the
+    /// result is infinite or NaN, and both propagate visibly through a sweep.
+    /// Returning 0.0 there would report a perfect score for a hypothesis with
+    /// unbounded false alarm, and 0.0 wins comparisons.
     pub fn rate(&self) -> f64 {
-        if self.reference_s == 0.0 {
-            return 0.0;
-        }
         (self.missed_s + self.false_alarm_s + self.confusion_s) / self.reference_s
     }
 }
