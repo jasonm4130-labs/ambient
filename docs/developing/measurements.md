@@ -275,8 +275,9 @@ this page, are worth about ±3 s and separate nothing.
 
 Per speaker at 48 kHz: 1089 0.0083, 1188 0.0347, 121 0.0593 — worse on the two
 long speakers, slightly better on the 89-second one. 44.1 kHz reaches the same
-0.0274 by a different route, six more substitutions and two fewer insertions,
-so the cost does not track how awkward the ratio is: 48 kHz is an exact 3:1
+0.0274 by a different route, three more substitutions against two fewer
+insertions and one fewer deletion, so the cost does not track how awkward the
+ratio is: 48 kHz is an exact 3:1
 decimation and pays the same as 44.1 kHz, which is not.
 
 **That gap is 0.56 points, over the half-point line the plan drew, so this
