@@ -143,6 +143,40 @@ find.
 A second run does no network and rewrites nothing; `--force` restitches from
 the extracted corpus without re-downloading it.
 
+Diarization error rate is measured against AMI Mix-Headset audio (CC BY 4.0,
+[groups.inf.ed.ac.uk/ami](https://groups.inf.ed.ac.uk/ami/corpus/)) with the
+pyannote
+[only_words](https://github.com/pyannote/AMI-diarization-setup/tree/67c2d539286e89f68952d5dcf83912bd9f01dfae/only_words)
+references, pinned to that revision. The same command builds it:
+
+```sh
+scripts/fetch-fixtures            # cached after the first run
+scripts/fetch-fixtures --force    # recut the 300 s clips
+```
+
+The meetings are `ES2004a`, `IS1009a` and `TS3003a` — the first meeting of
+three AMI test-set series, one per recording site, so which meetings this
+scores is a property of the corpus and not a list someone typed. The full
+recordings cache at `~/.cache/ambient/ami/`; the fixture the harness reads is
+`~/.cache/ambient/fixtures/der/`, holding each meeting's first 300 s as 16 kHz
+mono 16-bit wav, the reference RTTM cut to match (turns starting past 300 s
+dropped, a turn straddling the cut clipped), and a `manifest.json` naming both.
+
+All six downloads are pinned by `shasum -a 256` in the script and checked on
+every run, so an upstream re-encode or a reference edit fails the fetch rather
+than moving the DER baseline underneath the quality gate.
+
+This set needs `ffmpeg` and `ffprobe` on `PATH`; the WER set does not, and
+still builds without them. A machine missing either is told so on the first
+line and gets the WER set only — the DER harness then reports the missing
+manifest and names this script.
+
+| Meeting | Seconds | Reference turns |
+| --- | ---: | ---: |
+| ES2004a | 300 | 41 |
+| IS1009a | 300 | 47 |
+| TS3003a | 300 | 36 |
+
 ## Word error rate on the fixture
 
 `cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
