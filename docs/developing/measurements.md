@@ -180,7 +180,7 @@ manifest and names this script.
 ## Word error rate on the fixture
 
 `cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
-[--model <dir>]`, on 2026-09-05. The harness runs what `ambient record` runs
+[--model <dir>] [--via <rate>]`, on 2026-09-05. The harness runs what `ambient record` runs
 for a finished track — `session::model_paths`, `Vad::turns(&samples, 30)`,
 `transcribe_segments` — so these are the numbers a user gets, on the shipped
 v3-int8 model. The decode column is one run; see the section below for how far
@@ -242,6 +242,43 @@ int8's 2594 MB for the same 60 s of audio, and the 16 GB target is still
 with no `--model` — because switching spends 1.1 GB of headroom on a machine
 nobody has run this on to buy half a point of word error rate. Measure the port
 first; the table says which way it should then go.
+
+## What the sample-rate conversion costs
+
+The fixture is native 16 kHz, so `resample::to_16k` returns its input
+untouched and the word error rate above never measured it. A real capture
+always crosses it: Core Audio hands back 48 kHz on this Mac and 44.1 kHz on
+some interfaces. `--via <rate>` upsamples each fixture wav to that rate with
+`ffmpeg` once, caches it under `~/.cache/ambient/fixtures/via/<rate>/`, and
+reads it back through `resample::to_16k`. v3 int8, same VAD turns, same
+fixture — on 2026-09-05, this machine.
+
+| Path | Ref words | S | I | D | WER | Decode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| native 16 kHz | 2152 | 39 | 3 | 5 | **0.0218** | 22.53 s |
+| via 48 kHz | 2152 | 45 | 8 | 6 | **0.0274** | 24.25 s |
+| via 44.1 kHz | 2152 | 48 | 6 | 5 | **0.0274** | 24.87 s |
+
+Per speaker, the 48 kHz path: 1089 0.0083, 1188 0.0347, 121 0.0593 — worse on
+the two long speakers, slightly better on the 89-second one. The counts are
+deterministic; a second `--via 48000` run returned 45/8/6 again, so the
+0.0056 gap is real and not run-to-run noise.
+
+That gap is over the half-point line, which by the plan makes the resampler the
+suspect. It is not. Running the same round trip with `ffmpeg` doing *both*
+legs — 16 kHz up to 48 kHz, straight back down to 16 kHz, `resample::to_16k`
+never called — scores 0.0297 (50 S, 7 I, 7 D), worse than the 0.0274 our
+resampler gets on the same upsampled input. The cost is in the round trip, and
+rubato is the better half of it.
+
+Which is the limit of this experiment, and worth saying plainly: the fixture is
+band-limited to 8 kHz, so upsampling to 48 kHz adds no information and the
+return leg cannot recover any. Whatever it measures is conversion artifact — a
+lower bound on the noise the arithmetic introduces, not what genuine 48 kHz
+microphone audio costs on the way down. Real capture carries content above
+8 kHz that a downsampler has to discard properly, and nothing here tests that.
+Measuring it needs a fixture recorded at 48 kHz, not one manufactured from a
+16 kHz one; that is a fixture task, not a resampler fix.
 
 ---
 
