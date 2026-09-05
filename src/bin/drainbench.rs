@@ -14,9 +14,12 @@
 //!
 //!   cargo run --release --bin drainbench -- [seconds] [wav]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use anyhow::bail;
 
 use ambient::{asr, resample, session, vad};
 
@@ -51,34 +54,61 @@ fn main() -> anyhow::Result<()> {
     println!("\nidle (no ASR):      {}", idle);
 
     let stop = Arc::new(AtomicBool::new(false));
+    let passes = Arc::new(AtomicUsize::new(0));
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let worker = {
         let stop = stop.clone();
+        let passes = passes.clone();
         let asr_dir = asr_dir.to_string_lossy().into_owned();
         let vad_path = vad_path.to_string_lossy().into_owned();
-        std::thread::spawn(move || -> anyhow::Result<usize> {
+        std::thread::spawn(move || -> anyhow::Result<()> {
             // Exactly what `queue::Queue::spawn` sets.
             #[cfg(target_os = "macos")]
             unsafe {
                 libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
             }
-            let mut vad = vad::Vad::load(&vad_path)?;
-            let mut rec = asr::Recognizer::load(&asr_dir)?;
+            let mut vad = match vad::Vad::load(&vad_path) {
+                Ok(vad) => vad,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return Ok(());
+                }
+            };
+            let mut rec = match asr::Recognizer::load(&asr_dir) {
+                Ok(rec) => rec,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return Ok(());
+                }
+            };
+            let _ = ready_tx.send(Ok(()));
             let chunks = vad.turns(&samples, 30)?;
-            let mut passes = 0;
             while !stop.load(Ordering::Relaxed) {
                 let _ = rec.transcribe_segments(&samples, &chunks)?;
-                passes += 1;
+                passes.fetch_add(1, Ordering::Relaxed);
             }
-            Ok(passes)
+            Ok(())
         })
     };
-    // Let the models load so the measurement is of decoding, not disk.
-    std::thread::sleep(Duration::from_secs(3));
+    match ready_rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(Ok(())) => {}
+        Ok(Err(msg)) => bail!(msg),
+        Err(RecvTimeoutError::Timeout) => bail!("worker not ready after 120 s"),
+        Err(RecvTimeoutError::Disconnected) => {
+            bail!("worker exited before signalling readiness")
+        }
+    }
+    let before = passes.load(Ordering::Relaxed);
     let under_asr = measure(seconds, &stop);
+    let after = passes.load(Ordering::Relaxed);
     stop.store(true, Ordering::Relaxed);
-    let passes = worker.join().expect("asr thread panicked")?;
+    worker.join().expect("asr thread panicked")?;
     println!("under ASR:          {under_asr}");
-    println!("asr passes:         {passes}");
+    println!("asr passes:         {}", after - before);
+
+    if after - before == 0 {
+        bail!("no decode completed during the measured window");
+    }
 
     // The verdict, against the smaller of the two rings.
     let budget = Duration::from_secs(30);
