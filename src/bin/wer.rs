@@ -1,7 +1,7 @@
 //! Word error rate for Ambient's own transcription path.
 //!
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
-//!                                     [--model <dir>]
+//!                                     [--model <dir>] [--via <hz>]
 //!
 //! Scores the fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished track: the same model resolution, the
@@ -11,11 +11,17 @@
 //! `--model` overrides only the ASR directory, through the same
 //! `session::model_paths` a `record --model` goes through, so comparing two
 //! shipped models compares them at the one place the product chooses one.
+//!
+//! `--via <hz>` puts the fixture through `resample::to_16k` first, by
+//! upsampling each wav to that rate with `ffmpeg` and resampling it back. The
+//! fixture is native 16 kHz, so without this the resampler every real
+//! recording goes through — Core Audio delivers 48 kHz — is never measured.
 
-use ambient::{asr::Recognizer, features, resample::TARGET_HZ, session, vad::Vad, wer};
+use ambient::{asr::Recognizer, features, resample, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 /// One fixture as `scripts/fetch-fixtures` writes it. `utterances` and
@@ -47,22 +53,83 @@ struct Row {
 }
 
 fn default_manifest() -> PathBuf {
+    cache_root().join("fixtures/wer/manifest.json")
+}
+
+fn cache_root() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".cache/ambient/fixtures/wer/manifest.json")
+    PathBuf::from(home).join(".cache/ambient")
+}
+
+/// The fixture wav upsampled to `hz`, cached beside the fixture it came from.
+/// Written once and reused: the point of measuring is `resample::to_16k`, and
+/// re-running ffmpeg every time would only add a fixed cost to every run.
+fn upsampled(src: &Path, speaker: &str, hz: u32) -> Result<PathBuf> {
+    let dir = cache_root().join("fixtures/via").join(hz.to_string());
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let dst = dir.join(format!("{speaker}.wav"));
+    if dst.exists() {
+        return Ok(dst);
+    }
+    let out = Command::new("ffmpeg")
+        .args(["-nostdin", "-loglevel", "error", "-y", "-i"])
+        .arg(src)
+        .args(["-ac", "1", "-c:a", "pcm_s16le", "-ar"])
+        .arg(hz.to_string())
+        .arg(&dst)
+        .output()
+        .context("running ffmpeg — --via needs it on PATH (brew install ffmpeg)")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&dst);
+        bail!(
+            "ffmpeg could not upsample {} to {hz} Hz: {}",
+            src.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(dst)
+}
+
+/// The fixture's samples at 16 kHz, either read straight or taken the long way
+/// round through `hz` so the resampler is in the measured path.
+fn samples_for(wav: &str, speaker: &str, via: Option<u32>) -> Result<Vec<f32>> {
+    let Some(hz) = via else {
+        return features::read_wav(wav)
+            .with_context(|| format!("reading {wav} — run scripts/fetch-fixtures"));
+    };
+    let up = upsampled(Path::new(wav), speaker, hz)?;
+    let (samples, rate) = resample::read_wav_any(&up)?;
+    if rate != hz {
+        bail!(
+            "{} is {rate} Hz, not the {hz} Hz it was written at",
+            up.display()
+        );
+    }
+    resample::to_16k(&samples, rate)
 }
 
 fn main() -> Result<()> {
     let mut manifest = None;
     let mut json = None;
     let mut model = None;
+    let mut via: Option<u32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a path"));
+        let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a value"));
         match a.as_str() {
             "--manifest" => manifest = Some(PathBuf::from(value("--manifest")?)),
             "--json" => json = Some(PathBuf::from(value("--json")?)),
             "--model" => model = Some(value("--model")?),
-            _ => bail!("usage: wer [--manifest <path>] [--json <path>] [--model <dir>]"),
+            "--via" => {
+                let hz = value("--via")?;
+                via = Some(
+                    hz.parse()
+                        .with_context(|| format!("--via wants a sample rate in hz, not {hz:?}"))?,
+                );
+            }
+            _ => {
+                bail!("usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <hz>]")
+            }
         }
     }
     let manifest = manifest.unwrap_or_else(default_manifest);
@@ -101,8 +168,7 @@ fn main() -> Result<()> {
             .wav
             .to_str()
             .with_context(|| format!("{} is not valid UTF-8", entry.wav.display()))?;
-        let samples = features::read_wav(wav)
-            .with_context(|| format!("reading {} — run scripts/fetch-fixtures", wav))?;
+        let samples = samples_for(wav, &entry.speaker, via)?;
         let reference = std::fs::read_to_string(&entry.reference).with_context(|| {
             format!(
                 "reading {} — run scripts/fetch-fixtures",
