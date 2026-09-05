@@ -168,6 +168,36 @@ transcriber currently holds the lock on answers `Failed` saying it is being
 transcribed. A directory with no `session.json` and no fresh audio is a
 failed capture and is removed like any other.
 
+## `export`
+
+A session rendered as `markdown`, `text`, `json`, `srt`, `vtt` or `assistant`.
+Dispatcher-only: not in `methods()` and not offered over MCP, the same
+posture as `search`.
+
+Request:
+
+```json
+{"session": "2026-09-05-1200", "format": "srt"}
+```
+
+`format` is optional and defaults to `"markdown"`; a name it does not
+recognise is `InvalidParams` naming all six.
+
+Reply:
+
+```json
+{
+  "session": "2026-09-05-1200",
+  "format": "srt",
+  "text": "1\n00:00:05,000 --> 00:00:06,000\nthe budget review is at noon\n"
+}
+```
+
+Every format but `markdown` reads the raw transcript folded with
+`edits.jsonl`, not `markdown`'s bleed-deduped view, so exporting a call with
+speakerphone overlap keeps both copies where the markdown document would drop
+one.
+
 ## `status`
 
 What Ambient is doing right now: the live session, if any, and what is

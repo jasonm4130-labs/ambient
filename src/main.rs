@@ -22,8 +22,8 @@ USAGE
   ambient meta <session-dir> name|notes|pinned|tag|untag <value>
                                        set the name/notes, pin, or add/remove a tag
   ambient delete <session-dir> --yes   remove a session and its audio
-  ambient export <session-dir> [--out <path>]
-                                       write transcript.md
+  ambient export <session-dir> [--format <f>] [--out <path>]
+                                       write markdown, text, json, srt, vtt or assistant
   ambient config [<key> <value>]       show or change settings
   ambient mcp                          serve sessions over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
@@ -226,19 +226,40 @@ fn main() -> Result<()> {
                 bail!("{USAGE}");
             }
             let dir = std::path::Path::new(&dir);
-            let mut out = dir.join("transcript.md");
+            let mut format_arg: Option<String> = None;
+            let mut out: Option<std::path::PathBuf> = None;
             while let Some(a) = args.next() {
                 match a.as_str() {
+                    "--format" => {
+                        format_arg = Some(
+                            args.next()
+                                .ok_or_else(|| anyhow::anyhow!("--format needs a value"))?,
+                        )
+                    }
                     "--out" => {
-                        out = args
-                            .next()
-                            .ok_or_else(|| anyhow::anyhow!("--out needs a path"))?
-                            .into()
+                        out = Some(
+                            args.next()
+                                .ok_or_else(|| anyhow::anyhow!("--out needs a path"))?
+                                .into(),
+                        )
                     }
                     other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
                 }
             }
-            std::fs::write(&out, ambient::session::markdown(dir)?)?;
+            let format: ambient::export::Format = match &format_arg {
+                Some(f) => f.parse().map_err(|e| anyhow::anyhow!("{e}\n\n{USAGE}"))?,
+                None => ambient::export::Format::Markdown,
+            };
+            let default_name = match format {
+                ambient::export::Format::Markdown => "transcript.md",
+                ambient::export::Format::Text => "transcript.txt",
+                ambient::export::Format::Json => "transcript.json",
+                ambient::export::Format::Srt => "transcript.srt",
+                ambient::export::Format::Vtt => "transcript.vtt",
+                ambient::export::Format::Assistant => "transcript.assistant.md",
+            };
+            let out = out.unwrap_or_else(|| dir.join(default_name));
+            std::fs::write(&out, ambient::export::render(dir, format)?)?;
             println!("{}", out.display());
             Ok(())
         }

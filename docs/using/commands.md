@@ -256,13 +256,16 @@ letting you ask. See
 ## export
 
 ```sh
-ambient export <session-dir> [--out <path>]
+ambient export <session-dir> [--format <f>] [--out <path>]
 ```
 
-Writes `transcript.md` — into the session directory unless `--out` says
-otherwise — and prints the path. The file is derived; `raw.jsonl` plus
-`edits.jsonl` remain the only source of truth, and `record`, `diarize` and
-`name` each regenerate it. See [sessions](../developing/sessions.md).
+Writes a transcript — into the session directory unless `--out` says
+otherwise — and prints the path. `--format` is one of `markdown`, `text`,
+`json`, `srt`, `vtt` or `assistant` and defaults to `markdown`; the default
+filename follows the format (`transcript.md`, `.txt`, `.json`, `.srt`, `.vtt`,
+or `.assistant.md`). The file is derived; `raw.jsonl` plus `edits.jsonl`
+remain the only source of truth, and `record`, `diarize` and `name` each
+regenerate the `markdown` one. See [sessions](../developing/sessions.md).
 
 ## transcribe
 

@@ -5,6 +5,7 @@ pub mod capture;
 pub mod config;
 pub mod der;
 pub mod diarize;
+pub mod export;
 pub mod fbank;
 pub mod features;
 pub mod mcp;

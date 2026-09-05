@@ -7,6 +7,7 @@
 //! without either one growing a special case for the other.
 
 use crate::config::Config;
+use crate::export;
 use crate::session;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -107,6 +108,7 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
         "search" => search(&paths.root(), params),
         "session.update" => session_update(&paths.root(), params),
         "session.delete" => session_delete(&paths.root(), params),
+        "export" => export_session(&paths.root(), params),
         other => Err(ApiError::InvalidParams(format!("no such method {other:?}"))),
     }
 }
@@ -281,6 +283,42 @@ fn session_delete(root: &Path, params: &Value) -> Result<Value, ApiError> {
         session::claim_transcription(&dir).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
     session::delete(root, id, &lock).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
     Ok(json!({"session": id, "deleted": true}))
+}
+
+/// The `export` method: a session rendered in one of `export::Format`'s six
+/// shapes. `session` is required and must be a string; `format` is optional
+/// and defaults to `"markdown"`, and a name `export::Format` does not
+/// recognise is `InvalidParams` naming all six. Dispatcher-only, the same
+/// posture as [`search`] — not in [`methods`] and not offered over MCP.
+///
+/// Resolved through [`session_dir`] and [`symlinked`], the same containment
+/// every other method here uses. No lock: export only reads, and the
+/// transcriber never needs to exclude a reader.
+fn export_session(root: &Path, params: &Value) -> Result<Value, ApiError> {
+    let args = params
+        .as_object()
+        .ok_or_else(|| ApiError::InvalidParams("`export` needs a string `session`".into()))?;
+    let id = args
+        .get("session")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
+    let format_name = match args.get("format") {
+        None => "markdown",
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| ApiError::InvalidParams("`format` must be a string".into()))?,
+    };
+    let format: export::Format = format_name
+        .parse()
+        .map_err(|e| ApiError::InvalidParams(format!("{e}")))?;
+
+    let dir = session_dir(root, id).map_err(ApiError::Failed)?;
+    if let Some(refusal) = symlinked(&dir) {
+        return Err(ApiError::Failed(refusal));
+    }
+
+    let text = export::render(&dir, format).map_err(|e| ApiError::Failed(format!("{e:#}")))?;
+    Ok(json!({"session": id, "format": format_name, "text": text}))
 }
 
 /// `root/id`, or why that is not a session of this machine. An id is one path
@@ -606,6 +644,33 @@ mod tests {
         };
         assert!(message.contains("being transcribed"), "{message}");
         assert!(dir.exists());
+    }
+
+    /// The exact JSON in `docs/developing/api.md`'s `## \`export\`` section,
+    /// so the doc and the dispatcher cannot drift apart.
+    #[test]
+    fn export_answers_the_documented_request_with_the_documented_shape() {
+        let (paths, root) = temp_paths("export-docs");
+        let dir = root.join("2026-09-05-1200");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("raw.jsonl"),
+            r#"{"track":"room","start_ms":5000,"end_ms":6000,"text":"the budget review is at noon","confidence":0.9}
+"#,
+        )
+        .unwrap();
+
+        let request: Value =
+            serde_json::from_str(r#"{"session": "2026-09-05-1200", "format": "srt"}"#).unwrap();
+        let got = call("export", &request, &paths).unwrap();
+        assert_eq!(
+            got,
+            json!({
+                "session": "2026-09-05-1200",
+                "format": "srt",
+                "text": "1\n00:00:05,000 --> 00:00:06,000\nthe budget review is at noon\n"
+            })
+        );
     }
 
     #[test]
