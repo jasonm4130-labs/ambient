@@ -362,6 +362,37 @@ audio separated in 6.77 s.
 "missed_s", "false_alarm_s", "confusion_s", "der", "run_s"}`, the total among
 them with `meeting` reading `total`.
 
+## DER by threshold
+
+`cargo run --release --bin der -- --threshold <t> --json <tmp>`, on 2026-09-05,
+on the same fixture and the same 0.25 s collar as the section above. Each
+meeting cell is that meeting's DER with the hypothesis speaker count beside it;
+the reference count is in the header.
+
+| Threshold | ES2004a (ref 3) | IS1009a (ref 4) | TS3003a (ref 4) | Total DER |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.30 | 0.2242 (12 spk) | 0.3204 (22 spk) | 0.2739 (17 spk) | 0.2745 |
+| 0.40 | 0.1538 (9 spk) | 0.2332 (13 spk) | 0.1332 (8 spk) | 0.1678 |
+| **0.50 (shipped)** | **0.1279 (6 spk)** | **0.2058 (7 spk)** | **0.1116 (6 spk)** | **0.1434** |
+| 0.60 | 0.1218 (5 spk) | 0.1741 (5 spk) | 0.0873 (4 spk) | 0.1217 |
+| 0.70 | 0.1163 (4 spk) | 0.2443 (3 spk) | 0.0800 (2 spk) | 0.1375 |
+| 0.80 | 0.1157 (3 spk) | 0.3588 (2 spk) | 0.0800 (2 spk) | 0.1709 |
+
+The default holds at 0.5. The lowest total is 0.6 at 0.1217, and its speaker
+counts stay inside twice the reference on every meeting, but the keep rule for
+this sweep asks for more than 0.01 of DER on *every* meeting and ES2004a gives
+0.0061 — 0.1279 to 0.1218. One meeting of three carrying a change to a shipped
+constant is exactly what that margin is there to refuse.
+
+Missed speech and false alarm do not move: 30.14 s and 14.97 s at all six
+thresholds. Clustering only relabels spans, so the whole sweep is confusion,
+from 16.00 s at 0.6 to 92.78 s at 0.3. Nor is the curve monotonic — past 0.6 the
+total climbs back to 0.1375 and 0.1709 while ES2004a keeps improving, because
+IS1009a merges its four speakers down to three and then two and pays 22.89 s
+and 39.72 s of confusion for it. A threshold that suits one meeting is already
+wrong for another at three meetings; that is the argument for a holdout, not
+for a new constant.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
