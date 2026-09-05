@@ -46,6 +46,10 @@ over the transcript, the recording in flight pinned at the top of the list, and
 the warnings a capture stored about itself. The CLI verbs below all still work
 and are what scripting and debugging use.
 
+`ambient mcp` serves the same sessions to Claude Code and other MCP clients as
+data rather than Markdown — three read-only tools over stdio, registered once:
+[docs/using/mcp.md](docs/using/mcp.md).
+
 ## End-to-end result
 
 M5 Max / 128 GB / macOS 26.6.2, v3-int8, synthesised speech via `say`:
