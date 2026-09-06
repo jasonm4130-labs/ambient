@@ -123,13 +123,20 @@ export function Sessions({ onSettings }: SessionsProps) {
         </button>
       </aside>
       <main className="flex flex-1 flex-col overflow-hidden">
-        {selected === null || selectedSummary === null ? (
+        {selected === null ? (
           <div className="flex flex-1 items-center justify-center p-8">
             <p className="text-muted-foreground text-sm">Select a session to see its transcript.</p>
           </div>
         ) : (
           <>
-            <SessionHeader summary={selectedSummary} onChanged={refresh} onDeleted={onDeleted} />
+            {selectedSummary !== null && (
+              <SessionHeader
+                key={selectedSummary.id}
+                summary={selectedSummary}
+                onChanged={refresh}
+                onDeleted={onDeleted}
+              />
+            )}
             <Transcript session={selected} {...(highlightIndex !== undefined && { highlightIndex })} />
             <NamingStrip session={selected} onChanged={refresh} />
           </>
