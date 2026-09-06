@@ -49,6 +49,8 @@ are in [the UI chapter](../developing/ui.md).
 
 The signed app is built and running from the primary checkout. The real doctor
 checks passed 10/10. The full completion evidence and limits are in the
-[audit](2026-09-06-nightwatch-review.md). The independent review remains pending:
-1Password readiness failed with `account is not signed in`. No review verdict
-is claimed, and the branch has not been merged or published.
+[audit](2026-09-06-nightwatch-review.md). Desktop-integrated 1Password sign-in
+and a vault-access check subsequently passed. The independent review remains
+pending explicit approval for the external Codex/Terra transfer, requested by
+automatic approval review. No review verdict is claimed, and the branch has
+not been merged or published.

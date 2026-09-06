@@ -6,9 +6,12 @@ title: "Nightwatch review and completion audit"
 
 The September 5 Nightwatch branch left four UI tasks unfinished. The September
 6 follow-up completes those implementation tasks on the review branch. The
-independent CLI review remains pending because `op whoami` reports `account is
-not signed in`; the shared instructions require 1Password readiness before
-that review is dispatched. No merge or publication has been performed.
+independent CLI review remains pending approval to send the branch changes to
+the Codex/Terra service. Desktop-integrated sign-in succeeded on September 6,
+and the CLI verified access to five vaults without reading secrets. The earlier
+`op whoami` error did not establish that the desktop app was locked. Automatic
+approval review then rejected the external review command pending explicit
+transfer approval. No merge or publication has been performed.
 
 The original audit compared `e5e2de5` with `f6acc6d8` and the six specifications
 in `~/.local/state/nightwatch/ambient/specs/`. Its initial defect repairs are in
