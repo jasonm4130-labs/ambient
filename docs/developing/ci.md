@@ -20,7 +20,7 @@ CI cannot test.
 | --- | --- | --- | --- |
 | `hygiene` | `blacksmith-4vcpu-ubuntu-2404` | always | `typos`, and `cargo-deny check` |
 | `ui` | `blacksmith-4vcpu-ubuntu-2404` | `ui/**` or the bundle changed | `tsc`, `oxlint`, `vite build`, and a drift check on the committed bundle |
-| `rust` | `macos-latest` | code changed | `fmt`, `clippy -D warnings`, `test --all-targets`, `symbolcheck`, and `make-app.sh` |
+| `rust` | `blacksmith-6vcpu-macos-latest` | code changed | `fmt`, `clippy -D warnings`, `test --all-targets`, `symbolcheck`, and `make-app.sh` |
 | `docs` | `blacksmith-4vcpu-ubuntu-2404` | `docs/**`, `docs-site/**` or `README.md` changed | the site build and its six guards — see [docs](docs.md) |
 | `gate` | `blacksmith-4vcpu-ubuntu-2404` | always | fails unless every job above succeeded or was skipped |
 
@@ -55,10 +55,12 @@ elsewhere. CI remains the check of record for anyone without the hook. The
 same hook refuses a commit on `main`; the path a change takes instead is
 [how changes reach main](branching.md).
 
-That split is a cost decision. Blacksmith's Linux runner is $0.004/min against
-`macos-latest` at $0.062/min, roughly fifteen times cheaper, and the two jobs
-that do not need a Mac are most of the wall clock. The `rust` job measured
-2m43s cold and 1m51s warm.
+Keeping jobs that do not need a Mac on Linux limits macOS usage. The Rust job
+now uses Blacksmith's 6-vCPU Apple Silicon runner, which follows GitHub's latest
+macOS image, with a 15-minute job timeout to bound runner usage. The previous
+GitHub-hosted job measured 2m43s cold and 1m51s warm;
+Blacksmith timing still needs a hosted run. Runner labels and billing details
+are in [Blacksmith's runner reference](https://docs.blacksmith.sh/blacksmith-runners/overview).
 
 ## Before pushing: `scripts/check`
 
