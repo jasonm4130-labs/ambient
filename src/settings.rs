@@ -14,13 +14,15 @@
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
 
+use anyhow::anyhow;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertStyle, NSAutoresizingMaskOptions, NSModalResponseOK, NSOpenPanel, NSPasteboard,
-    NSPasteboardTypeString, NSWorkspace,
+    NSAlert, NSAlertStyle, NSApplication, NSAutoresizingMaskOptions, NSModalResponseOK,
+    NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -35,6 +37,7 @@ use serde_json::{json, Value};
 
 use crate::api::{self, ApiError};
 use crate::config::Config;
+use crate::session;
 
 const PAGE: &str = include_str!("../assets/settings.html");
 
@@ -142,6 +145,12 @@ struct Ivars {
     route: Cell<&'static str>,
     /// Events recorded before the page's `init`, delivered once it arrives.
     events: RefCell<Events>,
+    /// The session currently being diarized on a worker thread, and the
+    /// channel its result arrives on. One job at a time, exactly like the
+    /// native pane's `diarizing` ivar — two diarizers at once would double
+    /// the ONNX memory for no reason, and the two are kept safely apart by
+    /// `session::claim_transcription`, which the worker below claims first.
+    diarizing: RefCell<Option<(String, Receiver<anyhow::Result<usize>>)>>,
 }
 
 define_class!(
@@ -268,6 +277,25 @@ impl Bridge {
                 let result = self.reveal(session);
                 self.eval(&reply_js(req.id, result));
             }
+            // Each forwards its selector up the responder chain exactly as
+            // the native Stop button does today (`src/window.rs:800`), to
+            // the app delegate that owns the phase. The reply carries whether
+            // the send reached anybody, so a selector that reached nobody is
+            // visible on the wire rather than silently doing nothing.
+            "record.start" => self.forward_action(req.id, sel!(startRecording:)),
+            "record.this_call" => self.forward_action(req.id, sel!(recordThisCall:)),
+            "record.decline" => self.forward_action(req.id, sel!(notThisOne:)),
+            "record.stop" => self.forward_action(req.id, sel!(stopRecording:)),
+            "dismiss" => self.forward_action(req.id, sel!(dismissFailure:)),
+            "diarize.start" => {
+                let session = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("session"))
+                    .and_then(Value::as_str);
+                let result = self.diarize_start(session);
+                self.eval(&reply_js(req.id, result));
+            }
             _ => {
                 let params = req.params.unwrap_or_else(|| json!({}));
                 let result = api::call(&req.method, &params, &self.paths());
@@ -385,6 +413,90 @@ impl Bridge {
         }
         Ok(json!({}))
     }
+
+    /// Send `sel` up the responder chain to whoever answers for it — the app
+    /// delegate, which owns the `PhaseCell` — and reply with whether it
+    /// reached anybody. `startRecording:`, `recordThisCall:`, `notThisOne:`,
+    /// `stopRecording:` and `dismissFailure:` all take no target-specific
+    /// argument, so this one helper covers every button behind `record.*`
+    /// and `dismiss`.
+    fn forward_action(&self, id: u64, sel: Sel) {
+        let mtm = MainThreadMarker::from(self);
+        let app = NSApplication::sharedApplication(mtm);
+        let me: &AnyObject = self;
+        let sent = unsafe { app.sendAction_to_from(sel, None, Some(me)) };
+        self.eval(&reply_js(id, Ok(json!({"sent": sent}))));
+    }
+
+    /// `diarize.start {session}`: the same `session::diarize_session` worker
+    /// `separateVoices:` spawns (`src/window.rs:892-895`), owned by the
+    /// bridge instead of the window. One job at a time, like the native
+    /// pane's own `diarizing` ivar — a request while any session is
+    /// separating is refused rather than queued. The worker claims
+    /// `session::claim_transcription` first, which is what keeps this job
+    /// and the native pane's from racing on the same directory.
+    fn diarize_start(&self, session: Option<&str>) -> Result<Value, ApiError> {
+        let session =
+            session.ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
+        if session.is_empty() || session == "." || session == ".." || session.contains('/') {
+            return Err(ApiError::InvalidParams(format!(
+                "{session:?} is not a session id"
+            )));
+        }
+        if let Some((current, _)) = self.ivars().diarizing.borrow().as_ref() {
+            return Err(ApiError::Failed(format!("already separating {current}")));
+        }
+        let dir = self.paths().root().join(session);
+        let threshold = Config::load().threshold;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_dir = dir.clone();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let _lock = session::claim_transcription(&worker_dir)?;
+                session::diarize_session(&worker_dir, threshold)
+            })();
+            tx.send(result).ok();
+        });
+        *self.ivars().diarizing.borrow_mut() = Some((session.to_string(), rx));
+        Ok(json!({"started": true}))
+    }
+
+    /// Drain the diarize worker's channel, the same way the recording
+    /// worker's receiver is polled from `menubar.rs`'s timer tick — a
+    /// channel, not a flag file. Called from `SessionList::render`, beside
+    /// the `phase` event. Emits no `running` event: the page already knows
+    /// it started, because its own `diarize.start` resolved.
+    pub fn poll_diarize(&self) {
+        let done = {
+            let d = self.ivars().diarizing.borrow();
+            match d.as_ref() {
+                Some((_, rx)) => match rx.try_recv() {
+                    Ok(r) => Some(r),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => {
+                        Some(Err(anyhow!("the diarize worker thread went away")))
+                    }
+                },
+                None => None,
+            }
+        };
+        let Some(result) = done else { return };
+        let session = self
+            .ivars()
+            .diarizing
+            .borrow_mut()
+            .take()
+            .map(|(s, _)| s)
+            .unwrap_or_default();
+        let (state, error) = match result {
+            Ok(_) => ("done", None),
+            Err(e) => ("failed", Some(format!("{e:#}"))),
+        };
+        self.event(
+            "diarize",
+            &json!({"session": session, "state": state, "error": error}),
+        );
+    }
 }
 
 /// The settings pane: the `WKWebView` and the bridge that answers it, kept
@@ -410,6 +522,7 @@ impl SettingsPane {
             recording: Cell::new(false),
             route: Cell::new("sessions"),
             events: RefCell::new(Events::default()),
+            diarizing: RefCell::new(None),
         });
         let bridge: Retained<Bridge> = unsafe { msg_send![super(bridge), init] };
 
@@ -457,6 +570,13 @@ impl SettingsPane {
     /// `diarize`. Unit 5's `render` calls this with `phase`.
     pub fn event(&self, name: &str, payload: &Value) {
         self.bridge.event(name, payload);
+    }
+
+    /// Forwards to the bridge's own diarize poll. `window.rs` only holds the
+    /// pane, so `SessionList::render` reaches the bridge's job through here,
+    /// beside the `event("phase", …)` call.
+    pub fn poll_diarize(&self) {
+        self.bridge.poll_diarize();
     }
 
     /// Sets the route `init` answers with to `settings` and tells a page

@@ -237,14 +237,52 @@ fn main() {
                 );
             }
             5 => {
-                println!("\n[3] navigating to settings");
+                println!("\n[3] injecting a `phase` event (recording)");
+                js(
+                    &w,
+                    r#"window.ambient.event("phase", {
+                        kind: "recording",
+                        app: "us.zoom.xos",
+                        live: {
+                            id: "2026-08-29T1517",
+                            elapsed_s: 42,
+                            room_level: 0.3,
+                            call_level: 0.6,
+                            audio_arriving: true,
+                            status_line: "Recording"
+                        },
+                        queue: null,
+                        failure: null
+                    });"#,
+                );
+            }
+            6 => {
+                println!("\n[4] reading back the live card the phase event drew");
+                js(
+                    &w,
+                    r#"(() => {
+                        const t = (id) => document.querySelector(`[data-testid="${id}"]`);
+                        const probe = {
+                          card: t("live-card") !== null,
+                          clock: t("live-clock")?.textContent ?? null,
+                          room: t("live-meter-room")?.getAttribute("data-level") ?? null,
+                          call: t("live-meter-call")?.getAttribute("data-level") ?? null,
+                        };
+                        window.webkit.messageHandlers.ambient.postMessage(JSON.stringify({
+                          live_probe: probe,
+                        }));
+                     })();"#,
+                );
+            }
+            7 => {
+                println!("\n[5] navigating to settings");
                 js(
                     &w,
                     r#"window.ambient.event("navigate", {page: "settings"});"#,
                 );
             }
-            6 => {
-                println!("\n[4] reading back what the page rendered");
+            8 => {
+                println!("\n[6] reading back what the page rendered");
                 js(
                     &w,
                     r#"(() => {
@@ -268,14 +306,14 @@ fn main() {
                      })();"#,
                 );
             }
-            7 => {
-                println!("\n[5] clicking the diarize switch");
+            9 => {
+                println!("\n[7] clicking the diarize switch");
                 js(
                     &w,
                     r#"document.querySelector('[data-testid="diarize-switch"]').click();"#,
                 );
             }
-            8 => {
+            10 => {
                 let out = std::env::args()
                     .nth(1)
                     .unwrap_or_else(|| "uicheck.png".into());
@@ -296,7 +334,7 @@ fn main() {
                 unsafe { w.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
                 std::mem::forget(handler);
             }
-            9 => {
+            11 => {
                 println!(
                     "\n{} message(s) reached the bridge",
                     p.ivars().seen.borrow().len()

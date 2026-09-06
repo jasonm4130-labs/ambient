@@ -61,6 +61,13 @@ function gutter(ms: number): string {
   return `[${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}]`;
 }
 
+/// `window.ambient.event("diarize", …)`'s payload.
+interface DiarizeEvent {
+  session: string;
+  state: "done" | "failed";
+  error: string | null;
+}
+
 interface TranscriptProps {
   session: string;
 }
@@ -78,6 +85,7 @@ export function Transcript({ session }: TranscriptProps) {
   const [verbatim, setVerbatim] = useState(false);
   const [reply, setReply] = useState<TranscriptReply>();
   const [error, setError] = useState<string>();
+  const [separating, setSeparating] = useState(false);
 
   const loadTranscript = useLatest(
     useCallback(
@@ -112,6 +120,38 @@ export function Transcript({ session }: TranscriptProps) {
     });
   }, [bridge, session]);
 
+  const separateVoices = useCallback(() => {
+    setSeparating(true);
+    void bridge.call("diarize.start", { session }).catch((e: unknown) => {
+      setSeparating(false);
+      setError(e instanceof Error ? e.message : String(e));
+    });
+  }, [bridge, session]);
+
+  // Ignores an event for a session other than the one on screen — the bridge
+  // runs one diarize job at a time, but the selection can move on while it
+  // is still running.
+  useEffect(
+    () =>
+      bridge.on("diarize", (payload) => {
+        const event = payload as DiarizeEvent;
+        if (event.session !== session) return;
+        setSeparating(false);
+        if (event.state === "failed") {
+          setError(event.error ?? "separating voices failed");
+        } else {
+          loadTranscript(session, verbatim)
+            .then((next) => {
+              if (next !== undefined) setReply(next);
+            })
+            .catch((e: unknown) => {
+              setError(e instanceof Error ? e.message : String(e));
+            });
+        }
+      }),
+    [bridge, session, verbatim, loadTranscript],
+  );
+
   const groups = reply === undefined ? [] : groupLines(reply.lines);
 
   return (
@@ -143,6 +183,16 @@ export function Transcript({ session }: TranscriptProps) {
           </Button>
           <Button type="button" variant="outline" size="sm" data-testid="reveal-button" onClick={reveal}>
             Reveal in Finder
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="separate-voices"
+            disabled={separating}
+            onClick={separateVoices}
+          >
+            {separating ? "Separating voices…" : "Separate voices"}
           </Button>
         </div>
       </div>

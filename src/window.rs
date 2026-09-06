@@ -57,6 +57,7 @@ use objc2_foundation::{
     NSIndexSet, NSInteger, NSMutableAttributedString, NSNotification, NSObject, NSObjectProtocol,
     NSPoint, NSRect, NSSize, NSString, NSUInteger, NSURL,
 };
+use serde_json::{json, Value};
 
 use crate::session::{self, MeterPhase, SessionMeta};
 use crate::settings::SettingsPane;
@@ -245,6 +246,53 @@ impl LiveShot {
             None => format!("Started by hand → {}", self.id),
         }
     }
+}
+
+/// The `phase` event's wire shape, read off the same phase and the same
+/// shared [`session::Meter`] [`LiveShot::of`] draws the native pane from.
+/// A free function, not a method — it takes no `self` and wants to sit next
+/// to `LiveShot::of` rather than bury the projection inside `SessionList`.
+fn phase_payload(phase: &Phase, queue: Option<&str>) -> Value {
+    let kind = match phase.kind() {
+        PhaseKind::Idle => "idle",
+        PhaseKind::Armed => "armed",
+        PhaseKind::Recording => "recording",
+        PhaseKind::Stopping => "stopping",
+        PhaseKind::Failed => "failed",
+    };
+    let live = phase.live().map(|live| {
+        let m = &live.meter;
+        let id = live
+            .dir
+            .path()
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let room = (m.room_peak_milli.load(Ordering::Relaxed) as f64 / 1000.0).clamp(0.0, 1.0);
+        let call = (m.call_peak_milli.load(Ordering::Relaxed) as f64 / 1000.0).clamp(0.0, 1.0);
+        json!({
+            "id": id,
+            "elapsed_s": m.elapsed_ms.load(Ordering::Relaxed) / 1000,
+            "room_level": room,
+            "call_level": call,
+            "audio_arriving": m.audio_arriving.load(Ordering::Relaxed),
+            "status_line": m.status_line(),
+        })
+    });
+    let failure = phase.failure().map(|error| {
+        let session = phase
+            .failed_dir()
+            .and_then(|d| d.file_name())
+            .map(|s| s.to_string_lossy().into_owned());
+        json!({"error": error, "session": session})
+    });
+    json!({
+        "kind": kind,
+        "app": phase.app(),
+        "live": live,
+        "queue": queue,
+        "failure": failure,
+    })
 }
 
 /// The newest mtime among the files whose contents `describe` reads. The
@@ -970,7 +1018,7 @@ impl SessionList {
     /// The phase entry point. Projects the one thing the window needs from the
     /// phase and then hands off to [`SessionList::repaint`], which is the only
     /// writer of any control here.
-    fn render(&self, phase: &Phase, mtm: MainThreadMarker) {
+    fn render(&self, phase: &Phase, queue: Option<&str>, mtm: MainThreadMarker) {
         *self.ivars().phase_note.borrow_mut() = phase.failure().map(str::to_string);
         // Read the atomics here, once, and treat them as a value from this
         // point on: everything below is a repaint that handlers also call, and
@@ -982,6 +1030,10 @@ impl SessionList {
         // than read there, so the pane keeps no state of its own about what
         // the app is doing.
         self.ivars().settings.set_recording(phase.live().is_some());
+        self.ivars()
+            .settings
+            .event("phase", &phase_payload(phase, queue));
+        self.ivars().settings.poll_diarize();
         self.repaint(mtm);
     }
 
@@ -1958,7 +2010,7 @@ impl MainWindow {
     /// one added in `NSRunLoopCommonModes` — a `scheduledTimer` stops during
     /// menu tracking and any modal panel, which is exactly when this window
     /// must keep moving.
-    pub fn render(&self, phase: &Phase, mtm: MainThreadMarker) {
+    pub fn render(&self, phase: &Phase, queue: Option<&str>, mtm: MainThreadMarker) {
         // A closed window has nothing to show, and a refresh stats four files
         // per session — twice a second, for the whole of the app's life,
         // against a folder that only grows. The window is closed for almost
@@ -1966,7 +2018,7 @@ impl MainWindow {
         if !self.window.isVisible() {
             return;
         }
-        self.list.render(phase, mtm);
+        self.list.render(phase, queue, mtm);
     }
 
     /// Bring it forward, and promote the app to `Regular` while it is up.

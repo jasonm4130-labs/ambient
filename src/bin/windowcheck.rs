@@ -240,8 +240,8 @@ fn main() {
         // call the delegate's timer makes.
         let borrowed = live.borrow();
         match borrowed.as_ref() {
-            Some(f) => window.render(&f.phase, mtm),
-            None => window.render(&phase.borrow(), mtm),
+            Some(f) => window.render(&f.phase, None, mtm),
+            None => window.render(&phase.borrow(), None, mtm),
         }
         let state = window.describe_state();
         println!("{n}: {state}");
