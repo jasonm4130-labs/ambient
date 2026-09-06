@@ -119,8 +119,20 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
         "speakers.undo" => speakers_undo(paths, params),
         "speakers.unnamed" => speakers_unnamed(paths, params),
         "devices" => Ok(json!({"devices": input_device_names()})),
+        "doctor" => Ok(doctor_checks(paths)),
         other => Err(ApiError::InvalidParams(format!("no such method {other:?}"))),
     }
+}
+
+/// The ten checks `ambient doctor` prints, as JSON, for the window's Welcome
+/// page. The paths come from `Paths` rather than `config::path()` /
+/// `session::home()`, so a test points them at temp files.
+fn doctor_checks(paths: &Paths) -> Value {
+    json!(crate::doctor::run(
+        session::models_root(),
+        &paths.config_file,
+        &paths.root(),
+    ))
 }
 
 /// The `sessions` method: every session directory under the root, newest
@@ -603,6 +615,55 @@ fn session_dirs(root: &Path) -> Vec<PathBuf> {
         .collect();
     dirs.sort();
     dirs
+}
+
+/// `api::call("doctor", …)` answers the checks `doctor::run` reports, with
+/// the paths from `Paths` — a free test function rather than one inside
+/// `mod tests`, so `cargo test api::doctor` matches it.
+#[cfg(test)]
+#[test]
+fn doctor_answers_the_checks_doctor_run_reports() {
+    let dir = std::env::temp_dir().join(format!("ambient-api-doctor-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let sessions_root = dir.join("sessions");
+    std::fs::create_dir_all(&sessions_root).unwrap();
+    let paths = Paths {
+        config_file: dir.join("config.json"),
+        roster_file: dir.join("roster.json"),
+        sessions_root: Some(sessions_root.clone()),
+    };
+
+    let got = call("doctor", &json!({}), &paths).unwrap();
+    let checks = got.as_array().expect("doctor answers an array");
+    assert_eq!(checks.len(), 10);
+
+    for c in checks {
+        let obj = c.as_object().expect("each check is an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["detail", "name", "ok"]);
+        assert!(obj["name"].is_string());
+        assert!(obj["detail"].is_string());
+        assert!(obj["ok"].is_boolean());
+    }
+
+    let got_names: Vec<&str> = checks.iter().map(|c| c["name"].as_str().unwrap()).collect();
+    let expected = crate::doctor::run(session::models_root(), &paths.config_file, &paths.root());
+    let expected_names: Vec<&str> = expected.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(got_names, expected_names);
+
+    let config = checks.iter().find(|c| c["name"] == "config").unwrap();
+    assert_eq!(config["ok"], true);
+    assert_eq!(config["detail"], "defaults");
+
+    let writable = checks
+        .iter()
+        .find(|c| c["name"] == "sessions/writable")
+        .unwrap();
+    assert_eq!(writable["ok"], true);
+    assert_eq!(writable["detail"], sessions_root.display().to_string());
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(test)]

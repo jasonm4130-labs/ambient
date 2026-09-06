@@ -385,3 +385,27 @@ Reply:
 ```json
 {"live": null, "awaiting_transcript": 0, "sessions": 3}
 ```
+
+## `doctor`
+
+The same ten checks `ambient doctor` prints, in `doctor::run`'s fixed order,
+for the window's Welcome page. Each check is `ok` or not; when it is not, the
+fix is the `detail` string.
+
+Request:
+
+```json
+{}
+```
+
+Reply:
+
+```json
+[
+  {"name": "models/root", "ok": true, "detail": "/Users/you/Library/Application Support/ambient/models"},
+  {"name": "models/asr", "ok": true, "detail": "…"},
+  {"name": "config", "ok": true, "detail": "defaults"},
+  {"name": "sessions/writable", "ok": true, "detail": "/Users/you/Documents/Ambient"},
+  {"name": "sessions/stale-lock", "ok": true, "detail": "none"}
+]
+```
