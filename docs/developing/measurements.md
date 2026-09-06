@@ -669,10 +669,10 @@ second copy of it.
 
 | Chunk | Seconds | Ref words | S | I | D | WER | Peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 15 s | 913.74 | 2152 | 40 | 3 | 5 | 0.0223 | 2063 MB |
+| 15 s | 913.74 | 2152 | 40 | 3 | 5 | 0.0223 | 2062 MB |
 | 20 s | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2055 MB |
 | 30 s (default) | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2145 MB |
-| 40 s | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2147 MB |
+| 40 s | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2146 MB |
 
 This 30 s row's 2145 MB is the figure the keep rule below compares against.
 It is not the 2317 MB at the 30 s-chunk level in `## End to end`, the 2158 MB
@@ -684,10 +684,9 @@ they are context here, not the bar.
 The keep rule is per speaker, and RSS besides: a value replaces the shipped
 30 s only if it beats the shipped per-speaker WER (`1089` 0.0042, `1188`
 0.0270, `121` 0.0667) by more than 0.005 on every speaker **and** does not
-raise peak RSS above the 30 s row above. None do. 20 s and 40 s produce the
-identical per-speaker rows as 30 s — no turn in this fixture is long enough
-for the cap to matter between 20 s and 40 s, so widening or narrowing it in
-that range changes nothing about where turns are split — and 40 s costs 2 MB
+raise peak RSS above the 30 s row above. None do. The 20 s, 30 s and 40 s
+rows are identical per speaker, so no turn in this fixture reaches the 20 s
+cap — nothing to split further between 20 s and 40 s — and 40 s costs ~1.7 MB
 more RSS on top of tying, not beating, the WER. 15 s is the one value that
 changes anything: `1188` gets worse (0.0270 → 0.0278, one more substitution)
 and the total moves from 0.0218 to 0.0223, both the wrong direction, while
