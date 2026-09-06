@@ -113,6 +113,54 @@ pub fn score(reference: &[String], hypothesis: &[String]) -> Wer {
     wer
 }
 
+/// Score `hypothesis` against the prefix of `reference` that best matches it,
+/// rather than the whole reference.
+///
+/// For a reference that runs on past where the audio was cut — Earnings-21's
+/// call transcripts cover the full call, but the fixture is only the first
+/// 300 s of it — scoring against the whole reference would count every word
+/// spoken after the cut as a deletion, drowning out what the recogniser
+/// actually got wrong. This finds the prefix length `k` that minimises the
+/// edit distance to the whole hypothesis, then scores normally against
+/// `reference[..k]`.
+///
+/// The search is a rolling two-row Levenshtein DP: it needs `d[i][m]`, the
+/// distance from each reference prefix to the full hypothesis, but never the
+/// whole `n × m` table those come from — O(m) memory rather than O(n·m),
+/// which matters when the reference is a hand-transcribed hour and the
+/// hypothesis is a few hundred words. `score` is then called once, on the
+/// winning prefix, to recover the exact substitution/insertion/deletion
+/// breakdown from its own traceback.
+///
+/// Ties choose the smallest `k`: a longer prefix at the same distance only
+/// enlarges the denominator without explaining any more of the hypothesis,
+/// so the smaller one is the conservative reading.
+pub fn score_prefix(reference: &[String], hypothesis: &[String]) -> Wer {
+    let (n, m) = (reference.len(), hypothesis.len());
+
+    let mut prev: Vec<usize> = (0..=m).collect();
+    let mut best_k = 0;
+    let mut best_dist = prev[m];
+
+    let mut curr = vec![0usize; m + 1];
+    for i in 1..=n {
+        curr[0] = i;
+        for j in 1..=m {
+            let sub = prev[j - 1] + usize::from(reference[i - 1] != hypothesis[j - 1]);
+            let del = prev[j] + 1;
+            let ins = curr[j - 1] + 1;
+            curr[j] = sub.min(del).min(ins);
+        }
+        if curr[m] < best_dist {
+            best_dist = curr[m];
+            best_k = i;
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    score(&reference[..best_k], hypothesis)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +263,57 @@ mod tests {
     #[test]
     fn normalise_folds_the_typographic_apostrophe() {
         assert_eq!(normalise("world\u{2019}s"), normalise("world's"));
+    }
+
+    /// A reference whose tail runs on past the hypothesis — the Earnings-21
+    /// case, where the transcript covers the whole call and the audio is cut
+    /// short — should not charge the tail as deletions once truncated.
+    #[test]
+    fn score_prefix_ignores_a_reference_tail_past_the_hypothesis() {
+        let reference = normalise(
+            "the quick brown fox jumps over the lazy dog and then a lot more that was never said",
+        );
+        let hypothesis = normalise("the quick brown fox jumps over the lazy dog");
+        let wer = score_prefix(&reference, &hypothesis);
+        assert_eq!(wer.substitutions, 0);
+        assert_eq!(wer.insertions, 0);
+        assert_eq!(wer.deletions, 0);
+        assert_eq!(wer.reference_words, 9);
+        assert_eq!(wer.rate(), 0.0);
+    }
+
+    /// An empty hypothesis against a non-empty reference: the best prefix is
+    /// the empty one (`k == 0`), so `reference_words` is 0 and `rate()` takes
+    /// the "nothing to divide by, no insertions" branch and reads 0.0 — not
+    /// 1.0, which is only for a non-empty hypothesis matching no prefix.
+    #[test]
+    fn score_prefix_of_empty_hypothesis_is_the_empty_prefix() {
+        let wer = score_prefix(&normalise("a b c d"), &[]);
+        assert_eq!(wer.reference_words, 0);
+        assert_eq!(wer.rate(), 0.0);
+    }
+
+    /// A non-empty hypothesis that matches nothing in the reference: every
+    /// prefix length ties at the same distance (m insertions), so the
+    /// smallest, `k == 0`, wins, and the hypothesis is wholly unexplained.
+    #[test]
+    fn score_prefix_of_an_unmatched_hypothesis_is_the_empty_prefix() {
+        let wer = score_prefix(&normalise("a b c"), &normalise("x y z"));
+        assert_eq!(wer.insertions, 3);
+        assert_eq!(wer.reference_words, 0);
+        assert_eq!(wer.rate(), 1.0);
+    }
+
+    /// When the hypothesis explains the whole reference best by using all of
+    /// it, the full reference is itself the best prefix, so truncated and
+    /// full scoring agree exactly.
+    #[test]
+    fn score_prefix_agrees_with_score_when_the_full_reference_is_best() {
+        let reference = normalise("the quick brown fox jumps over");
+        let hypothesis = normalise("the quick red fox leaps right over");
+        assert_eq!(
+            score_prefix(&reference, &hypothesis),
+            score(&reference, &hypothesis)
+        );
     }
 }

@@ -114,7 +114,7 @@ answerable without raising anything: *Record this call* and *Not this one* are
 both a click away in the menu.
 
 *Open Ambient*, key equivalent `0`, opens the other one. A sidebar of sessions
-newest first, a transcript beside it, and a *Tidied*/*Verbatim* toggle that
+with pinned sessions first and the rest newest first, a transcript beside it, and a *Tidied*/*Verbatim* toggle that
 chooses between the edit layer folded over the recogniser's output and the
 output itself — the same pair `ambient show` and `ambient show --verbatim`
 print. *Reveal in Finder* opens the selected session in Finder, or the sessions
@@ -122,7 +122,15 @@ folder when nothing is selected, which is why the status menu no longer carries
 an *Open Sessions Folder* item of its own. *Copy Markdown* puts the transcript
 on the clipboard.
 
-While a recording is running it is pinned as the first row in the sidebar, with
+The sidebar filters session names and tags, groups dates by month, and keeps
+scrolling responsive in a large library. ⌘K searches transcript text. Rename,
+notes, pinning, tags and export actions live above the selected transcript.
+
+With no sessions, the Welcome page lists health checks and offers Start
+recording. A failed check shows its detail and an inline fix; Settings stays
+reachable while you repair it. Check again repeats the checks.
+
+While a recording is running its live card stays above the session list, with
 the elapsed time the capture worker itself counted and a level indicator per
 track. Those numbers come off memory shared with the worker rather than off any
 file, so they keep moving through transcription, and a capture that is hearing
@@ -134,9 +142,9 @@ works on **whichever session is selected**, not only the newest: each speaker
 diarization could not name gets a row with the first thing that voice said, a
 roster dropdown and a *Name* button, and pressing it appends exactly the edit
 `ambient name` appends. *Separate voices* runs diarization on a worker thread,
-so the window stays live while it works; it is disabled — and says which — when
-another session is already being processed, when there is no transcript yet, or
-when retention has already swept the audio it would need to read.
+so the window stays live while it works; it is disabled when there is no finished transcript or
+retention has swept the audio it needs. A second concurrent diarization job is
+refused with an inline error.
 
 Above the transcript is a banner, and it exists for one thing in particular. A
 denied system-audio tap does not fail: it returns correctly shaped zeros, and
@@ -144,6 +152,9 @@ the advice about that used to reach `eprintln!` alone, which a bundle launch
 discards. Capture warnings are now written into the session's own
 `session.json` and shown here, so the failure is visible in the place you go to
 read the transcript.
+
+⌘R starts recording, ⌘S stops, ⌘0 opens Sessions and ⌘, opens Settings.
+Light and dark appearance follow macOS.
 
 Closing the window does not quit the app; the menu bar item stays and a
 recording in flight carries on. What changes is the Dock: the app has no Dock

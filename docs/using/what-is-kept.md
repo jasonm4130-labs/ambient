@@ -83,7 +83,9 @@ should be scoped on its own rather than smuggled in here.
 Audio is the most sensitive artefact here and the least useful once the
 transcript exists, so it ages out on a schedule while the text does not.
 `audio_retention_days` defaults to 7; `0` deletes the wavs as soon as the
-transcript is written, `forever` keeps them. The sweep runs at the end of every
+transcript is written, `forever` keeps them. `ambient delete` is a separate,
+deliberate action that removes the whole session directory — retention only
+ever removes audio. The sweep runs at the end of every
 recording — the app is running whenever a recording happens, so no launchd
 agent is needed — and it never touches `raw.jsonl`, `edits.jsonl`,
 `session.json` or `transcript.md`.

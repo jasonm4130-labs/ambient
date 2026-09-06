@@ -272,6 +272,15 @@ define_class!(
             self.render();
         }
 
+        /// Clear a failure banner. Reachable only from the page's Dismiss
+        /// button — there is no menu item for it.
+        #[unsafe(method(dismissFailure:))]
+        fn dismiss_failure(&self, _sender: Option<&AnyObject>) {
+            self.log("failure dismissed");
+            self.ivars().phase.transition(|p| (p.dismiss(), ()));
+            self.render();
+        }
+
         /// Settings is a row in the one window now, not a window of its own.
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
@@ -537,7 +546,9 @@ impl Delegate {
         // The window is painted from the same phase in the same pass. It has
         // its own single renderer; this is the only place it is called.
         if let Some(w) = self.ivars().main_window.borrow().as_ref() {
-            self.ivars().phase.with(|p| w.render(p, mtm));
+            self.ivars()
+                .phase
+                .with(|p| w.render(p, queue_line.as_deref(), mtm));
         }
     }
 

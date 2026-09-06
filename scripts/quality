@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# The quality gate: word error rate on the LibriSpeech fixture and diarization
-# error rate on the AMI fixture, each compared with a committed baseline. Quiet
-# like scripts/check — one line per step on success, the failing step's whole
-# log on the first failure.
+# The quality gate: word error rate on the LibriSpeech fixture, word error
+# rate on the Earnings-21 calls fixture, and diarization error rate on the AMI
+# fixture, each compared with a committed baseline. Quiet like scripts/check —
+# one line per step on success, the failing step's whole log on the first
+# failure.
 #
-#   scripts/quality             # ✓ per step, then QUALITY OK <total wer> der=<total der>
+#   scripts/quality             # ✓ per step, then QUALITY OK clean=<wer> calls=<wer> der=<der>
 #   scripts/quality --update    # record this run as the new baseline
 #
 # The unattended landing loop (docs/developing/landing.md) runs this after the
@@ -13,18 +14,21 @@
 # DER, before it counts as a regression: both are deterministic on one machine
 # but not across model or runtime versions, and a gate that fires on noise is a
 # gate someone turns off. DER gets the wider band because the diarizer's
-# clustering is the more sensitive of the two to a runtime change.
+# clustering is the more sensitive of the two to a runtime change; calls gets
+# the same band as clean, because it is the same scorer on the same machine.
 #
-# quality/wer.json and quality/der.json hold accuracy only — the identity, the
-# error counts or seconds, and the rate — and no timings: decode and diarize
-# seconds move a little every run, and a baseline that churns on every run
-# buries the one number its diff exists to show. Timings belong in
-# docs/developing/measurements.md.
+# quality/wer.json, quality/calls.json and quality/der.json hold accuracy
+# only — the identity, the error counts or seconds, and the rate — and no
+# timings: decode and diarize seconds move a little every run, and a baseline
+# that churns on every run buries the one number its diff exists to show.
+# Timings belong in docs/developing/measurements.md.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 tolerance=0.005
 baseline=quality/wer.json
+calls_tolerance=0.005
+calls_baseline=quality/calls.json
 der_tolerance=0.01
 der_baseline=quality/der.json
 
@@ -41,8 +45,9 @@ done
 
 log=$(mktemp)
 rows=$(mktemp)
+calls_rows=$(mktemp)
 der_rows=$(mktemp)
-trap 'rm -f "$log" "$rows" "$der_rows"' EXIT
+trap 'rm -f "$log" "$rows" "$calls_rows" "$der_rows"' EXIT
 
 run() {
   if "$@" >"$log" 2>&1; then
@@ -56,6 +61,7 @@ run() {
 
 run scripts/fetch-fixtures
 run cargo run --release --bin wer -- --json "$rows"
+run cargo run --release --bin wer -- --manifest "$HOME/.cache/ambient/fixtures/calls/manifest.json" --json "$calls_rows"
 run cargo run --release --bin der -- --json "$der_rows"
 
 current=$(jq '[.[] | {speaker, reference_words, substitutions, insertions, deletions, wer}]' "$rows")
@@ -66,6 +72,15 @@ if [ -z "$current" ] || [ -z "$total" ]; then
   exit 1
 fi
 total=$(printf '%.4f' "$total")
+
+calls_current=$(jq '[.[] | {speaker, reference_words, substitutions, insertions, deletions, wer}]' "$calls_rows")
+calls_total=$(jq -r '.[] | select(.speaker == "total") | .wer' "$calls_rows")
+if [ -z "$calls_current" ] || [ -z "$calls_total" ]; then
+  echo "ERROR the calls run produced no total row"
+  cat "$calls_rows"
+  exit 1
+fi
+calls_total=$(printf '%.4f' "$calls_total")
 
 der_current=$(jq '[.[] | {meeting, seconds, reference_speakers, hypothesis_speakers, missed_s, false_alarm_s, confusion_s, der}]' "$der_rows")
 der_total=$(jq -r '.[] | select(.meeting == "total") | .der' "$der_rows")
@@ -84,8 +99,9 @@ record() {
 
 if [ -n "$update" ]; then
   record "$baseline" "$current"
+  record "$calls_baseline" "$calls_current"
   record "$der_baseline" "$der_current"
-  echo "QUALITY UPDATED $total der=$der_total"
+  echo "QUALITY UPDATED clean=$total calls=$calls_total der=$der_total"
   exit 0
 fi
 
@@ -142,6 +158,13 @@ else
   baselined=1
 fi
 
+if [ -f "$calls_baseline" ]; then
+  compare "$calls_rows" "$calls_baseline" speaker wer "$calls_tolerance"
+else
+  record "$calls_baseline" "$calls_current"
+  baselined=1
+fi
+
 if [ -f "$der_baseline" ]; then
   compare "$der_rows" "$der_baseline" meeting der "$der_tolerance"
 else
@@ -150,8 +173,8 @@ else
 fi
 
 if [ -n "$baselined" ]; then
-  echo "QUALITY BASELINE $total der=$der_total"
+  echo "QUALITY BASELINE clean=$total calls=$calls_total der=$der_total"
   exit 0
 fi
 
-echo "QUALITY OK $total der=$der_total"
+echo "QUALITY OK clean=$total calls=$calls_total der=$der_total"

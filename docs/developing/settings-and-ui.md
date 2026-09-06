@@ -31,16 +31,13 @@ A named input device that has gone away **warns and names the alternatives**
 before falling back. Silent fallback is this project's recurring failure and
 the one thing a settings layer must not reintroduce.
 
-## The settings pane
+## The window
 
-A `WKWebView` rendering the same page the design canvas draws, living as one of
-the main window's sibling views and selected by the sidebar's Settings row. It
-used to be an `NSWindow` of its own, and stopped being one for two reasons: two
-windows meant two menu bars to keep straight under the activation-policy flip —
-closing the main one would strip the settings window's menu bar out from under
-it — and the settings page's naming section was fed from `latest()` alone,
-while the window can name any session. The page, the bridge and
-`Bridge::handle` are otherwise exactly what they were.
+`src/window.rs` creates one `NSWindow` whose content view is the `WKWebView`
+owned by `SettingsPane`. React renders Sessions, Settings and Welcome inside
+that page. AppKit retains the menu bar, activation policy and native file
+panels; the bridge forwards recording commands to the app delegate.
+See [the UI implementation](ui.md) for routes, components and screenshots.
 
 The page is embedded with `include_str!`: launched through LaunchServices the
 working directory is `/`, and that is the only launch with the audio-capture
@@ -54,7 +51,7 @@ the single source of truth rather than the DOM.
 
 ## Building the page — `ui/`
 
-TypeScript and [Effect](https://effect.website), bundled by Vite through
+React 19, TypeScript, shadcn/ui and Tailwind v4, bundled by Vite through
 `vite-plugin-singlefile` into one self-contained `assets/settings.html`; a
 `WKWebView` loaded via `loadHTMLString` has no origin to fetch siblings from,
 so nothing may stay external. Linting and formatting are oxlint and oxfmt.
@@ -69,11 +66,9 @@ pnpm run lint      # oxlint
 The built file is committed, so `cargo build` never needs node. `make-app.sh`
 refreshes it only when `ui/node_modules` is present.
 
-Effect earns its place on two counts and is otherwise heavy for a settings
-page: `Schema` decodes the payload Rust pushes in rather than trusting it, so a
-field of the wrong shape leaves the page as it was instead of rendering a
-control that lies about the setting behind it; and the bridge is a real
-effectful boundary worth having a testable seam at.
+The request/response bridge is typed in TypeScript and exercised with a
+`FakeBridge` in component tests. Rust dispatches shared methods through
+`api::call`; clipboard, native panels and recording actions remain bridge-only.
 
 `cargo run --bin symbolcheck` asks macOS whether each menu bar icon actually
 resolves. `imageWithSystemSymbolName` returning nothing leaves the previous
@@ -114,14 +109,12 @@ states the gap precisely: "The plist key and the file being present prove
 neither that the .icns parses nor that LaunchServices picks it up." A wrong or
 unparsed icon is not an error anywhere — you simply get the generic one.
 
-**`src/bin/uicheck.rs`** loads the built `assets/settings.html` into a real
-`WKWebView`, registers a script message handler, pushes a config in through
-`applyConfig`, then on a timer synthesises the clicks a user would make —
-toggling diarize, dragging the sensitivity slider, removing an app chip,
-toggling ask-before-recording, adding a person, naming a speaker — and prints
-every message that reaches the bridge, snapshotting a PNG at the end. Its
-header: "Compiling and type-checking prove the page *says* the right thing;
-only this proves it does anything."
+**`src/bin/uicheck.rs`** loads the built page into a real `WKWebView` with
+canned API replies. It selects a session, copies two export formats, injects a
+recording phase, reads back the live card and Settings controls, and changes a
+setting. It then scrolls 2,000 sessions, checks the rendered row count and
+elapsed work, and saves a light or dark PNG. Missing responses or a failed
+assertion produce a nonzero exit code.
 
 **`src/bin/policycheck.rs`** drives the activation-policy flip and prints what
 the app becomes. None of it is visible to inspection: whether the process has a
@@ -135,19 +128,14 @@ launch is Accessory, showing promotes, closing demotes, a modal session refuses
 the demotion, another visible window refuses it too, the refresh tick's retry
 demotes once that window goes away, and minimising is not closing.
 
-**`src/bin/windowcheck.rs`** drives the real session browser through the real
-`render(&Phase)`. Two hazards there are invisible to inspection: pinning the
-live row at index 0 shifts every session's row index on the way into and out of
-`Recording`, and `reloadData` clears the selection without firing
-`tableViewSelectionDidChange:`. So the script selects nothing by row index
-anywhere, and asserts that a session selected before a recording starts is
-still the selected session afterwards, at its new row. It writes the meter the
-way the capture worker writes it — the same atomics, once a second — and opens
-no audio device, which is the point: the window's live readout is supposed to
-come off shared memory rather than the filesystem.
+**`src/bin/windowcheck.rs`** opens the real `MainWindow` with disposable
+sessions and the real dispatcher. It asserts that the content view is a
+`WKWebView`, loads a transcript, injects capture-worker meter values through
+`render`, verifies selection survives the phase change, clicks Stop and checks
+that it reaches the app delegate, then opens Settings. It opens no audio device.
 
-Both run against a scratch sessions folder: `AMBIENT_HOME=<scratch> cargo run
---bin policycheck`.
+`windowcheck` creates its own scratch sessions folder. Give `policycheck` one
+with `AMBIENT_HOME=<scratch> cargo run --bin policycheck`.
 
 Two worked examples of the class of bug that only a running check finds.
 
@@ -160,14 +148,9 @@ long as a menu is open. The elapsed time therefore froze exactly while you were
 looking at it, and only moved when the menu was closed and reopened." Nothing
 errors; the number is simply stale in the one moment anyone reads it.
 
-The settings page's capture-mode selector has the same shape of problem.
-`ui/src/main.ts` keeps a `scopeChoice` variable rather than deriving the mode
-from the config, because "It cannot be inferred from the config, because
-'selected apps, none picked yet' and 'everything' are both an empty `apps`
-list. Inferring it meant choosing Selected apps did nothing visible and left
-the + Add button hidden, so there was no way to pick a first app at all." A
-type-check passes on that page; a click does not. `uicheck` step [8] is exactly
-that trap — switch to Everything, switch back, and report whether the chip row
-and the + Add button are actually there.
+The settings capture-mode selector keeps the user's current choice separate
+from `config.apps`: "Selected apps, none picked yet" and "Everything" both
+have an empty list. Deriving the selector from that list would hide Add before
+the user could pick their first app. Component tests exercise that transition.
 
 See [ADR-0012](../adr/0012-ci-verifies-assembly.md).

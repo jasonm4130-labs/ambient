@@ -10,6 +10,7 @@ USAGE
                  [--seconds <n>]       record until stopped, then transcribe
   ambient stop [<session-dir>]         stop the recording in progress
   ambient sessions [--json]            list the sessions on disk
+  ambient search <query> [--json]      find words across every session
   ambient show <session-dir> [--verbatim] [--json]
                                        print a recorded session
   ambient diarize <session-dir> [--threshold <f>]
@@ -18,11 +19,15 @@ USAGE
                                        name a speaker, e.g. call-1 Priya
   ambient undo <session-dir> [--seq <n>]
                                        take back the last naming
-  ambient export <session-dir> [--out <path>]
-                                       write transcript.md
+  ambient meta <session-dir> name|notes|pinned|tag|untag <value>
+                                       set the name/notes, pin, or add/remove a tag
+  ambient delete <session-dir> --yes   remove a session and its audio
+  ambient export <session-dir> [--format <f>] [--out <path>]
+                                       write markdown, text, json, srt, vtt or assistant
   ambient config [<key> <value>]       show or change settings
   ambient mcp                          serve sessions over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
+  ambient doctor [--json]              say which of ten things is missing
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
@@ -81,9 +86,11 @@ fn main() -> Result<()> {
             if dir.is_empty() || label.is_empty() || who.is_empty() {
                 bail!("{USAGE}");
             }
-            let n = ambient::session::name_speaker(std::path::Path::new(&dir), &label, &who)?;
+            let path = std::path::Path::new(&dir);
+            let _lock = ambient::session::claim_transcription(path)?;
+            let n = ambient::session::name_speaker(path, &label, &who)?;
             eprintln!("  {n} line(s) now attributed to {who}");
-            ambient::session::show(std::path::Path::new(&dir), false, false)
+            ambient::session::show(path, false, false)
         }
         Some("undo") => {
             let dir = args.next().unwrap_or_default();
@@ -104,6 +111,7 @@ fn main() -> Result<()> {
                 }
             }
             let path = std::path::Path::new(&dir);
+            let _lock = ambient::session::claim_transcription(path)?;
             let n = match seq {
                 Some(seq) => {
                     ambient::session::undo_seq(path, seq)?;
@@ -112,6 +120,70 @@ fn main() -> Result<()> {
                 None => ambient::session::undo_last_naming(path)?,
             };
             eprintln!("reverted {n} edits");
+            Ok(())
+        }
+        Some("meta") => {
+            let dir = args.next().unwrap_or_default();
+            let field = args.next().unwrap_or_default();
+            let value = args.next().unwrap_or_default();
+            if dir.is_empty() || field.is_empty() || value.is_empty() {
+                bail!("{USAGE}");
+            }
+            if let Some(other) = args.next() {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
+            }
+            let dir = std::path::Path::new(&dir);
+            let mut patch = ambient::session::MetaPatch::default();
+            match field.as_str() {
+                "name" => patch.name = Some(value),
+                "notes" => patch.notes = Some(value),
+                "pinned" => {
+                    patch.pinned = Some(match value.as_str() {
+                        "true" | "yes" | "on" | "1" => true,
+                        "false" | "no" | "off" | "0" => false,
+                        other => bail!("{other:?} is not a yes or no. Use true or false."),
+                    })
+                }
+                "tag" => patch.add_tag = Some(value),
+                "untag" => patch.remove_tag = Some(value),
+                other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+            }
+            let _lock = ambient::session::claim_transcription(dir)?;
+            let meta = ambient::session::update_meta(dir, &patch)?;
+            println!(
+                "{}  tags: {}",
+                meta.name.as_deref().unwrap_or("-"),
+                meta.tags.join(", ")
+            );
+            Ok(())
+        }
+        Some("delete") => {
+            let dir = args.next().unwrap_or_default();
+            if dir.is_empty() {
+                bail!("{USAGE}");
+            }
+            let mut yes = false;
+            for a in args.by_ref() {
+                match a.as_str() {
+                    "--yes" => yes = true,
+                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+                }
+            }
+            if !yes {
+                bail!("this removes the session and its audio for good; add --yes to confirm");
+            }
+            let path = std::path::Path::new(&dir);
+            let root = path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("{dir:?} has no parent directory"))?;
+            let id = path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("{dir:?} has no session id"))?
+                .to_string_lossy()
+                .into_owned();
+            let lock = ambient::session::claim_transcription(path)?;
+            ambient::session::delete(root, &id, &lock)?;
+            println!("removed {}", path.display());
             Ok(())
         }
         Some("roster") => {
@@ -155,19 +227,40 @@ fn main() -> Result<()> {
                 bail!("{USAGE}");
             }
             let dir = std::path::Path::new(&dir);
-            let mut out = dir.join("transcript.md");
+            let mut format_arg: Option<String> = None;
+            let mut out: Option<std::path::PathBuf> = None;
             while let Some(a) = args.next() {
                 match a.as_str() {
+                    "--format" => {
+                        format_arg = Some(
+                            args.next()
+                                .ok_or_else(|| anyhow::anyhow!("--format needs a value"))?,
+                        )
+                    }
                     "--out" => {
-                        out = args
-                            .next()
-                            .ok_or_else(|| anyhow::anyhow!("--out needs a path"))?
-                            .into()
+                        out = Some(
+                            args.next()
+                                .ok_or_else(|| anyhow::anyhow!("--out needs a path"))?
+                                .into(),
+                        )
                     }
                     other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
                 }
             }
-            std::fs::write(&out, ambient::session::markdown(dir)?)?;
+            let format: ambient::export::Format = match &format_arg {
+                Some(f) => f.parse().map_err(|e| anyhow::anyhow!("{e}\n\n{USAGE}"))?,
+                None => ambient::export::Format::Markdown,
+            };
+            let default_name = match format {
+                ambient::export::Format::Markdown => "transcript.md",
+                ambient::export::Format::Text => "transcript.txt",
+                ambient::export::Format::Json => "transcript.json",
+                ambient::export::Format::Srt => "transcript.srt",
+                ambient::export::Format::Vtt => "transcript.vtt",
+                ambient::export::Format::Assistant => "transcript.assistant.md",
+            };
+            let out = out.unwrap_or_else(|| dir.join(default_name));
+            std::fs::write(&out, ambient::export::render(dir, format)?)?;
             println!("{}", out.display());
             Ok(())
         }
@@ -201,6 +294,43 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("search") => {
+            let rest: Vec<String> = args.collect();
+            let json = rest.iter().any(|a| a == "--json");
+            let mut query_parts: Vec<&str> = Vec::new();
+            for a in &rest {
+                if a == "--json" {
+                    continue;
+                }
+                if a.starts_with("--") {
+                    bail!("unexpected argument {a:?}\n\n{USAGE}");
+                }
+                query_parts.push(a);
+            }
+            if query_parts.is_empty() {
+                bail!("{USAGE}");
+            }
+            let query = query_parts.join(" ");
+            let home = ambient::session::home();
+            let hits = ambient::session::search(&home, &query, 50)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&hits)?);
+                return Ok(());
+            }
+            println!("{:<24}  {:<8}  {:<12}  text", "session", "mm:ss", "speaker");
+            for h in &hits {
+                let secs = h.start_ms / 1000;
+                println!(
+                    "{:<24}  {:02}:{:02}     {:<12}  {}",
+                    h.session,
+                    secs / 60,
+                    secs % 60,
+                    h.speaker.as_deref().unwrap_or("-"),
+                    h.text
+                );
+            }
+            Ok(())
+        }
         Some("show") => {
             let dir = args.next().unwrap_or_default();
             if dir.is_empty() {
@@ -229,9 +359,11 @@ fn main() -> Result<()> {
                     other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
                 }
             }
-            let n = ambient::session::diarize_session(std::path::Path::new(&dir), threshold)?;
+            let path = std::path::Path::new(&dir);
+            let _lock = ambient::session::claim_transcription(path)?;
+            let n = ambient::session::diarize_session(path, threshold)?;
             eprintln!("  {n} edit(s) appended");
-            ambient::session::show(std::path::Path::new(&dir), false, false)
+            ambient::session::show(path, false, false)
         }
         // Read-only, and the whole of it is on stdin and stdout: nothing
         // else may print to stdout while this runs or the client sees a
@@ -241,6 +373,35 @@ fn main() -> Result<()> {
             std::io::stdout().lock(),
             &ambient::session::home(),
         ),
+        Some("doctor") => {
+            let flags: Vec<String> = args.collect();
+            let json = flags.iter().any(|a| a == "--json");
+            if let Some(other) = flags.iter().find(|a| *a != "--json") {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
+            }
+            let checks = ambient::doctor::run(
+                ambient::session::models_root(),
+                &ambient::config::path(),
+                &ambient::session::home(),
+            );
+            let failed = checks.iter().filter(|c| !c.ok).count();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&checks)?);
+            } else {
+                for c in &checks {
+                    println!(
+                        "{:<4} {:<28}  {}",
+                        if c.ok { "ok" } else { "FAIL" },
+                        c.name,
+                        c.detail
+                    );
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} check(s) failed");
+            }
+            Ok(())
+        }
         Some("probe") => {
             ambient::probe::run()?;
             Ok(())

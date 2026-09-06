@@ -147,7 +147,7 @@ fn main() {
             1 => {
                 println!("\n-- Open Ambient --");
                 window.show(mtm);
-                window.render(&phase, mtm);
+                window.render(&phase, None, mtm);
                 println!("   policy: {}", policy_name(mtm));
                 expect(
                     policy_name(mtm) == "Regular",
@@ -165,17 +165,17 @@ fn main() {
             2 => {
                 println!("\n-- Settings row --");
                 window.select_settings();
-                window.render(&phase, mtm);
+                window.render(&phase, None, mtm);
                 let state = window.describe_state();
                 println!("   {state}");
                 expect(
-                    state.contains("settings pane: shown"),
-                    "the settings page is a sibling view of this window",
+                    state.contains("content: WKWebView"),
+                    "the web page is the window content view",
                     &failures,
                 );
                 expect(
-                    state.contains("selected: <settings>"),
-                    "the Settings row stays selected rather than acting as a button",
+                    !state.contains("(loading)"),
+                    "the page has finished loading",
                     &failures,
                 );
             }
@@ -322,7 +322,7 @@ fn main() {
             9 => {
                 println!("\n-- reopened (the Dock icon's click) --");
                 window.show(mtm);
-                window.render(&phase, mtm);
+                window.render(&phase, None, mtm);
                 expect(
                     policy_name(mtm) == "Regular" && window.is_visible(),
                     "the window reopens and promotes again after a full cycle",

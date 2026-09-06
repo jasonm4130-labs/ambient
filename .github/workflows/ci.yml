@@ -102,7 +102,8 @@ jobs:
   rust:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
+    runs-on: blacksmith-6vcpu-macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
       # The pin lives in rust-toolchain.toml so local builds and the work-M5

@@ -33,6 +33,19 @@ Why this is the only launch that works, and why a stale signing identity fails
 differently from a shell launch, is in [when it does not
 work](troubleshooting.md).
 
+## doctor
+
+```sh
+ambient doctor [--json]
+```
+
+Runs ten checks, always in the same order: the four model files under the
+models root, the config file, and four checks against the sessions
+directory (writable, sessions awaiting transcription, a live session, a
+stale lock). Prints `ok` or `FAIL` with a detail for each, exits non-zero
+when any check failed so a script can branch on it, and `--json` prints the
+same ten checks as one array of `{name, ok, detail}` objects.
+
 ## probe
 
 ```sh
@@ -123,8 +136,23 @@ closes — and one interrupted mid-write has a `session.json` that will not
 parse; both appear, the first with empty metadata columns and the second as
 `broken`, because a session that has gone wrong is the one worth seeing.
 `--json` prints the same rows as a JSON array, each with `id`, `dir`, `name`,
-`started_at`, `duration_s`, `transcribed`, `live`, `transcribing` and `error`.
-See [sessions](../developing/sessions.md).
+`started_at`, `duration_s`, `transcribed`, `live`, `transcribing`, `error`,
+`tags` and `pinned`. See [sessions](../developing/sessions.md).
+
+## search
+
+```sh
+ambient search <query> [--json]
+```
+
+Case-insensitive substring search for `query` over every session's tidied
+transcript, newest session first. Prints a header row followed by one row per
+hit — session id, `mm:ss`, speaker and the matching line — and exits 0 with
+just the header when nothing on disk matches, or the sessions folder is
+empty. `--json` prints the same hits as a JSON array instead, each with
+`session`, `index`, `track`, `start_ms`, `speaker` and `text`; `index` is the
+line's position in that session's appended order, the same one `api::search`
+reports. See [the session API](../developing/api.md).
 
 ## show
 
@@ -185,14 +213,41 @@ of labels. Running `diarize` once more labels it again.
 
 Only names a person typed are candidates; taking back diarization's own labels
 is what re-running `diarize` does. A session where nothing has been named
-answers `nothing to undo` — naming the directory it looked in, which is also
-how a mistyped path reads.
+answers `nothing to undo` — naming the directory it looked in. A mistyped path
+fails earlier, at the lock every `undo` now claims around its call, saying it
+could not write there.
 
 `--seq <n>` reverts one edit instead, addressed by its zero-based line in
 `edits.jsonl` — the way to reach a repair, or one line of a naming. Asking for
 a line that does not exist answers `no edit <n>`, a line already reverted
 answers `already reverted`, and a line that is itself a `revert` is refused:
 undo the edit it names.
+
+## meta
+
+```sh
+ambient meta <session-dir> name|notes|pinned|tag|untag <value>
+```
+
+Sets the session's name or notes, pins or unpins it, or adds/removes one tag
+— whichever field you name — and prints the resulting name and tag list.
+`pinned` takes `true`/`false` (also `yes`/`no`, `on`/`off`, `1`/`0`); `tag` and
+`untag` add or remove one tag at a time, so adding a tag that is already there
+or removing one that is not is a no-op rather than an error. Rewrites
+`session.json` only. A session still being captured has no `session.json` yet
+and refuses, saying so. See [the session API](../developing/api.md).
+
+## delete
+
+```sh
+ambient delete <session-dir> --yes
+```
+
+Removes the session directory and its audio for good. Without `--yes` it
+refuses and tells you to add it. Refuses a session that is still recording,
+and one a transcriber currently holds the lock on. A directory with no
+`session.json` and no fresh audio — a failed capture — deletes like any other.
+See [the session API](../developing/api.md).
 
 ## diarize
 
@@ -214,13 +269,20 @@ letting you ask. See
 ## export
 
 ```sh
-ambient export <session-dir> [--out <path>]
+ambient export <session-dir> [--format <f>] [--out <path>]
 ```
 
-Writes `transcript.md` — into the session directory unless `--out` says
-otherwise — and prints the path. The file is derived; `raw.jsonl` plus
-`edits.jsonl` remain the only source of truth, and `record`, `diarize` and
-`name` each regenerate it. See [sessions](../developing/sessions.md).
+Writes a transcript — into the session directory unless `--out` says
+otherwise — and prints the path. `--format` is one of `markdown`, `text`,
+`json`, `srt`, `vtt` or `assistant` and defaults to `markdown`; the default
+filename follows the format (`transcript.md`, `.txt`, `.json`, `.srt`, `.vtt`,
+or `.assistant.md`). The file is derived; `raw.jsonl` plus `edits.jsonl`
+remain the only source of truth, and `record`, `diarize` and `name` each
+regenerate the `markdown` one. See [sessions](../developing/sessions.md).
+
+The window's session header has an Export menu with the same formats plus
+"Copy for an assistant", which copies straight to the clipboard instead of
+writing a file.
 
 ## transcribe
 

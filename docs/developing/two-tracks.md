@@ -67,3 +67,9 @@ meeting." (`tap` -> "tab" and `Priya` -> "CRO" are the usual proper-noun and
 homophone errors.)
 
 See [ADR-0003](../adr/0003-two-ioprocs-wall-clock.md).
+
+Two tracks mean two streams of decode work arriving at one serial
+recogniser, and that is exactly what the benchmark's `tracks=2` rows measure:
+one worker carrying both tracks' turns rather than two workers running
+alongside each other. The verdict on this machine, at 30 s blocks, is a go —
+see [the verdict](measurements.md#verdict).

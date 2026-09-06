@@ -13,7 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
@@ -266,6 +266,14 @@ impl Phase {
     pub fn failure(&self) -> Option<&str> {
         match self {
             Phase::Failed { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+
+    /// The directory a failure was about, when it had one.
+    pub fn failed_dir(&self) -> Option<&Path> {
+        match self {
+            Phase::Failed { dir, .. } => dir.as_deref(),
             _ => None,
         }
     }

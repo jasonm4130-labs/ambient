@@ -136,6 +136,10 @@ Rust objc2 for the clipboard.
 - [ ] **Step 4:** run `scripts/check`, `pnpm test`, `pnpm check`, `pnpm lint`, `pnpm build`.
 - [ ] **Step 5:** commit: `git add ui assets/settings.html && git commit -m "ui: live view polls the transcript cursor"`.
 
+Tasks 5–6 were implemented in the September 6 follow-up. See the
+[completion audit](2026-09-06-nightwatch-review.md) for observed checks and the
+remaining independent review gate. The steps below retain the original plan.
+
 ## Task 5: Filters and the sidebar at scale
 
 **Files:**

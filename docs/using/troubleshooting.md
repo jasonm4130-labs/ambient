@@ -6,12 +6,34 @@ sidebar:
 
 # When it does not work
 
+## Fixes shown in the Welcome page
+
+The Welcome page lists failing doctor checks and keeps Settings available.
+After making a change, choose **Check again**.
+
+- Run ./fetch-models.sh from the Ambient checkout to install the models.
+- Open Settings and correct the configuration, then check again.
+- Choose a writable sessions folder in Settings → Storage.
+- Quit Ambient, remove transcribing.lock from the listed session folder, then reopen Ambient.
+- Open System Settings → Privacy & Security and allow Ambient to use the microphone and system audio.
+- Run ambient doctor in a terminal to inspect the failure, then check again.
+
 Almost every first-run failure here is the same one wearing different clothes:
 the recording completes, reports success, and contains silence. macOS does not
 warn you, because from its point of view nothing went wrong.
 
 If your call track is flat, work through this page before suspecting the
 recogniser or your microphone.
+
+## Start with doctor
+
+```sh
+ambient doctor
+```
+
+It names which of ten things — model files, config, sessions directory
+state — is actually missing, so it is cheaper than reading the rest of this
+page. See the [verb reference](commands.md) for what each check covers.
 
 ## It recorded silence
 

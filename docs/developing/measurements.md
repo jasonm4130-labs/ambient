@@ -200,6 +200,25 @@ segmenter is not losing words and the recogniser is not inventing them, it is
 getting them wrong. `--json` writes the same rows, the total among them with
 `speaker` reading `total`.
 
+`cargo run --release --bin wer -- --manifest ~/.cache/ambient/fixtures/calls/manifest.json`,
+on 2026-09-06, against the `calls` fixture: three Earnings-21 conference-bridge
+calls, 300 s of each. Each call's reference is its whole human transcript, but
+the fixture wav is only the call's first 300 s, so the reference is truncated
+to the hypothesis (`wer::score_prefix`) before scoring — otherwise everything
+said after the cut would count as deletions.
+
+| Speaker | Seconds | Ref words | S | I | D | WER | Decode | Realtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4320211 | 300.00 | 755 | 37 | 32 | 4 | 0.0967 | 7.40 s | 40.6x |
+| 4330115 | 300.00 | 773 | 54 | 25 | 5 | 0.1087 | 7.09 s | 42.3x |
+| 4341191 | 300.00 | 762 | 43 | 26 | 3 | 0.0945 | 7.22 s | 41.5x |
+| **calls total** | 900.00 | 2290 | 134 | 83 | 12 | **0.1000** | 21.71 s | 41.5x |
+
+Substitutions and insertions are of the same order here, unlike the `clean`
+total's 39-against-3. Deletions stay small, which is the check that the
+truncation is scoring the audio the fixture contains rather than penalising
+the call for having ended.
+
 ## The two shipped models on the same fixture
 
 Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the
@@ -429,6 +448,253 @@ three speakers 10.25 s between them. Calling the whole meeting one person is
 almost right there and would be badly wrong anywhere else. IS1009a is the
 honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
 meeting with four real ones — and it is not enough on its own.
+
+## Live transcription: cost per block
+
+M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06. `cargo build --release --bin
+asrbench`, then the built binary run directly (not under `cargo run`, so
+`/usr/bin/time -l`'s rusage is the binary's own, not cargo's) with no `--wav`,
+so it replays the manifest's first entry — the 1089 fixture upsampled once to
+`~/.cache/ambient/bench/1089.48k.wav` (302.11 s):
+
+```
+/usr/bin/time -l <target>/release/asrbench --block-seconds 30 --json <path>
+```
+
+The harness cuts native-rate 48 kHz audio into `--block-seconds` blocks, each
+resampled to 16 kHz, run through VAD, its turns decoded — a turn ending within
+`PAD_MS` of a block edge is carried into the next block rather than cut.
+`model_load_s` is a one-time cost measured outside the per-block figures below.
+
+Total row, 30 s blocks:
+
+| blocks | audio_s | prep_s | decode_s | rtf | max_block_work_s | model_load_s |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 11 | 302.11 | 0.881 | 5.966 | 0.023 | 0.866 | 0.607 |
+
+Lag rows, 30 s blocks — `tracks=N` is the workload once through; `tracks=N
+(x2)` is `bench::repeat(rows, 2)`, the same blocks played twice in a row to
+tell a bounded backlog from a growing one:
+
+| | max_lag_s | final_lag_s |
+| --- | ---: | ---: |
+| tracks=1 | 0.866 | 0.125 |
+| tracks=1 (x2) | 0.866 | 0.125 |
+| tracks=2 | 1.731 | 0.249 |
+| tracks=2 (x2) | 1.731 | 0.249 |
+
+The `(x2)` rows land on exactly the same numbers as their single-pass
+counterparts, at both track counts. That is the finding, not a coincidence:
+at an `rtf` of 0.023 each block finishes long before the next one arrives, so
+a worker that repeats the workload never falls further behind than it did the
+first time through — a bounded backlog, not a growing one.
+
+`maximum resident set size` from `/usr/bin/time -l` (bytes on macOS, divided
+by 1048576 for MB): **2038 MB** peak for the 30 s run.
+
+The single most expensive block is index 5 (`end_s=180.00`): `prep_s=0.107`,
+`decode_s=0.758`, `turns=3`, `prep_s + decode_s = 0.866 s` — the block behind
+`max_block_work_s` above.
+
+The benchmark pays `Vad`'s per-call recurrent-state reset on every block, and
+accepts it, because a live pass built on the current `Vad` would pay it too.
+
+### Verdict
+
+The rule was fixed before these numbers were seen: a **go** requires, at 30 s
+blocks, `tracks=2` `max_lag_s` under 30, the `tracks=2` doubled-workload
+`max_lag_s` within 1 s of it, the `tracks=2` implied `rtf` — `2 ×
+(prep_s + decode_s) / audio_s` — under 0.5, and the worst drain overshoot
+(see the section below) under 1 s; otherwise a **no-go** naming the
+constraint that failed.
+
+| block_seconds | prep_s + decode_s | rtf | tracks=2 max_lag_s | tracks=2 (x2) max_lag_s |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 | 7.064 | 0.023 | 0.859 | 0.859 |
+| 20 | 6.864 | 0.023 | 1.390 | 1.390 |
+| 30 | 6.846 | 0.023 | 1.731 | 1.731 |
+
+At 30 s blocks `tracks=2` `max_lag_s` is 1.731 s, under 30. The doubled
+workload (`tracks=2 (x2)`) is also 1.731 s, 0.000 s from the single pass, well
+within 1 s. The implied `rtf` is `2 × (0.881 + 5.966) / 302.11 = 13.692 /
+302.11 = 0.045`, under 0.5. The worst drain overshoot across the three runs
+below is 10.87 ms = 0.011 s, under 1 s. All four clauses hold: **go**.
+
+A go means a follow-up plan is in scope, and these are the facts it must
+respect. `session::transcribe_session` opens `raw.jsonl` with
+`std::fs::File::create` before the models load, deliberately: the file's
+existence is what the window's "Interrupted" test reads, and `File::create`
+truncates, so a second transcriber on the same session must be refused rather
+than allowed to race the first for that file — `claim_transcription` is what
+refuses it today. `capture_into` writes both tracks through `hound` writers
+and only calls `finalize()` on them when the drain loop ends, so the RIFF and
+data length fields in a still-growing capture's WAV header are stale until
+then; anything that reads a capture before it stops cannot trust that header's
+length. The overshoot number above assumes the ASR worker runs at
+`QOS_CLASS_BACKGROUND`, the same class `queue::Queue` uses for a real
+transcription job; the per-block costs in the table above, by contrast, were
+measured on `asrbench`'s main thread at default QoS with nothing else
+running, so they are optimistic relative to a background-QoS live worker.
+And `asr::Recognizer::transcribe_segments` takes `&mut self` — ADR-0015's
+serial queue transcribes one job at a time on one long-lived thread, so the
+`tracks=2` rows above are one worker carrying two tracks' work, not two
+workers running at once.
+
+## Live transcription: drain overshoot beside ASR
+
+M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06, from the three `drainbench` runs
+already logged for this outcome: `cargo run --release --bin drainbench -- 60
+~/.cache/ambient/bench/1089.48k.wav`, each exit 0. The worst run's max
+overshoot is **10.87 ms** (run 2, under ASR).
+
+| run | periods | decodes completed | mean overshoot | max overshoot | ring margin |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 (idle) | 25 | — | 6.38 ms | 10.03 ms | 0.033% of 30 s |
+| 1 (under ASR) | 289 | 4 | 8.00 ms | 10.10 ms | 0.034% of 30 s |
+| 2 (idle) | 25 | — | 6.91 ms | 10.03 ms | 0.033% of 30 s |
+| 2 (under ASR) | 289 | 4 | 8.23 ms | 10.87 ms | 0.036% of 30 s |
+| 3 (idle) | 25 | — | 7.06 ms | 10.03 ms | 0.033% of 30 s |
+| 3 (under ASR) | 289 | 4 | 8.19 ms | 10.08 ms | 0.034% of 30 s |
+
+The idle rows are the same 200 ms drain loop with no ASR beside it; no
+capture was started (no tap, per the non-goal). The ASR worker ran at
+`QOS_CLASS_BACKGROUND`, which is the QoS the number above assumes. Every run's
+verdict line reads the same: `ok — worst overshoot is under 1% of the 30 s
+ring`.
+
+---
+
+## Word error rate through the resampler
+
+`cargo run --release --bin wer -- --via <rate>`, on 2026-09-06. Each fixture
+wav is transcoded with `ffmpeg -ar <rate> -ac 1 -sample_fmt s16` first, cached
+under `~/.cache/ambient/fixtures/via/<rate>/`, then read back with
+`resample::read_wav_any` and downsampled with `resample::to_16k` — the same
+path Core Audio's 48 kHz delivery (or a 44.1 kHz interface) takes before
+`features::read_wav`'s hard 16 kHz check could ever see it. The native row is
+`features::read_wav` on the fixture unchanged, restated here rather than
+copied from the section above because this is a fresh run. The fixture itself
+is 16 kHz LibriSpeech, so the 48 000/44 100 rows measure a round trip through
+the resampler on already band-limited audio, not native capture with real
+energy above 8 kHz — they exercise the code path, not Core Audio's content.
+
+| Via | Seconds | Ref words | S | I | D | WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| native | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 |
+| 48 000 | 913.74 | 2152 | 45 | 8 | 6 | 0.0274 |
+| 44 100 | 913.74 | 2152 | 48 | 6 | 5 | 0.0274 |
+
+Both resampled rows land 0.0056 above native, more than the 0.005 keep-rule
+margin, so the resampler is the suspect: going through a 48 kHz or 44.1 kHz
+round trip before `to_16k` costs more than half a point of WER on this
+fixture. That is a finding, not a fix — `resample::to_16k` is unchanged by
+this section, and no shipped constant moved, so `quality/wer.json` does not
+change with it.
+
+## Insertions by gap
+
+`scripts/fetch-fixtures --gap <ms>` and `cargo run --release --bin wer`, on
+2026-09-06. The default fixture puts 700 ms of silence between utterances;
+`--gap 3000` builds the same three speakers, the same chapters, the same
+`.trans.txt` lines with 3 s of silence between them instead, under its own
+`~/.cache/ambient/fixtures/wer-3000ms/`. Same words, more silence: both total
+rows read 2152 reference words, so the raw insertion count is comparable
+between them without normalising for anything. Total seconds rise too — 2.3 s
+extra per gap per speaker, 218.49 s over the fixture — so `turns(&samples,
+30)` sees different turn boundaries at 3 s than at 700 ms; gap length is not
+the only thing that changed between the rows.
+
+| Gap | Seconds | Ref words | S | I | D | WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 700 ms | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 |
+| 3 s | 1132.23 | 2152 | 40 | 3 | 5 | 0.0223 |
+
+Insertions net out at 3 in both totals (one speaker gains one, another loses
+one), and total WER moves 0.0218 → 0.0223, inside the 0.005 keep-rule margin
+the resampler section above cites. On this fixture a longer silence between
+utterances does not make Parakeet invent words. That is a finding, not a fix:
+nothing in the pipeline changed, so `quality/wer.json` does not change with
+it. If insertions had risen with gap length, the lever to name would be
+`last_confidence` — not tuned here, since it also drops real quiet speech and
+needs its own number.
+
+## Turn padding
+
+`cargo run --release --bin wer -- --pad <ms>`, on 2026-09-06. `--pad` overrides
+`Vad::pad_ms`, which reaches both places `vad::PAD_MS` is read: the margin
+`trim_quiet` re-applies after cutting a turn's quiet edges, and the hysteresis
+pad `segments_from` applies before merging overlapping turns. 200 ms is the
+shipped default; `cargo run --release --bin wer -- --pad 200` reproduces the
+native row from the section above exactly, confirming the parameter reaches
+both sites rather than one of them twice. Total reference words hold at 2152
+across all four rows — padding does not change what is being scored, only how
+much room noise sits at each turn's edges before the recogniser sees it.
+
+| Pad | Seconds | Ref words | S | I | D | WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 ms | 913.74 | 2152 | 36 | 7 | 6 | 0.0228 |
+| 200 ms (default) | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 |
+| 300 ms | 913.74 | 2152 | 39 | 3 | 3 | 0.0209 |
+| 400 ms | 913.74 | 2152 | 39 | 3 | 3 | 0.0209 |
+
+The keep rule is per speaker: a value replaces 200 ms only if it beats the
+shipped per-speaker WER (`1089` 0.0042, `1188` 0.0270, `121` 0.0667) by more
+than 0.005 on every speaker, not just in the total. None do. At 300 ms and
+400 ms `1089` barely moves (0.0042 → 0.0028, then flat at 0.0042 — 0.0014 and
+0.0000 of the 0.005 margin) while `121` — the shortest speaker at 88.89 s —
+gets worse (0.0667 → 0.0889); `1188` improves at both but only by 0.0031 and
+0.0039, still under the bar. At 100 ms `1089` gets worse (0.0042 → 0.0097),
+`121` is unchanged (0.0667), and `1188`'s 0.0015 gain is again under the
+margin; 100 ms is also the only pad value where insertions move at all, 3 at
+200 ms and 300 ms up to 7 here. **The default holds.** `src/vad.rs`'s
+`PAD_MS` stays at 200 and `quality/wer.json` does not change with it, because
+no shipped constant moved.
+
+## Chunk length
+
+`cargo build --release` then `/usr/bin/time -l ./target/release/wer --chunk
+<seconds> --json <path>`, on 2026-09-06. `--chunk` sets the `max_seconds`
+argument to `Vad::turns` — the length above which a turn is split at its
+least-voiced frame, the best available approximation of a pause — not
+`Vad::chunks`, a separate method that *merges* turns back together up to
+`max_seconds` and which `record` deliberately does not call. Peak RSS is
+`maximum resident set size` from `/usr/bin/time -l`, converted from the bytes
+Darwin reports (not the kilobytes Linux would) by dividing by 1,048,576;
+models load once per manifest entry inside the loop, so each row's figure is
+one number for the whole three-speaker run, not a per-speaker one, the same
+way the WER section's decode column is qualified. `--chunk 30` reproduces the
+native row exactly (913.74 s, 2152 reference words, S=39 I=3 D=5, WER
+0.0218), confirming the parameter reaches the shipped path rather than a
+second copy of it.
+
+| Chunk | Seconds | Ref words | S | I | D | WER | Peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 15 s | 913.74 | 2152 | 40 | 3 | 5 | 0.0223 | 2062 MB |
+| 20 s | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2055 MB |
+| 30 s (default) | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2145 MB |
+| 40 s | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2146 MB |
+
+This 30 s row's 2145 MB is the figure the keep rule below compares against.
+It is not the 2317 MB at the 30 s-chunk level in `## End to end`, the 2158 MB
+in the 30 s row of `## Memory scales with audio length`, or the 2255 MB in
+`## VAD chunking` — those three predate this sweep and come from `bench` and
+`say`-synthesised audio, not from the `wer` binary run over LibriSpeech, so
+they are context here, not the bar.
+
+The keep rule is per speaker, and RSS besides: a value replaces the shipped
+30 s only if it beats the shipped per-speaker WER (`1089` 0.0042, `1188`
+0.0270, `121` 0.0667) by more than 0.005 on every speaker **and** does not
+raise peak RSS above the 30 s row above. None do. The 20 s, 30 s and 40 s
+rows are identical per speaker, so no turn in this fixture reaches the 20 s
+cap — nothing to split further between 20 s and 40 s — and 40 s costs ~1.7 MB
+more RSS on top of tying, not beating, the WER. 15 s is the one value that
+changes anything: `1188` gets worse (0.0270 → 0.0278, one more substitution)
+and the total moves from 0.0218 to 0.0223, both the wrong direction, while
+`1089` and `121` are unchanged; 15 s also has the lowest RSS of the four,
+which is the RSS half of the keep rule doing nothing useful when the WER half
+already fails. **The default holds.** `src/session.rs`'s shipped chunk
+length stays at 30 and `quality/wer.json` does not change with it, because no
+shipped constant moved.
 
 ---
 
