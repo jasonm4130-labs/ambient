@@ -22,7 +22,7 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSAutoresizingMaskOptions, NSModalResponseOK,
-    NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSWorkspace,
+    NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSSavePanel, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -246,6 +246,10 @@ impl Bridge {
                 };
                 self.eval(&reply_js(req.id, Ok(json!({"chosen": chosen}))));
             }
+            "save" => {
+                let result = self.save(req.params.as_ref());
+                self.eval(&reply_js(req.id, result));
+            }
             "clipboard.write" => {
                 let text = req
                     .params
@@ -370,6 +374,58 @@ impl Bridge {
             }
             Some(PathBuf::from(panel.URL()?.path()?.to_string()))
         }
+    }
+
+    /// `save {session, format}`: renders the export through [`api::call`] —
+    /// so `AMBIENT_HOME` still governs which sessions folder it reads from —
+    /// then offers a native `NSSavePanel` and writes the result where the
+    /// user picks. The export runs *before* the panel opens, so a bad
+    /// session id or an export failure replies with an `ApiError` and never
+    /// shows a modal. Does not copy `pick_dir`'s recording refuse-guard:
+    /// that guards moving the sessions folder, not writing a transcript out.
+    fn save(&self, params: Option<&Value>) -> Result<Value, ApiError> {
+        let params = params.cloned().unwrap_or_else(|| json!({}));
+        let session = params
+            .get("session")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::InvalidParams("`session` must be a string".to_string()))?;
+        let format = params
+            .get("format")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::InvalidParams("`format` must be a string".to_string()))?;
+
+        let exported = api::call("export", &params, &self.paths())?;
+        let text = exported
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::Failed("export did not return text".to_string()))?;
+
+        let extension = match format {
+            "markdown" => "md",
+            "text" => "txt",
+            "json" => "json",
+            "srt" => "srt",
+            "vtt" => "vtt",
+            other => other,
+        };
+        let Some(path) = self.run_save_panel(session, extension) else {
+            return Ok(json!({"path": Value::Null}));
+        };
+        std::fs::write(&path, text).map_err(|e| ApiError::Failed(format!("{e}")))?;
+        Ok(json!({"path": path.to_string_lossy()}))
+    }
+
+    /// The modal itself, split out of [`Bridge::save`] so the export and its
+    /// error path stay above the one place a panel can appear.
+    fn run_save_panel(&self, session: &str, extension: &str) -> Option<PathBuf> {
+        let mtm = MainThreadMarker::from(self);
+        let panel = NSSavePanel::savePanel(mtm);
+        panel.setMessage(Some(&NSString::from_str("Save the transcript")));
+        panel.setNameFieldStringValue(&NSString::from_str(&format!("{session}.{extension}")));
+        if panel.runModal() != NSModalResponseOK {
+            return None;
+        }
+        Some(PathBuf::from(panel.URL()?.path()?.to_string()))
     }
 
     /// The [`api::Paths`] every `api::call` fallthrough and [`Bridge::reveal`]

@@ -6,13 +6,15 @@
 //! `init`, `sessions`, `transcript`, `export`, `config.get`, `devices`,
 //! `speakers.unnamed`, and `{}` for anything else — then drives the page
 //! through: selecting a session, clicking Copy Markdown (exercising `export`
-//! then `clipboard.write`), navigating to Settings, reading back what
-//! Settings rendered, and clicking the diarize switch. Prints every message
-//! the bridge receives, and snapshots a PNG so the rendering can be looked at
-//! too.
+//! then `clipboard.write`), opening the export menu and clicking Copy for an
+//! assistant (the same two calls, with `format: "assistant"`), navigating to
+//! Settings, reading back what Settings rendered, and clicking the diarize
+//! switch. Prints every message the bridge receives, and snapshots a PNG so
+//! the rendering can be looked at too.
 //!
-//! Does not click "+ Add" or "Change…": both open a modal `NSOpenPanel` that
-//! nothing here would dismiss, and the run would hang.
+//! Does not click "+ Add", "Change…" or "Save as…": all three open a modal
+//! `NSOpenPanel` or `NSSavePanel` that nothing here would dismiss, and the
+//! run would hang.
 use std::cell::RefCell;
 
 use block2::RcBlock;
@@ -237,7 +239,21 @@ fn main() {
                 );
             }
             5 => {
-                println!("\n[3] injecting a `phase` event (recording)");
+                println!("\n[3] opening the export menu");
+                js(
+                    &w,
+                    r#"document.querySelector('[data-testid="export-menu-trigger"]').click();"#,
+                );
+            }
+            6 => {
+                println!("\n[4] clicking Copy for an assistant");
+                js(
+                    &w,
+                    r#"document.querySelector('[data-testid="export-copy-assistant"]').click();"#,
+                );
+            }
+            7 => {
+                println!("\n[5] injecting a `phase` event (recording)");
                 js(
                     &w,
                     r#"window.ambient.event("phase", {
@@ -256,8 +272,8 @@ fn main() {
                     });"#,
                 );
             }
-            6 => {
-                println!("\n[4] reading back the live card the phase event drew");
+            8 => {
+                println!("\n[6] reading back the live card the phase event drew");
                 js(
                     &w,
                     r#"(() => {
@@ -274,15 +290,15 @@ fn main() {
                      })();"#,
                 );
             }
-            7 => {
-                println!("\n[5] navigating to settings");
+            9 => {
+                println!("\n[7] navigating to settings");
                 js(
                     &w,
                     r#"window.ambient.event("navigate", {page: "settings"});"#,
                 );
             }
-            8 => {
-                println!("\n[6] reading back what the page rendered");
+            10 => {
+                println!("\n[8] reading back what the page rendered");
                 js(
                     &w,
                     r#"(() => {
@@ -306,14 +322,14 @@ fn main() {
                      })();"#,
                 );
             }
-            9 => {
-                println!("\n[7] clicking the diarize switch");
+            11 => {
+                println!("\n[9] clicking the diarize switch");
                 js(
                     &w,
                     r#"document.querySelector('[data-testid="diarize-switch"]').click();"#,
                 );
             }
-            10 => {
+            12 => {
                 let out = std::env::args()
                     .nth(1)
                     .unwrap_or_else(|| "uicheck.png".into());
@@ -334,7 +350,7 @@ fn main() {
                 unsafe { w.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
                 std::mem::forget(handler);
             }
-            11 => {
+            13 => {
                 println!(
                     "\n{} message(s) reached the bridge",
                     p.ivars().seen.borrow().len()

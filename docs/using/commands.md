@@ -280,6 +280,10 @@ or `.assistant.md`). The file is derived; `raw.jsonl` plus `edits.jsonl`
 remain the only source of truth, and `record`, `diarize` and `name` each
 regenerate the `markdown` one. See [sessions](../developing/sessions.md).
 
+The window's session header has an Export menu with the same formats plus
+"Copy for an assistant", which copies straight to the clipboard instead of
+writing a file.
+
 ## transcribe
 
 ```sh

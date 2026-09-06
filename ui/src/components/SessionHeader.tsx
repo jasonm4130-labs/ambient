@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useBridge } from "@/lib/bridge-context";
+import { ExportMenu } from "./ExportMenu";
 import { sessionState, type SessionSummary } from "./SessionList";
 
 export interface SessionHeaderProps {
@@ -289,6 +290,7 @@ export function SessionHeader({ summary, onChanged, onDeleted }: SessionHeaderPr
           {summary.pinned ? "Pinned" : "Pin"}
         </Button>
         <DeleteMenu summary={summary} disabled={disabled} onDeleted={onDeleted ?? onChanged} />
+        {!disabled && <ExportMenu session={summary.id} />}
       </div>
       <TagsRow summary={summary} disabled={disabled} onChanged={onChanged} />
       <NotesField summary={summary} disabled={disabled} onChanged={onChanged} />
