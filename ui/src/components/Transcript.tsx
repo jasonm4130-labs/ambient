@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useBridge } from "@/lib/bridge-context";
 import { useLatest } from "@/lib/latest";
@@ -70,6 +70,10 @@ interface DiarizeEvent {
 
 interface TranscriptProps {
   session: string;
+  /// The absolute append-order index (over `reply.lines`, not group-local)
+  /// of a line to scroll into view and highlight for ~2 s — set by a
+  /// `SearchPalette` hit. Optional: `Transcript.test.tsx` renders without it.
+  highlightIndex?: number;
 }
 
 /// The transcript for one session, reloaded through `useLatest` whenever the
@@ -80,12 +84,14 @@ interface TranscriptProps {
 /// the API never calls `session::dedup_bleed`, so this never re-implements
 /// it, and the empty-transcript note here is short because the API does not
 /// expose the `Detail` flags the native pane's note picked between.
-export function Transcript({ session }: TranscriptProps) {
+export function Transcript({ session, highlightIndex }: TranscriptProps) {
   const bridge = useBridge();
   const [verbatim, setVerbatim] = useState(false);
   const [reply, setReply] = useState<TranscriptReply>();
   const [error, setError] = useState<string>();
   const [separating, setSeparating] = useState(false);
+  const [flashIndex, setFlashIndex] = useState<number>();
+  const lineRefs = useRef(new Map<number, HTMLDivElement>());
 
   const loadTranscript = useLatest(
     useCallback(
@@ -152,6 +158,17 @@ export function Transcript({ session }: TranscriptProps) {
     [bridge, session, verbatim, loadTranscript],
   );
 
+  // Scrolls to and flashes `highlightIndex` for ~2 s. `scrollIntoView` is
+  // undefined in jsdom, so it is called only if present.
+  useEffect(() => {
+    if (highlightIndex === undefined) return;
+    const el = lineRefs.current.get(highlightIndex);
+    el?.scrollIntoView?.({ block: "center" });
+    setFlashIndex(highlightIndex);
+    const timer = setTimeout(() => setFlashIndex(undefined), 2000);
+    return () => clearTimeout(timer);
+  }, [highlightIndex]);
+
   const groups = reply === undefined ? [] : groupLines(reply.lines);
 
   return (
@@ -213,11 +230,28 @@ export function Transcript({ session }: TranscriptProps) {
                 <span>{gutter(group.startMs)}</span>
                 <span>{group.speaker}</span>
               </div>
-              {group.lines.map((line, i) => (
-                <p key={i} className="text-sm">
-                  {line.text}
-                </p>
-              ))}
+              {group.lines.map((line, i) => {
+                // `group.key` is the absolute index of `group.lines[0]`
+                // (`groupLines` only ever appends a consecutive run), so
+                // `group.key + i` is this line's absolute index — the same
+                // number `search`'s `Hit.index` names.
+                const absoluteIndex = group.key + i;
+                return (
+                  <div
+                    key={i}
+                    ref={(el) => {
+                      if (el === null) lineRefs.current.delete(absoluteIndex);
+                      else lineRefs.current.set(absoluteIndex, el);
+                    }}
+                    className={cn(
+                      "rounded px-1 transition-colors",
+                      flashIndex === absoluteIndex && "bg-yellow-200 dark:bg-yellow-900",
+                    )}
+                  >
+                    <p className="text-sm">{line.text}</p>
+                  </div>
+                );
+              })}
             </div>
           ))}
         </div>

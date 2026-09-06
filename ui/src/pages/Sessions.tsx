@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LivePane, type PhasePayload } from "@/components/LivePane";
 import { NamingStrip } from "@/components/NamingStrip";
+import { SearchPalette } from "@/components/SearchPalette";
 import { SessionList, type SessionSummary } from "@/components/SessionList";
 import { Transcript } from "@/components/Transcript";
 import { useBridge } from "@/lib/bridge-context";
@@ -21,6 +22,8 @@ export function Sessions({ onSettings }: SessionsProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [phase, setPhase] = useState<PhasePayload>();
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [highlightIndex, setHighlightIndex] = useState<number>();
 
   const loadSessions = useLatest(useCallback(() => bridge.call<SessionSummary[]>("sessions"), [bridge]));
 
@@ -57,13 +60,47 @@ export function Sessions({ onSettings }: SessionsProps) {
     [bridge, refresh],
   );
 
+  // ⌘K opens the search palette from anywhere on the page.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.key === "k") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const openHit = useCallback((session: string, index: number) => {
+    setSelected(session);
+    setHighlightIndex(index);
+    setSearchOpen(false);
+  }, []);
+
+  const selectSession = useCallback((session: string) => {
+    setSelected(session);
+    setHighlightIndex(undefined);
+  }, []);
+
   return (
     <div className="flex h-screen">
       <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border flex w-64 flex-col border-r">
-        <h1 className="p-4 text-lg font-semibold">Sessions</h1>
+        <div className="flex items-center justify-between p-4">
+          <h1 className="text-lg font-semibold">Sessions</h1>
+          <button
+            type="button"
+            data-testid="search-open"
+            aria-label="Search"
+            className="hover:bg-sidebar-accent rounded p-1 text-sm"
+            onClick={() => setSearchOpen(true)}
+          >
+            Search
+          </button>
+        </div>
         <LivePane payload={phase} />
         <div className="flex-1 overflow-y-auto px-2">
-          <SessionList sessions={sessions} selectedId={selected} onSelect={setSelected} />
+          <SessionList sessions={sessions} selectedId={selected} onSelect={selectSession} />
         </div>
         <button
           type="button"
@@ -81,11 +118,14 @@ export function Sessions({ onSettings }: SessionsProps) {
           </div>
         ) : (
           <>
-            <Transcript session={selected} />
+            <Transcript session={selected} {...(highlightIndex !== undefined && { highlightIndex })} />
             <NamingStrip session={selected} onChanged={refresh} />
           </>
         )}
       </main>
+      {searchOpen && (
+        <SearchPalette sessions={sessions} onOpen={openHit} onClose={() => setSearchOpen(false)} />
+      )}
     </div>
   );
 }
