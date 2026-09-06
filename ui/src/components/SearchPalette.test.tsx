@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BridgeProvider } from "@/lib/bridge-context";
@@ -60,12 +60,15 @@ describe("SearchPalette", () => {
   });
 
   it("calls search with the debounced query exactly once", async () => {
-    const user = setupUser();
+    // A synchronous `fireEvent.change` rather than `user.type`: typing six
+    // keystrokes under `shouldAdvanceTime`'s real-time-coupled clock risks
+    // the 150 ms debounce firing mid-keystroke on a loaded machine.
+    vi.useFakeTimers();
     const fake = new FakeBridge();
     fake.answer("search", []);
     renderPalette(fake);
 
-    await user.type(screen.getByRole("searchbox", { name: "Search" }), "budget");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), { target: { value: "budget" } });
     expect(fake.calls.filter((c) => c.method === "search")).toHaveLength(0);
 
     vi.advanceTimersByTime(150);

@@ -167,7 +167,11 @@ export function Transcript({ session, highlightIndex }: TranscriptProps) {
     setFlashIndex(highlightIndex);
     const timer = setTimeout(() => setFlashIndex(undefined), 2000);
     return () => clearTimeout(timer);
-  }, [highlightIndex]);
+    // Also re-runs when `reply` changes: `highlightIndex` and `selected`
+    // land in the same state batch, so the first run after a hit fires
+    // against the *previous* session's still-mounted lines, before the new
+    // session's `transcript` reply has arrived.
+  }, [highlightIndex, reply]);
 
   const groups = reply === undefined ? [] : groupLines(reply.lines);
 
