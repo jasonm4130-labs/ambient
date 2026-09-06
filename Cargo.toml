@@ -1,6 +1,6 @@
 [package]
 name = "ambient"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 rust-version = "1.85"
 description = "Local-first ambient capture: room and call audio, transcribed and attributed on-device"
