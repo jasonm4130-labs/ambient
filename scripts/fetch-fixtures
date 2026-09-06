@@ -3,10 +3,12 @@
 # the sources are hundreds of megabytes and the licences are the upstream
 # corpora's, not ours. Two sets:
 #
-#   fixtures/wer  word error rate, from LibriSpeech test-clean (CC BY 4.0,
-#                 openslr.org/12)
-#   fixtures/der  diarization error rate, from AMI Mix-Headset audio
-#                 (CC BY 4.0) with the pyannote only_words references
+#   fixtures/wer   word error rate, from LibriSpeech test-clean (CC BY 4.0,
+#                  openslr.org/12)
+#   fixtures/der   diarization error rate, from AMI Mix-Headset audio
+#                  (CC BY 4.0) with the pyannote only_words references
+#   fixtures/calls word error rate on phone-call-like audio, from Earnings-21
+#                  conference-bridge recordings and their human transcripts
 #
 #   scripts/fetch-fixtures                 # cached after the first run
 #   scripts/fetch-fixtures --force         # rebuild both fixtures from the cache
@@ -94,9 +96,12 @@ fi
 # A consumer that needs the der set finds no manifest and says so.
 if [ "$decoder" = ffmpeg ] && command -v ffprobe >/dev/null 2>&1; then
   want_der=1
+  want_calls=1
 else
   want_der=""
+  want_calls=""
   echo "fetch-fixtures: skipping the der set, it needs ffmpeg and ffprobe" >&2
+  echo "fetch-fixtures: skipping the calls set, it needs ffmpeg and ffprobe" >&2
 fi
 
 tmp=$(mktemp -d)
@@ -391,6 +396,134 @@ if [ -n "$want_der" ]; then
       echo ']'
     } >"$der_manifest"
     echo "wrote $der_manifest"
+  fi
+  files=$((files + 1))
+fi
+
+# --- the calls set (word error rate on phone-call-like audio) --------------
+#
+# Skipped, not fatal, on a machine without ffmpeg: see the decoder probe above.
+if [ -n "$want_calls" ]; then
+  # 4320211, 4330115 and 4341191 are the first three .nlp reference files in
+  # sorted order, of 44 in the corpus, so which calls this scores is a
+  # property of the corpus rather than a list someone typed. Media is plain
+  # (not LFS) and range-capable; references are CRLF, one header line
+  # `token|speaker|ts|endTs|punctuation|case|tags|wer_tags`, with `ts` and
+  # `endTs` empty in every row — the corpus carries no per-token timestamps.
+  earnings="$cache/earnings21"
+  calls_out="$cache/fixtures/calls"
+  calls="4320211 4330115 4341191"
+  calls_seconds=300
+  calls_media=https://raw.githubusercontent.com/revdotcom/speech-datasets/main/earnings21/media
+  calls_nlp=https://raw.githubusercontent.com/revdotcom/speech-datasets/main/earnings21/transcripts/nlp_references
+
+  # shasum -a 256 of the six downloads, mirroring ami_digests: pinned so an
+  # upstream re-encode or a reference edit fails the fetch rather than
+  # quietly moving the baseline the next unit commits underneath the quality
+  # gate.
+  calls_digests="
+  b943ebeefc16ef41ab7744d3cc46e9aa5b95245d85fb00dddd6e34e408dd7191  4320211.mp3
+  a7d2c1e7362cc6af5317f75c855a9270c8cbbf95e04c1fe3e4834c3848e66ffb  4320211.nlp
+  b8bcedbb29f9a04aaac25ff8c611b549cca2a0ab7635f76aee26eb0dfe5b9677  4330115.mp3
+  6fc925c7781e73830a3810a9107268986f04ad77eae2ce9450404f8b0a99d49c  4330115.nlp
+  7ff1aa5211d7963779fcd1a60fc423d61774cd7c004a616d46ca5168308ca06e  4341191.mp3
+  e494a1306b67355186bf4fff603ceebd0b95114bff11ce4b4ece544c7348de2f  4341191.nlp
+  "
+
+  # Download $2 to "$earnings/$1" if it is not already there, verifying it
+  # before it is allowed to stay: an mp3 ffprobe cannot read and an nlp file
+  # that is not the expected reference (an HTML error page saved under the
+  # right name, say) both get deleted, so the next run retries rather than
+  # scoring garbage.
+  fetch_call() {
+    local name=$1 url=$2 kind=$3
+    local dest="$earnings/$name"
+    if [ -f "$dest" ]; then return 0; fi
+    echo "fetching $name ..."
+    if ! curl --fail --location --silent --show-error -o "$tmp/$name" "$url"; then
+      rm -f "$tmp/$name"
+      echo "fetch-fixtures: download failed: $url" >&2
+      exit 1
+    fi
+    mv "$tmp/$name" "$dest"
+    if [ "$kind" = mp3 ]; then
+      if ! ffprobe -v error -show_entries format=duration -of csv=p=0 "$dest" >/dev/null; then
+        rm -f "$dest"
+        echo "fetch-fixtures: not a readable mp3, deleted it: $url" >&2
+        exit 1
+      fi
+    elif ! head -1 "$dest" | tr -d '\r' | grep -qx 'token|speaker|ts|endTs|punctuation|case|tags|wer_tags'; then
+      rm -f "$dest"
+      echo "fetch-fixtures: not an nlp reference, deleted it: $url" >&2
+      exit 1
+    fi
+    shasum -a 256 "$dest" | awk '{ printf "%s  %s\n", $1, "'"$name"'" }'
+  }
+
+  mkdir -p "$earnings" "$calls_out"
+  for id in $calls; do
+    fetch_call "$id.mp3" "$calls_media/$id.mp3" mp3
+    fetch_call "$id.nlp" "$calls_nlp/$id.nlp" nlp
+  done
+
+  # Every run, cached or fresh: the pinned digests are the fixture's identity.
+  digest_fail=""
+  for id in $calls; do
+    for name in "$id.mp3" "$id.nlp"; do
+      have=$(shasum -a 256 "$earnings/$name" | awk '{ print $1 }')
+      want=$(printf '%s\n' "$calls_digests" | awk -v n="$name" '$2 == n { print $1 }')
+      if [ -z "$want" ]; then
+        echo "fetch-fixtures: $name is not pinned; add to calls_digests:" >&2
+        echo "$have  $name" >&2
+        digest_fail=1
+      elif [ "$have" != "$want" ]; then
+        echo "fetch-fixtures: $name changed upstream: pinned $want, got $have" >&2
+        digest_fail=1
+      fi
+    done
+  done
+  [ -z "$digest_fail" ] || exit 1
+
+  calls_entries=""
+  for id in $calls; do
+    call_wav="$calls_out/$id.wav"
+    call_txt="$calls_out/$id.txt"
+
+    if [ -z "$force" ] && [ -f "$call_wav" ] && [ -f "$call_txt" ]; then
+      echo "already present: $call_wav"
+      echo "already present: $call_txt"
+    else
+      ffmpeg -v error -nostdin -y -i "$earnings/$id.mp3" \
+        -t "$calls_seconds" -ac 1 -ar "$rate" -sample_fmt s16 "$tmp/$id.wav"
+      mv "$tmp/$id.wav" "$call_wav"
+      # The reference is the token column of the whole .nlp: the corpus
+      # carries no per-token timestamps, so it cannot be cut to the audio's
+      # 300 s the way the der RTTMs are — src/wer.rs's score_prefix truncates
+      # it to the hypothesis instead, at score time.
+      awk -F'|' 'NR > 1 { gsub(/\r/, "", $1); printf "%s ", $1 }' "$earnings/$id.nlp" >"$tmp/$id.txt"
+      mv "$tmp/$id.txt" "$call_txt"
+      echo "wrote $call_wav (${calls_seconds}s, 16 kHz mono 16-bit)"
+      echo "wrote $call_txt ($(wc -w <"$call_txt" | tr -d ' ') tokens)"
+    fi
+
+    files=$((files + 2))
+    total=$(awk -v a="$total" -v b="$calls_seconds" 'BEGIN { printf "%.2f", a + b }')
+    calls_entries="$calls_entries$(
+      printf '  {"wav": "%s", "reference": "%s", "speaker": "%s", "utterances": %d, "seconds": %d, "truncate_reference": true}' \
+        "$call_wav" "$call_txt" "$id" 1 "$calls_seconds"
+    )"$'\n'
+  done
+
+  calls_manifest="$calls_out/manifest.json"
+  if [ -z "$force" ] && [ -f "$calls_manifest" ]; then
+    echo "already present: $calls_manifest"
+  else
+    {
+      echo '['
+      printf '%s' "$calls_entries" | sed '$!s/$/,/'
+      echo ']'
+    } >"$calls_manifest"
+    echo "wrote $calls_manifest"
   fi
   files=$((files + 1))
 fi
