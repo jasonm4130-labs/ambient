@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LivePane, type PhasePayload } from "@/components/LivePane";
+import { LiveTranscript } from "@/components/LiveTranscript";
 import { NamingStrip } from "@/components/NamingStrip";
 import { SearchPalette } from "@/components/SearchPalette";
 import { SessionHeader } from "@/components/SessionHeader";
-import { SessionList, type SessionSummary } from "@/components/SessionList";
+import { SessionList, sessionState, type SessionSummary } from "@/components/SessionList";
 import { Transcript } from "@/components/Transcript";
 import { useBridge } from "@/lib/bridge-context";
 import { useLatest } from "@/lib/latest";
@@ -137,7 +138,12 @@ export function Sessions({ onSettings }: SessionsProps) {
                 onDeleted={onDeleted}
               />
             )}
-            <Transcript session={selected} {...(highlightIndex !== undefined && { highlightIndex })} />
+            {selectedSummary !== null &&
+            (sessionState(selectedSummary) === "live" || sessionState(selectedSummary) === "transcribing") ? (
+              <LiveTranscript key={selected} session={selected} onDone={refresh} />
+            ) : (
+              <Transcript session={selected} {...(highlightIndex !== undefined && { highlightIndex })} />
+            )}
             <NamingStrip session={selected} onChanged={refresh} />
           </>
         )}
