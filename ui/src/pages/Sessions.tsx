@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LivePane, type PhasePayload } from "@/components/LivePane";
 import { NamingStrip } from "@/components/NamingStrip";
 import { SearchPalette } from "@/components/SearchPalette";
+import { SessionHeader } from "@/components/SessionHeader";
 import { SessionList, type SessionSummary } from "@/components/SessionList";
 import { Transcript } from "@/components/Transcript";
 import { useBridge } from "@/lib/bridge-context";
@@ -83,6 +84,16 @@ export function Sessions({ onSettings }: SessionsProps) {
     setHighlightIndex(undefined);
   }, []);
 
+  // A deleted session must leave `selected` before the next `sessions`
+  // refresh, or `Transcript` immediately re-requests a session that no
+  // longer exists.
+  const onDeleted = useCallback(() => {
+    setSelected(null);
+    void refresh();
+  }, [refresh]);
+
+  const selectedSummary = sessions.find((s) => s.id === selected) ?? null;
+
   return (
     <div className="flex h-screen">
       <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border flex w-64 flex-col border-r">
@@ -112,12 +123,13 @@ export function Sessions({ onSettings }: SessionsProps) {
         </button>
       </aside>
       <main className="flex flex-1 flex-col overflow-hidden">
-        {selected === null ? (
+        {selected === null || selectedSummary === null ? (
           <div className="flex flex-1 items-center justify-center p-8">
             <p className="text-muted-foreground text-sm">Select a session to see its transcript.</p>
           </div>
         ) : (
           <>
+            <SessionHeader summary={selectedSummary} onChanged={refresh} onDeleted={onDeleted} />
             <Transcript session={selected} {...(highlightIndex !== undefined && { highlightIndex })} />
             <NamingStrip session={selected} onChanged={refresh} />
           </>
