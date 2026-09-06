@@ -905,7 +905,10 @@ define_class!(
             if name.is_empty() {
                 return;
             }
-            match session::name_speaker(&dir, &label, &name) {
+            let result = session::claim_transcription(&dir).and_then(|_lock| {
+                session::name_speaker(&dir, &label, &name)
+            });
+            match result {
                 Ok(_) => {
                     let mut roster = crate::roster::load();
                     if crate::roster::add(&mut roster, &name) {
@@ -938,7 +941,10 @@ define_class!(
             let (tx, rx) = std::sync::mpsc::channel();
             let worker_dir = dir.clone();
             std::thread::spawn(move || {
-                tx.send(crate::session::diarize_session(&worker_dir, threshold)).ok();
+                let result = session::claim_transcription(&worker_dir).and_then(|_lock| {
+                    session::diarize_session(&worker_dir, threshold)
+                });
+                tx.send(result).ok();
             });
             *self.ivars().diarizing.borrow_mut() = Some((dir, rx));
             self.repaint(mtm);

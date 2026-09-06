@@ -91,7 +91,9 @@ function TagsRow({
             aria-label={`Remove tag ${tag}`}
             disabled={disabled}
             onClick={() => {
-              void bridge.call("session.update", { session: summary.id, remove_tag: tag }).then(onChanged);
+              void bridge
+                .call("session.update", { session: summary.id, remove_tag: tag })
+                .then(onChanged);
             }}
           >
             ×
@@ -118,11 +120,8 @@ function TagsRow({
   );
 }
 
-/// A notes textarea that saves on blur. `SessionSummary` carries no `notes`
-/// field, so there is nothing to seed the draft from or to resync against —
-/// this control is write-only this unit. Saves only when the value changed
-/// since the last save, so an incidental focus/blur (e.g. `uicheck` tabbing
-/// through) never issues a spurious `session.update`.
+/// Notes start from the saved metadata and save on blur. A failed save keeps
+/// the draft available for retry instead of marking it as already saved.
 function NotesField({
   summary,
   disabled,
@@ -133,24 +132,45 @@ function NotesField({
   onChanged: () => void;
 }) {
   const bridge = useBridge();
-  const [draft, setDraft] = useState("");
-  const saved = useRef("");
+  const [draft, setDraft] = useState(summary.notes ?? "");
+  const saved = useRef(summary.notes ?? "");
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    const next = summary.notes ?? "";
+    const previous = saved.current;
+    setDraft((current) => (current === previous ? next : current));
+    saved.current = next;
+  }, [summary.notes]);
 
   return (
-    <textarea
-      aria-label="Notes"
-      data-testid="session-header-notes"
-      disabled={disabled}
-      className="border-input placeholder:text-muted-foreground min-h-16 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
-      placeholder="Notes"
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        if (draft === saved.current) return;
-        saved.current = draft;
-        void bridge.call("session.update", { session: summary.id, notes: draft }).then(onChanged);
-      }}
-    />
+    <div>
+      <textarea
+        aria-label="Notes"
+        data-testid="session-header-notes"
+        disabled={disabled}
+        className="border-input placeholder:text-muted-foreground min-h-16 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
+        placeholder="Notes"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft === saved.current) return;
+          setError(undefined);
+          void bridge
+            .call("session.update", { session: summary.id, notes: draft })
+            .then(() => {
+              saved.current = draft;
+              onChanged();
+            })
+            .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+        }}
+      />
+      {error !== undefined && (
+        <p role="alert" className="text-destructive text-sm">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -210,7 +230,11 @@ function DeleteMenu({
 
   if (confirming) {
     return (
-      <DeleteConfirm summary={summary} onDeleted={onDeleted} onCancel={() => setConfirming(false)} />
+      <DeleteConfirm
+        summary={summary}
+        onDeleted={onDeleted}
+        onCancel={() => setConfirming(false)}
+      />
     );
   }
 

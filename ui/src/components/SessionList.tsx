@@ -18,6 +18,7 @@ export interface SessionSummary {
   transcribing: boolean;
   error: string | null;
   tags: string[];
+  notes?: string;
   pinned: boolean;
 }
 

@@ -144,7 +144,7 @@ fn doctor_checks(paths: &Paths) -> Value {
 /// symlink is listed with `error` set and no metadata: it is on this machine
 /// and a person should see it, but nothing behind that link is read.
 fn sessions(root: &Path) -> Value {
-    let listed: Vec<Value> = session_dirs(root)
+    let mut listed: Vec<session::SessionSummary> = session_dirs(root)
         .iter()
         .rev()
         .filter_map(|dir| match symlinked(dir) {
@@ -159,13 +159,14 @@ fn sessions(root: &Path) -> Value {
                 transcribing: session::live_transcriber(dir).is_some(),
                 error: Some(refusal),
                 tags: Vec::new(),
+                notes: String::new(),
                 pinned: false,
             }),
             None => session::summarise(dir),
         })
-        .filter_map(|s| serde_json::to_value(s).ok())
         .collect();
-    Value::Array(listed)
+    listed.sort_by_key(|s| !s.pinned);
+    json!(listed)
 }
 
 /// The `transcript` method. Every argument's JSON type is checked here,
@@ -670,6 +671,30 @@ fn doctor_answers_the_checks_doctor_run_reports() {
 mod tests {
     use super::*;
     use crate::roster;
+
+    #[test]
+    fn sessions_returns_saved_notes_and_pins_before_newer_sessions() {
+        let (paths, root) = temp_paths("notes-and-pins");
+        for (id, pinned) in [("older", true), ("recent", false)] {
+            let dir = root.join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("session.json"),
+                json!({
+                    "id": id, "name": null, "started_at": "2026-09-06", "ended_at": "",
+                    "duration_s": 1, "device_hz": 16000, "channels": 1,
+                    "mic_channels": 1, "apps": [], "model": "test",
+                    "notes": "Keep the budget decision", "pinned": pinned
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let listed = call("sessions", &json!({}), &paths).unwrap();
+        assert_eq!(listed[0]["id"], "older");
+        assert_eq!(listed[0]["notes"], "Keep the budget decision");
+        std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
 
     /// A `Paths` pointed entirely at temp files unique to this test — never
     /// the user's real config, roster or sessions folder.

@@ -70,6 +70,7 @@ interface DiarizeEvent {
 
 interface TranscriptProps {
   session: string;
+  revision?: number;
   /// The absolute append-order index (over `reply.lines`, not group-local)
   /// of a line to scroll into view and highlight for ~2 s — set by a
   /// `SearchPalette` hit. Optional: `Transcript.test.tsx` renders without it.
@@ -84,7 +85,7 @@ interface TranscriptProps {
 /// the API never calls `session::dedup_bleed`, so this never re-implements
 /// it, and the empty-transcript note here is short because the API does not
 /// expose the `Detail` flags the native pane's note picked between.
-export function Transcript({ session, highlightIndex }: TranscriptProps) {
+export function Transcript({ session, revision, highlightIndex }: TranscriptProps) {
   const bridge = useBridge();
   const [verbatim, setVerbatim] = useState(false);
   const [reply, setReply] = useState<TranscriptReply>();
@@ -109,7 +110,7 @@ export function Transcript({ session, highlightIndex }: TranscriptProps) {
       .catch((e: unknown) => {
         setError(e instanceof Error ? e.message : String(e));
       });
-  }, [session, verbatim, loadTranscript]);
+  }, [session, verbatim, revision, loadTranscript]);
 
   const copyMarkdown = useCallback(() => {
     void bridge

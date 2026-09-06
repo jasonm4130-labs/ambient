@@ -14,8 +14,12 @@ export function useLatest<Args extends unknown[], T>(
     (...args: Args) => {
       generation.current += 1;
       const issued = generation.current;
-      return call(...args).then((result): T | undefined =>
-        generation.current === issued ? result : undefined,
+      return call(...args).then(
+        (result): T | undefined => generation.current === issued ? result : undefined,
+        (error: unknown): undefined => {
+          if (generation.current === issued) throw error;
+          return undefined;
+        },
       );
     },
     [call],

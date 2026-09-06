@@ -19,7 +19,8 @@ maps it to a tool result with `isError: true`).
 
 ## `sessions`
 
-Every recorded session on this machine, newest first.
+Every recorded session on this machine, pinned sessions first and newest first
+within each group. Saved notes are included so reopening the editor preserves them.
 
 Request:
 
@@ -41,6 +42,7 @@ Reply:
     "transcribing": false,
     "error": null,
     "tags": [],
+    "notes": "",
     "pinned": false
   }
 ]

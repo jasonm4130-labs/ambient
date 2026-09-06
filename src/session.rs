@@ -1003,6 +1003,7 @@ pub struct SessionSummary {
     pub transcribing: bool,
     pub error: Option<String>,
     pub tags: Vec<String>,
+    pub notes: String,
     pub pinned: bool,
 }
 
@@ -1063,6 +1064,7 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
         transcribing: live_transcriber(dir).is_some(),
         error: None,
         tags: Vec::new(),
+        notes: String::new(),
         pinned: false,
     };
     match present {
@@ -1079,6 +1081,7 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
                 s.started_at = Some(meta.started_at);
                 s.duration_s = Some(meta.duration_s);
                 s.tags = meta.tags;
+                s.notes = meta.notes;
                 s.pinned = meta.pinned;
             }
             // The id stays the directory name: it is what the caller typed to
@@ -1114,7 +1117,7 @@ pub struct MetaPatch {
 /// it again in here would make the entry point's own claim collide with
 /// itself on the success path.
 ///
-/// The write is atomic: `session.json.tmp` is written in full and then
+/// The write is atomic: a newly created staging file is written in full and then
 /// renamed over `session.json`, so a reader never sees a half-written file
 /// and a crash mid-write leaves the old one intact.
 pub fn update_meta(dir: &Path, patch: &MetaPatch) -> Result<SessionMeta> {
@@ -1146,11 +1149,28 @@ pub fn update_meta(dir: &Path, patch: &MetaPatch) -> Result<SessionMeta> {
         meta.tags.retain(|t| t != tag);
     }
 
-    let tmp = dir.join("session.json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&meta)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path)
-        .with_context(|| format!("renaming {} into place", path.display()))?;
+    static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
+    let tmp = dir.join(format!(
+        "session.json.{}.{}.tmp",
+        std::process::id(),
+        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut staging = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
+    let result = (|| -> Result<()> {
+        staging
+            .write_all(serde_json::to_string_pretty(&meta)?.as_bytes())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("renaming {} into place", path.display()))
+    })();
+    if result.is_err() {
+        std::fs::remove_file(&tmp).ok();
+    }
+    result?;
     Ok(meta)
 }
 
@@ -3030,6 +3050,26 @@ mod search_tests {
 #[cfg(test)]
 mod meta_tests {
     use super::*;
+
+    #[test]
+    fn metadata_update_does_not_follow_a_staging_symlink() {
+        let root = fixture("meta-staging-symlink");
+        let dir = root.join("session");
+        write_session(&dir, "session", "2026-09-06", None);
+        let outside = root.join("unrelated.txt");
+        std::fs::write(&outside, "keep this").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("session.json.tmp")).unwrap();
+        update_meta(
+            &dir,
+            &MetaPatch {
+                notes: Some("new note".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep this");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn fixture(test: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("ambient-{test}-{}", std::process::id()));

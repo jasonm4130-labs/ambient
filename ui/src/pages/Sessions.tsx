@@ -26,6 +26,7 @@ export function Sessions({ onSettings }: SessionsProps) {
   const [phase, setPhase] = useState<PhasePayload>();
   const [searchOpen, setSearchOpen] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState<number>();
+  const [transcriptRevision, setTranscriptRevision] = useState(0);
 
   const loadSessions = useLatest(useCallback(() => bridge.call<SessionSummary[]>("sessions"), [bridge]));
 
@@ -142,9 +143,12 @@ export function Sessions({ onSettings }: SessionsProps) {
             (sessionState(selectedSummary) === "live" || sessionState(selectedSummary) === "transcribing") ? (
               <LiveTranscript key={selected} session={selected} onDone={refresh} />
             ) : (
-              <Transcript session={selected} {...(highlightIndex !== undefined && { highlightIndex })} />
+              <Transcript session={selected} revision={transcriptRevision} {...(highlightIndex !== undefined && { highlightIndex })} />
             )}
-            <NamingStrip session={selected} onChanged={refresh} />
+            <NamingStrip key={`naming-${selected}`} session={selected} onChanged={() => {
+              setTranscriptRevision((revision) => revision + 1);
+              void refresh();
+            }} />
           </>
         )}
       </main>
