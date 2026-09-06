@@ -200,6 +200,25 @@ segmenter is not losing words and the recogniser is not inventing them, it is
 getting them wrong. `--json` writes the same rows, the total among them with
 `speaker` reading `total`.
 
+`cargo run --release --bin wer -- --manifest ~/.cache/ambient/fixtures/calls/manifest.json`,
+on 2026-09-06, against the `calls` fixture: three Earnings-21 conference-bridge
+calls, 300 s of each. Each call's reference is its whole human transcript, but
+the fixture wav is only the call's first 300 s, so the reference is truncated
+to the hypothesis (`wer::score_prefix`) before scoring — otherwise everything
+said after the cut would count as deletions.
+
+| Speaker | Seconds | Ref words | S | I | D | WER | Decode | Realtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4320211 | 300.00 | 755 | 37 | 32 | 4 | 0.0967 | 7.40 s | 40.6x |
+| 4330115 | 300.00 | 773 | 54 | 25 | 5 | 0.1087 | 7.09 s | 42.3x |
+| 4341191 | 300.00 | 762 | 43 | 26 | 3 | 0.0945 | 7.22 s | 41.5x |
+| **calls total** | 900.00 | 2290 | 134 | 83 | 12 | **0.1000** | 21.71 s | 41.5x |
+
+Substitutions and insertions are of the same order here, unlike the `clean`
+total's 39-against-3. Deletions stay small, which is the check that the
+truncation is scoring the audio the fixture contains rather than penalising
+the call for having ended.
+
 ## The two shipped models on the same fixture
 
 Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the

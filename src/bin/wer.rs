@@ -19,6 +19,14 @@
 //! ever see it. Transcodes are cached under
 //! `~/.cache/ambient/fixtures/via/<rate>/<speaker>.wav` and reused only when
 //! `ffprobe` confirms the cached file is still at `<rate>`.
+//!
+//! A manifest entry with `"truncate_reference": true` — the `calls` set,
+//! built by `scripts/fetch-fixtures` from Earnings-21 conference-bridge
+//! audio — is scored with `wer::score_prefix` instead of `wer::score`: its
+//! reference is the whole call's human transcript, but the fixture wav is
+//! only the call's first 300 s, so scoring against the whole reference would
+//! count everything spoken after the cut as deletions. Manifests without the
+//! field, including the default `wer` one, are unaffected.
 
 use ambient::{asr::Recognizer, features, resample, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
@@ -36,6 +44,14 @@ struct Entry {
     wav: PathBuf,
     reference: PathBuf,
     speaker: String,
+    /// True on the `calls` manifest only: the Earnings-21 reference covers
+    /// the whole call but the fixture wav is only its first 300 s, so the
+    /// reference is scored against `wer::score_prefix` rather than
+    /// `wer::score` — the reference's best-matching prefix, not all of it.
+    /// Defaulted so the `wer` and `der`-adjacent manifests, which carry no
+    /// such field, keep scoring exactly as before.
+    #[serde(default)]
+    truncate_reference: bool,
 }
 
 /// One printed row, and one element of the `--json` array. The last row is the
@@ -213,7 +229,13 @@ fn main() -> Result<()> {
             .map(|(_, text, _)| text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let scored = wer::score(&wer::normalise(&reference), &wer::normalise(&hypothesis));
+        let reference_words = wer::normalise(&reference);
+        let hypothesis_words = wer::normalise(&hypothesis);
+        let scored = if entry.truncate_reference {
+            wer::score_prefix(&reference_words, &hypothesis_words)
+        } else {
+            wer::score(&reference_words, &hypothesis_words)
+        };
 
         total.substitutions += scored.substitutions;
         total.insertions += scored.insertions;
