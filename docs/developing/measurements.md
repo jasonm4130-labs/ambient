@@ -572,6 +572,33 @@ fixture. That is a finding, not a fix — `resample::to_16k` is unchanged by
 this section, and no shipped constant moved, so `quality/wer.json` does not
 change with it.
 
+## Insertions by gap
+
+`scripts/fetch-fixtures --gap <ms>` and `cargo run --release --bin wer`, on
+2026-09-06. The default fixture puts 700 ms of silence between utterances;
+`--gap 3000` builds the same three speakers, the same chapters, the same
+`.trans.txt` lines with 3 s of silence between them instead, under its own
+`~/.cache/ambient/fixtures/wer-3000ms/`. Same words, more silence: both total
+rows read 2152 reference words, so the raw insertion count is comparable
+between them without normalising for anything. Total seconds rise too — 2.3 s
+extra per gap per speaker, 218.49 s over the fixture — so `turns(&samples,
+30)` sees different turn boundaries at 3 s than at 700 ms; gap length is not
+the only thing that changed between the rows.
+
+| Gap | Seconds | Ref words | S | I | D | WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 700 ms | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 |
+| 3 s | 1132.23 | 2152 | 40 | 3 | 5 | 0.0223 |
+
+Insertions net out at 3 in both totals (one speaker gains one, another loses
+one), and total WER moves 0.0218 → 0.0223, inside the 0.005 keep-rule margin
+the resampler section above cites. On this fixture a longer silence between
+utterances does not make Parakeet invent words. That is a finding, not a fix:
+nothing in the pipeline changed, so `quality/wer.json` does not change with
+it. If insertions had risen with gap length, the lever to name would be
+`last_confidence` — not tuned here, since it also drops real quiet speech and
+needs its own number.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still

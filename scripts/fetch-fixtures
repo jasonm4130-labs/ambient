@@ -8,8 +8,9 @@
 #   fixtures/der  diarization error rate, from AMI Mix-Headset audio
 #                 (CC BY 4.0) with the pyannote only_words references
 #
-#   scripts/fetch-fixtures            # cached after the first run
-#   scripts/fetch-fixtures --force    # rebuild both fixtures from the cache
+#   scripts/fetch-fixtures                 # cached after the first run
+#   scripts/fetch-fixtures --force         # rebuild both fixtures from the cache
+#   scripts/fetch-fixtures --gap <ms>      # wer set with <ms> between utterances
 #
 # Safe to run every night. Each source is fetched once; a second run touches
 # the network never and rewrites nothing. --force rebuilds the fixtures from
@@ -20,10 +21,14 @@
 # For wer, the three speakers are the first three directories in sorted order
 # and the chapter is that speaker's first, so which audio this scores is a
 # property of the corpus rather than a list someone typed. Each chapter's
-# utterances are concatenated in id order with 700 ms of silence between them:
+# utterances are concatenated in id order with a gap of silence between them:
 # one long track per speaker is what `ambient record` actually sees, and the
-# gaps give the VAD turn boundaries to find. The der set is described where it
-# is built, below.
+# gaps give the VAD turn boundaries to find. `--gap <ms>` sets that silence;
+# it defaults to 700 and writes `fixtures/wer/` exactly as before, but any
+# other value writes a separate `fixtures/wer-<ms>ms/` with its own
+# manifest.json, so a longer-gap fixture never clobbers the baseline
+# `scripts/quality` gates against. The der set is described where it is
+# built, below.
 set -euo pipefail
 
 url=https://www.openslr.org/resources/12/test-clean.tar.gz
@@ -31,23 +36,46 @@ cache="$HOME/.cache/ambient"
 libri="$cache/librispeech"
 tarball="$libri/test-clean.tar.gz"
 corpus="$libri/LibriSpeech/test-clean"
-out="$cache/fixtures/wer"
 
 speakers=3
 gap_ms=700
 rate=16000
 bytes_per_second=$((rate * 2)) # 16 kHz mono 16-bit
 
+usage() {
+  echo "usage: scripts/fetch-fixtures [--force] [--gap <ms>]" >&2
+}
+
 force=""
-for arg in "$@"; do
-  case "$arg" in
-    --force) force=1 ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --force)
+      force=1
+      shift
+      ;;
+    --gap)
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      gap_ms=$2
+      shift 2
+      ;;
     *)
-      echo "usage: scripts/fetch-fixtures [--force]" >&2
+      usage
       exit 2
       ;;
   esac
 done
+
+# The default gap keeps writing fixtures/wer/ exactly as before; any other
+# gap gets its own directory so it never clobbers the baseline
+# scripts/quality gates against.
+if [ "$gap_ms" = 700 ]; then
+  out="$cache/fixtures/wer"
+else
+  out="$cache/fixtures/wer-${gap_ms}ms"
+fi
 
 if command -v ffmpeg >/dev/null 2>&1; then
   decoder=ffmpeg
