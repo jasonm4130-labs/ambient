@@ -20,6 +20,9 @@ use ambient::{
 };
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -43,18 +46,14 @@ fn cache_dir() -> PathBuf {
 /// Build (or reuse) the native-rate 48 kHz copy `ffmpeg` produces, so the
 /// resampler that a live capture would run is in the timed path.
 fn ensure_48k(input: &Path) -> Result<PathBuf> {
-    let stem = input
-        .file_stem()
-        .context("input wav has no file stem")?
-        .to_string_lossy()
-        .into_owned();
+    let key = cache_key(input)?;
     let dir = cache_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let dest = dir.join(format!("{stem}.48k.wav"));
+    let dest = dir.join(format!("{key}.48k.wav"));
     if dest.is_file() {
         return Ok(dest);
     }
-    let tmp = dir.join(format!("{stem}.48k.wav.tmp"));
+    let tmp = dir.join(format!("{key}.48k.{}.tmp", std::process::id()));
     let output = std::process::Command::new("ffmpeg")
         .args(["-y", "-i"])
         .arg(input)
@@ -73,6 +72,27 @@ fn ensure_48k(input: &Path) -> Result<PathBuf> {
     std::fs::rename(&tmp, &dest)
         .with_context(|| format!("renaming {} to {}", tmp.display(), dest.display()))?;
     Ok(dest)
+}
+
+/// Names and mtimes are not identities: inputs in different directories can
+/// share a filename, and a file can be replaced without changing its size.
+/// Fingerprinting runs outside the measured replay stages.
+fn cache_key(input: &Path) -> Result<String> {
+    let path = input
+        .canonicalize()
+        .with_context(|| format!("opening {}", input.display()))?;
+    let mut hash = DefaultHasher::new();
+    path.hash(&mut hash);
+    let mut file = std::fs::File::open(&path)?;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.write(&buffer[..count]);
+    }
+    Ok(format!("{:016x}", hash.finish()))
 }
 
 fn main() -> Result<()> {
@@ -294,4 +314,29 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_identity_includes_path_and_contents() {
+        let root =
+            std::env::temp_dir().join(format!("ambient-asrbench-cache-{}", std::process::id()));
+        let a = root.join("a/call.wav");
+        let b = root.join("b/call.wav");
+        for path in [&a, &b] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"first").unwrap();
+        }
+        let first = cache_key(&a).unwrap();
+        assert_eq!(first, cache_key(&a).unwrap());
+        assert_ne!(first, cache_key(&b).unwrap());
+        std::fs::write(&a, b"other").unwrap();
+        assert_ne!(first, cache_key(&a).unwrap());
+        std::fs::remove_file(&a).unwrap();
+        assert!(cache_key(&a).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

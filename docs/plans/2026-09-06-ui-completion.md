@@ -50,7 +50,8 @@ are in [the UI chapter](../developing/ui.md).
 The signed app is built and running from the primary checkout. The real doctor
 checks passed 10/10. The full completion evidence and limits are in the
 [audit](2026-09-06-nightwatch-review.md). Desktop-integrated 1Password sign-in
-and a vault-access check subsequently passed. The independent review remains
-pending explicit approval for the external Codex/Terra transfer, requested by
-automatic approval review. No review verdict is claimed, and the branch has
-not been merged or published.
+and a vault-access check subsequently passed. The user then approved the
+independent Terra review. Its three findings were reproduced and repaired;
+the expanded UI suite reports `Tests 67 passed (67)`. The [follow-up record](2026-09-06-terra-review.md)
+also tracks the Blacksmith migration and pending hosted-run cost approval.
+The branch has not been merged or published.

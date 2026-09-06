@@ -40,7 +40,8 @@ function usePollingTranscript(session: string, onDone: () => void): PollState {
 
   const poll = useLatest(
     useCallback(
-      (s: string, since: number) => bridge.call<TranscriptReply>("transcript", { session: s, since }),
+      (s: string, since: number) =>
+        bridge.call<TranscriptReply>("transcript", { session: s, since }),
       [bridge],
     ),
   );
@@ -69,6 +70,7 @@ function usePollingTranscript(session: string, onDone: () => void): PollState {
       poll(session, since)
         .then((reply) => {
           if (reply === undefined || cancelled) return;
+          setError(undefined);
           since = reply.next;
           setState(reply.state);
           setLines((prev) => [...prev, ...reply.lines]);
@@ -84,6 +86,7 @@ function usePollingTranscript(session: string, onDone: () => void): PollState {
         .catch((e: unknown) => {
           if (cancelled) return;
           setError(e instanceof Error ? e.message : String(e));
+          timer = setTimeout(tick, 2000);
         });
     };
 

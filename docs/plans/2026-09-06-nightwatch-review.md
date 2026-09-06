@@ -6,12 +6,12 @@ title: "Nightwatch review and completion audit"
 
 The September 5 Nightwatch branch left four UI tasks unfinished. The September
 6 follow-up completes those implementation tasks on the review branch. The
-independent CLI review remains pending approval to send the branch changes to
-the Codex/Terra service. Desktop-integrated sign-in succeeded on September 6,
-and the CLI verified access to five vaults without reading secrets. The earlier
-`op whoami` error did not establish that the desktop app was locked. Automatic
-approval review then rejected the external review command pending explicit
-transfer approval. No merge or publication has been performed.
+independent CLI review subsequently ran after explicit user approval. Terra
+reported three defects, reproduced and repaired in the follow-up; the UI suite
+now reports `Tests 67 passed (67)`. See [the Terra review record](2026-09-06-terra-review.md)
+for the findings, verification and prepared Blacksmith runner change. The first
+hosted Blacksmith run awaits cost approval. No merge or publication has been
+performed.
 
 The original audit compared `e5e2de5` with `f6acc6d8` and the six specifications
 in `~/.local/state/nightwatch/ambient/specs/`. Its initial defect repairs are in

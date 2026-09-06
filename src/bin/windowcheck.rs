@@ -157,11 +157,19 @@ fn main() {
                 "listen for File command",
             ),
             18 => unsafe {
-                NSApplication::sharedApplication(mtm).sendAction_to_from(
+                let app = NSApplication::sharedApplication(mtm);
+                // A CLI-launched probe may remain behind the terminal. A
+                // real menu click belongs to a main window; establish that
+                // responder chain without relying on foreground activation.
+                native.makeMainWindow();
+                native.makeKeyWindow();
+                println!("File dispatch: active={}, key={:?}, main={:?}", app.isActive(), app.keyWindow().map(|w| w.title().to_string()), app.mainWindow().map(|w| w.title().to_string()));
+                let sent = app.sendAction_to_from(
                     sel!(copyMarkdown:),
                     None,
                     None,
                 );
+                println!("File dispatch sent: {sent}");
             },
             20 => check(
                 "window.menuReached === true ? 'ok' : 'File command missing'",

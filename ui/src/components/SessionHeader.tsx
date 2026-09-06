@@ -205,9 +205,16 @@ function DeleteConfirm({
   const bridge = useBridge();
   const duration = formatDuration(summary.duration_s);
   const label = summary.name ?? summary.id;
+  const [error, setError] = useState<string>();
+  const [deleting, setDeleting] = useState(false);
 
   return (
     <div data-testid="session-header-delete-dialog" className="flex items-center gap-2 text-sm">
+      {error !== undefined && (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      )}
       <span>
         Delete &quot;{label}&quot;{duration !== null && ` (${duration})`}? This can&apos;t be
         undone.
@@ -216,8 +223,15 @@ function DeleteConfirm({
         type="button"
         variant="destructive"
         size="sm"
+        disabled={deleting}
         onClick={() => {
-          void bridge.call("session.delete", { session: summary.id }).then(onDeleted);
+          setError(undefined);
+          setDeleting(true);
+          void bridge
+            .call("session.delete", { session: summary.id })
+            .then(onDeleted)
+            .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+            .finally(() => setDeleting(false));
         }}
       >
         Delete
