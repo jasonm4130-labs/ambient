@@ -650,6 +650,53 @@ margin; 100 ms is also the only pad value where insertions move at all, 3 at
 `PAD_MS` stays at 200 and `quality/wer.json` does not change with it, because
 no shipped constant moved.
 
+## Chunk length
+
+`cargo build --release` then `/usr/bin/time -l ./target/release/wer --chunk
+<seconds> --json <path>`, on 2026-09-06. `--chunk` sets the `max_seconds`
+argument to `Vad::turns` — the length above which a turn is split at its
+least-voiced frame, the best available approximation of a pause — not
+`Vad::chunks`, a separate method that *merges* turns back together up to
+`max_seconds` and which `record` deliberately does not call. Peak RSS is
+`maximum resident set size` from `/usr/bin/time -l`, converted from the bytes
+Darwin reports (not the kilobytes Linux would) by dividing by 1,048,576;
+models load once per manifest entry inside the loop, so each row's figure is
+one number for the whole three-speaker run, not a per-speaker one, the same
+way the WER section's decode column is qualified. `--chunk 30` reproduces the
+native row exactly (913.74 s, 2152 reference words, S=39 I=3 D=5, WER
+0.0218), confirming the parameter reaches the shipped path rather than a
+second copy of it.
+
+| Chunk | Seconds | Ref words | S | I | D | WER | Peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 15 s | 913.74 | 2152 | 40 | 3 | 5 | 0.0223 | 2063 MB |
+| 20 s | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2055 MB |
+| 30 s (default) | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2145 MB |
+| 40 s | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 | 2147 MB |
+
+This 30 s row's 2145 MB is the figure the keep rule below compares against.
+It is not the 2317 MB at the 30 s-chunk level in `## End to end`, the 2158 MB
+in the 30 s row of `## Memory scales with audio length`, or the 2255 MB in
+`## VAD chunking` — those three predate this sweep and come from `bench` and
+`say`-synthesised audio, not from the `wer` binary run over LibriSpeech, so
+they are context here, not the bar.
+
+The keep rule is per speaker, and RSS besides: a value replaces the shipped
+30 s only if it beats the shipped per-speaker WER (`1089` 0.0042, `1188`
+0.0270, `121` 0.0667) by more than 0.005 on every speaker **and** does not
+raise peak RSS above the 30 s row above. None do. 20 s and 40 s produce the
+identical per-speaker rows as 30 s — no turn in this fixture is long enough
+for the cap to matter between 20 s and 40 s, so widening or narrowing it in
+that range changes nothing about where turns are split — and 40 s costs 2 MB
+more RSS on top of tying, not beating, the WER. 15 s is the one value that
+changes anything: `1188` gets worse (0.0270 → 0.0278, one more substitution)
+and the total moves from 0.0218 to 0.0223, both the wrong direction, while
+`1089` and `121` are unchanged; 15 s also has the lowest RSS of the four,
+which is the RSS half of the keep rule doing nothing useful when the WER half
+already fails. **The default holds.** `src/session.rs`'s shipped chunk
+length stays at 30 and `quality/wer.json` does not change with it, because no
+shipped constant moved.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still

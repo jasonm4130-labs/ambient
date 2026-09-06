@@ -2,6 +2,7 @@
 //!
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
 //!                                     [--model <dir>] [--via <rate>] [--pad <ms>]
+//!                                     [--chunk <seconds>]
 //!
 //! Scores the fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished track: the same model resolution, the
@@ -33,6 +34,13 @@
 //! and the hysteresis pad `segments_from` applies before merging, both in
 //! `src/vad.rs`. It reaches both sites through the one `Vad` in this
 //! process; nothing else constructs one.
+//!
+//! `--chunk <seconds>` overrides `max_seconds` in the `vad.turns(&samples,
+//! max_seconds)` call below, defaulting to 30 — the length above which a
+//! turn is split at its least-voiced frame, not a merge. That disambiguates
+//! it from `Vad::chunks`, a separate method that merges turns back together
+//! up to `max_seconds` for callers that want fewer, larger recogniser calls;
+//! `record` deliberately does not use it, and neither does this harness.
 
 use ambient::{asr::Recognizer, features, resample, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
@@ -147,6 +155,7 @@ fn main() -> Result<()> {
     let mut model = None;
     let mut via = None;
     let mut pad = None;
+    let mut chunk = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a path"));
@@ -168,8 +177,15 @@ fn main() -> Result<()> {
                         .context("--pad needs a number of milliseconds, e.g. 200")?,
                 )
             }
+            "--chunk" => {
+                chunk = Some(
+                    value("--chunk")?
+                        .parse::<usize>()
+                        .context("--chunk needs a number of seconds, e.g. 30")?,
+                )
+            }
             _ => bail!(
-                "usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <rate>] [--pad <ms>]"
+                "usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <rate>] [--pad <ms>] [--chunk <seconds>]"
             ),
         }
     }
@@ -237,7 +253,7 @@ fn main() -> Result<()> {
         // The clock starts after the models load: a load is a fixed cost per
         // session, and the realtime factor is about seconds of audio.
         let t0 = Instant::now();
-        let turns = vad.turns(&samples, 30)?;
+        let turns = vad.turns(&samples, chunk.unwrap_or(30))?;
         let segments = rec.transcribe_segments(&samples, &turns)?;
         let decode = t0.elapsed().as_secs_f64();
 
