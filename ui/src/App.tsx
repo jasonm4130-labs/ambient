@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useBridge } from "@/lib/bridge-context";
+import { Sessions } from "@/pages/Sessions";
 import { Settings } from "@/pages/Settings";
 
 // Light/dark comes from `prefers-color-scheme` alone — no toggle. The
@@ -29,10 +30,10 @@ interface NavigatePayload {
   page: Route;
 }
 
-// The sessions route is still a placeholder heading — the real Sessions
-// screen arrives in unit 4. `App` re-requests `init`'s answer once, on mount,
-// and otherwise only switches route on a `navigate` event: it keeps no state
-// the bridge did not just hand it.
+// `App` re-requests `init`'s answer once, on mount, and otherwise only
+// switches route on a `navigate` event: it keeps no state the bridge did not
+// just hand it. Switching to Settings from the sidebar is a local route
+// change — there is no bridge round trip for a click the page originated.
 export function App() {
   useDarkClass();
   const bridge = useBridge();
@@ -65,9 +66,5 @@ export function App() {
     return <Settings />;
   }
 
-  return (
-    <div className="flex min-h-screen items-center justify-center p-8">
-      <h1 className="text-2xl font-semibold">Sessions</h1>
-    </div>
-  );
+  return <Sessions onSettings={() => setRoute("settings")} />;
 }

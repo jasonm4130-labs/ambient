@@ -3,15 +3,15 @@
 //! thing; only this proves it does anything.
 //!
 //! A canned responder answers the page's requests the way Rust would —
-//! `init`, `config.get`, `devices`, `speakers.unnamed`, and `{}` for anything
-//! else — then two steps read back what the page rendered and click the
-//! diarize switch, printing every message the bridge receives. Snapshots a
-//! PNG so the rendering can be looked at too.
+//! `init`, `sessions`, `transcript`, `export`, `config.get`, `devices`,
+//! `speakers.unnamed`, and `{}` for anything else — then drives the page
+//! through: selecting a session, clicking Copy Markdown (exercising `export`
+//! then `clipboard.write`), navigating to Settings, reading back what
+//! Settings rendered, and clicking the diarize switch. Prints every message
+//! the bridge receives, and snapshots a PNG so the rendering can be looked at
+//! too.
 //!
-//! Trimmed on purpose: acceptance item 7 asks this responder harness for two
-//! things, and both belong to later units (`clipboard.write` after Copy
-//! Markdown, unit 4; the live card after an injected `phase`, unit 5). It does
-//! not click "+ Add" or "Change…": both open a modal `NSOpenPanel` that
+//! Does not click "+ Add" or "Change…": both open a modal `NSOpenPanel` that
 //! nothing here would dismiss, and the run would hang.
 use std::cell::RefCell;
 
@@ -64,10 +64,67 @@ fn config_payload() -> Value {
     })
 }
 
+/// The `sessions` payload, in the real wire shape `session::SessionSummary`
+/// derives — `live`/`transcribing`/`error`/`transcribed` booleans and **no**
+/// `state` field, so this probe would catch a page that assumed one.
+fn sessions_payload() -> Value {
+    json!([
+        {
+            "id": "2026-08-29T1517",
+            "dir": "/Users/x/Documents/Ambient/2026-08-29T1517",
+            "name": "Design review",
+            "started_at": "2026-08-29 15:17",
+            "duration_s": 1847.0,
+            "transcribed": true,
+            "live": false,
+            "transcribing": false,
+            "error": null,
+            "tags": [],
+            "pinned": false,
+        },
+        {
+            "id": "2026-08-28T0930",
+            "dir": "/Users/x/Documents/Ambient/2026-08-28T0930",
+            "name": null,
+            "started_at": "2026-08-28 09:30",
+            "duration_s": 612.0,
+            "transcribed": false,
+            "live": false,
+            "transcribing": false,
+            "error": "session.json was empty",
+            "tags": [],
+            "pinned": false,
+        },
+    ])
+}
+
+fn transcript_payload() -> Value {
+    json!({
+        "session": "2026-08-29T1517",
+        "state": "done",
+        "next": 2,
+        "lines": [
+            {"track": "call", "start_ms": 0, "end_ms": 4200, "speaker": "Priya", "text": "shall we start with the export spec"},
+            {"track": "room", "start_ms": 4200, "end_ms": 6100, "speaker": "Marcus", "text": "yes, go ahead"},
+        ],
+    })
+}
+
+fn export_payload() -> Value {
+    json!({
+        "session": "2026-08-29T1517",
+        "format": "markdown",
+        "text": "# Design review\n\n**Priya** [00:00] shall we start with the export spec\n\n**Marcus** [00:04] yes, go ahead\n",
+    })
+}
+
 /// What the responder answers `method` with, mirroring what Rust would.
 fn canned(method: &str) -> Value {
     match method {
-        "init" => json!({"route": "settings"}),
+        "init" => json!({"route": "sessions"}),
+        "sessions" => sessions_payload(),
+        "transcript" => transcript_payload(),
+        "export" => export_payload(),
         "config.get" => config_payload(),
         "devices" => json!({"devices": ["MacBook Pro Microphone", "Iriun Webcam Audio"]}),
         "speakers.unnamed" => json!([
@@ -166,7 +223,28 @@ fn main() {
         *n += 1;
         match *n {
             3 => {
-                println!("\n[1] reading back what the page rendered");
+                println!("\n[1] selecting a session");
+                js(
+                    &w,
+                    r#"document.querySelector('[data-testid="session-row"]').click();"#,
+                );
+            }
+            4 => {
+                println!("\n[2] clicking Copy Markdown");
+                js(
+                    &w,
+                    r#"document.querySelector('[data-testid="copy-markdown"]').click();"#,
+                );
+            }
+            5 => {
+                println!("\n[3] navigating to settings");
+                js(
+                    &w,
+                    r#"window.ambient.event("navigate", {page: "settings"});"#,
+                );
+            }
+            6 => {
+                println!("\n[4] reading back what the page rendered");
                 js(
                     &w,
                     r#"(() => {
@@ -190,14 +268,14 @@ fn main() {
                      })();"#,
                 );
             }
-            4 => {
-                println!("\n[2] clicking the diarize switch");
+            7 => {
+                println!("\n[5] clicking the diarize switch");
                 js(
                     &w,
                     r#"document.querySelector('[data-testid="diarize-switch"]').click();"#,
                 );
             }
-            5 => {
+            8 => {
                 let out = std::env::args()
                     .nth(1)
                     .unwrap_or_else(|| "uicheck.png".into());
@@ -218,7 +296,7 @@ fn main() {
                 unsafe { w.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
                 std::mem::forget(handler);
             }
-            6 => {
+            9 => {
                 println!(
                     "\n{} message(s) reached the bridge",
                     p.ivars().seen.borrow().len()

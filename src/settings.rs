@@ -19,10 +19,12 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertStyle, NSAutoresizingMaskOptions, NSModalResponseOK, NSOpenPanel,
+    NSAlert, NSAlertStyle, NSAutoresizingMaskOptions, NSModalResponseOK, NSOpenPanel, NSPasteboard,
+    NSPasteboardTypeString, NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSBundle, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSBundle, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString, NSURL,
 };
 use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKWebView,
@@ -235,14 +237,40 @@ impl Bridge {
                 };
                 self.eval(&reply_js(req.id, Ok(json!({"chosen": chosen}))));
             }
+            "clipboard.write" => {
+                let text = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("text"))
+                    .and_then(Value::as_str);
+                let result = match text {
+                    Some(text) => {
+                        let pasteboard = NSPasteboard::generalPasteboard();
+                        pasteboard.clearContents();
+                        unsafe {
+                            pasteboard.setString_forType(
+                                &NSString::from_str(text),
+                                NSPasteboardTypeString,
+                            );
+                        }
+                        Ok(json!({"done": true}))
+                    }
+                    None => Err(ApiError::InvalidParams("text must be a string".to_string())),
+                };
+                self.eval(&reply_js(req.id, result));
+            }
+            "reveal" => {
+                let session = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("session"))
+                    .and_then(Value::as_str);
+                let result = self.reveal(session);
+                self.eval(&reply_js(req.id, result));
+            }
             _ => {
                 let params = req.params.unwrap_or_else(|| json!({}));
-                let paths = api::Paths {
-                    config_file: crate::config::path(),
-                    roster_file: crate::roster::path(),
-                    sessions_root: std::env::var_os("AMBIENT_HOME").map(PathBuf::from),
-                };
-                let result = api::call(&req.method, &params, &paths);
+                let result = api::call(&req.method, &params, &self.paths());
                 self.eval(&reply_js(req.id, result));
             }
         }
@@ -314,6 +342,48 @@ impl Bridge {
             }
             Some(PathBuf::from(panel.URL()?.path()?.to_string()))
         }
+    }
+
+    /// The [`api::Paths`] every `api::call` fallthrough and [`Bridge::reveal`]
+    /// build from `AMBIENT_HOME`, so a test run with it set cannot be talked
+    /// into touching the real config, roster or sessions folder.
+    fn paths(&self) -> api::Paths {
+        api::Paths {
+            config_file: crate::config::path(),
+            roster_file: crate::roster::path(),
+            sessions_root: std::env::var_os("AMBIENT_HOME").map(PathBuf::from),
+        }
+    }
+
+    /// `reveal {session}`: today's `revealInFinder:` (`src/window.rs:803`),
+    /// including its `create_dir_all` and its "no selection means the
+    /// sessions folder" behaviour — `session` absent or null reveals the root
+    /// itself. `api::session_dir` is private to `api.rs` and stays that way,
+    /// so the id is validated inline the same way it does: reject empty,
+    /// `.`, `..`, and any id containing `/`. The root this joins onto is
+    /// [`Bridge::paths`]'s, not [`crate::session::home`], so `AMBIENT_HOME`
+    /// still governs it under test.
+    fn reveal(&self, session: Option<&str>) -> Result<Value, ApiError> {
+        let root = self.paths().root();
+        let target = match session {
+            None => root,
+            Some(id) => {
+                if id.is_empty() || id == "." || id == ".." || id.contains('/') {
+                    return Err(ApiError::InvalidParams(format!(
+                        "{id:?} is not a session id"
+                    )));
+                }
+                root.join(id)
+            }
+        };
+        std::fs::create_dir_all(&target).ok();
+        let s = NSString::from_str(&target.to_string_lossy());
+        if let Some(url) = NSURL::fileURLWithPath(&s).into() {
+            let url: Retained<NSURL> = url;
+            let urls = NSArray::from_slice(&[&*url]);
+            NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&urls);
+        }
+        Ok(json!({}))
     }
 }
 
