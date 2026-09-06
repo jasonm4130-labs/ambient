@@ -61,6 +61,10 @@ impl<T> OrtExt<T> for ort::Result<T> {
 
 pub struct Vad {
     session: Session,
+    /// Milliseconds of audio kept either side of a turn's detected edges.
+    /// Defaults to `PAD_MS`; `--pad <ms>` in `bin/wer.rs` is the only
+    /// overrider today.
+    pub pad_ms: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +83,7 @@ impl Vad {
     pub fn load(path: &str) -> Result<Self> {
         Ok(Self {
             session: Session::builder().a()?.commit_from_file(path).a()?,
+            pad_ms: PAD_MS,
         })
     }
 
@@ -110,8 +115,13 @@ impl Vad {
     /// clears `floor`, and drop a turn with nothing left. The `PAD_MS` margin
     /// is re-applied afterwards so consonants survive, but never back out
     /// beyond where the turn already started.
-    fn trim_quiet(segs: Vec<Segment>, rms: &[f32], floor: f32) -> Vec<Segment> {
-        let pad = PAD_MS * SR / 1000;
+    fn trim_quiet_with_pad(
+        segs: Vec<Segment>,
+        rms: &[f32],
+        floor: f32,
+        pad_ms: usize,
+    ) -> Vec<Segment> {
+        let pad = pad_ms * SR / 1000;
         let min_speech = MIN_SPEECH_MS * SR / 1000;
         let loud = |i: usize| rms.get(i).is_some_and(|&r| r >= floor);
 
@@ -125,6 +135,13 @@ impl Vad {
                 (end.saturating_sub(start) >= min_speech).then_some(Segment { start, end })
             })
             .collect()
+    }
+
+    /// `trim_quiet_with_pad` at the shipped `PAD_MS`. Kept only for the
+    /// existing tests, which call it at this arity.
+    #[cfg(test)]
+    fn trim_quiet(segs: Vec<Segment>, rms: &[f32], floor: f32) -> Vec<Segment> {
+        Self::trim_quiet_with_pad(segs, rms, floor, PAD_MS)
     }
 
     /// Per-frame speech probability.
@@ -170,18 +187,23 @@ impl Vad {
         let probs = self.probabilities(samples)?;
         let rms = Self::frame_rms(samples);
         let floor = Self::speech_floor(&rms);
-        let segs = Self::trim_quiet(Self::segments_from(&probs, samples.len()), &rms, floor);
+        let segs = Self::trim_quiet_with_pad(
+            Self::segments_with_pad(&probs, samples.len(), self.pad_ms),
+            &rms,
+            floor,
+            self.pad_ms,
+        );
         Ok((probs, segs))
     }
 
     /// Hysteresis over the per-frame probabilities. No model and no audio,
     /// so it is testable on its own.
-    fn segments_from(probs: &[f32], n_samples: usize) -> Vec<Segment> {
+    fn segments_with_pad(probs: &[f32], n_samples: usize, pad_ms: usize) -> Vec<Segment> {
         let samples_len = n_samples;
         let ms = |n: usize| n * SR / 1000;
         let min_speech = ms(MIN_SPEECH_MS);
         let min_silence = ms(MIN_SILENCE_MS);
-        let pad = ms(PAD_MS);
+        let pad = ms(pad_ms);
 
         let mut out: Vec<Segment> = Vec::new();
         let mut in_speech = false;
@@ -237,6 +259,13 @@ impl Vad {
             }
         }
         padded
+    }
+
+    /// `segments_with_pad` at the shipped `PAD_MS`. Kept only for the
+    /// existing tests, which call it at this arity.
+    #[cfg(test)]
+    fn segments_from(probs: &[f32], n_samples: usize) -> Vec<Segment> {
+        Self::segments_with_pad(probs, n_samples, PAD_MS)
     }
 
     /// One segment per turn: speech regions as detected, with anything longer

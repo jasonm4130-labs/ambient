@@ -618,6 +618,38 @@ it. If insertions had risen with gap length, the lever to name would be
 `last_confidence` — not tuned here, since it also drops real quiet speech and
 needs its own number.
 
+## Turn padding
+
+`cargo run --release --bin wer -- --pad <ms>`, on 2026-09-06. `--pad` overrides
+`Vad::pad_ms`, which reaches both places `vad::PAD_MS` is read: the margin
+`trim_quiet` re-applies after cutting a turn's quiet edges, and the hysteresis
+pad `segments_from` applies before merging overlapping turns. 200 ms is the
+shipped default; `cargo run --release --bin wer -- --pad 200` reproduces the
+native row from the section above exactly, confirming the parameter reaches
+both sites rather than one of them twice. Total reference words hold at 2152
+across all four rows — padding does not change what is being scored, only how
+much room noise sits at each turn's edges before the recogniser sees it.
+
+| Pad | Seconds | Ref words | S | I | D | WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 ms | 913.74 | 2152 | 36 | 7 | 6 | 0.0228 |
+| 200 ms (default) | 913.74 | 2152 | 39 | 3 | 5 | 0.0218 |
+| 300 ms | 913.74 | 2152 | 39 | 3 | 3 | 0.0209 |
+| 400 ms | 913.74 | 2152 | 39 | 3 | 3 | 0.0209 |
+
+The keep rule is per speaker: a value replaces 200 ms only if it beats the
+shipped per-speaker WER (`1089` 0.0042, `1188` 0.0270, `121` 0.0667) by more
+than 0.005 on every speaker, not just in the total. None do. At 300 ms and
+400 ms `1089` barely moves (0.0042 → 0.0028, then flat at 0.0042 — 0.0014 and
+0.0000 of the 0.005 margin) while `121` — the shortest speaker at 88.89 s —
+gets worse (0.0667 → 0.0889); `1188` improves at both but only by 0.0031 and
+0.0039, still under the bar. At 100 ms `1089` gets worse (0.0042 → 0.0097),
+`121` is unchanged (0.0667), and `1188`'s 0.0015 gain is again under the
+margin; 100 ms is also the only pad value where insertions move at all, 3 at
+200 ms and 300 ms up to 7 here. **The default holds.** `src/vad.rs`'s
+`PAD_MS` stays at 200 and `quality/wer.json` does not change with it, because
+no shipped constant moved.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still

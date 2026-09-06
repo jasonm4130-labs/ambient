@@ -1,7 +1,7 @@
 //! Word error rate for Ambient's own transcription path.
 //!
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
-//!                                     [--model <dir>] [--via <rate>]
+//!                                     [--model <dir>] [--via <rate>] [--pad <ms>]
 //!
 //! Scores the fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished track: the same model resolution, the
@@ -27,6 +27,12 @@
 //! only the call's first 300 s, so scoring against the whole reference would
 //! count everything spoken after the cut as deletions. Manifests without the
 //! field, including the default `wer` one, are unaffected.
+//!
+//! `--pad <ms>` overrides `Vad::pad_ms`, which defaults to `vad::PAD_MS`
+//! (200 ms) — the margin `trim_quiet` re-applies after cutting quiet edges
+//! and the hysteresis pad `segments_from` applies before merging, both in
+//! `src/vad.rs`. It reaches both sites through the one `Vad` in this
+//! process; nothing else constructs one.
 
 use ambient::{asr::Recognizer, features, resample, resample::TARGET_HZ, session, vad::Vad, wer};
 use anyhow::{bail, Context, Result};
@@ -140,6 +146,7 @@ fn main() -> Result<()> {
     let mut json = None;
     let mut model = None;
     let mut via = None;
+    let mut pad = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a path"));
@@ -154,8 +161,15 @@ fn main() -> Result<()> {
                         .context("--via needs a sample rate in Hz, e.g. 48000")?,
                 )
             }
+            "--pad" => {
+                pad = Some(
+                    value("--pad")?
+                        .parse::<usize>()
+                        .context("--pad needs a number of milliseconds, e.g. 200")?,
+                )
+            }
             _ => bail!(
-                "usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <rate>]"
+                "usage: wer [--manifest <path>] [--json <path>] [--model <dir>] [--via <rate>] [--pad <ms>]"
             ),
         }
     }
@@ -215,6 +229,9 @@ fn main() -> Result<()> {
         let seconds = samples.len() as f64 / TARGET_HZ as f64;
 
         let mut vad = Vad::load(&vad_path)?;
+        if let Some(pad_ms) = pad {
+            vad.pad_ms = pad_ms;
+        }
         let mut rec = Recognizer::load(&asr_dir)?;
 
         // The clock starts after the models load: a load is a fixed cost per
