@@ -80,6 +80,21 @@ describe("LiveTranscript", () => {
     expect(screen.getByTestId("live-transcript-empty")).toHaveTextContent("Listening…");
   });
 
+  it("renders Transcribing… for a transcribing session with no lines yet", async () => {
+    vi.useFakeTimers();
+    const fake = new FakeBridge();
+    fake.answer("transcript", { session: "s1", state: "transcribing", next: 0, lines: [] });
+
+    render(
+      <BridgeProvider bridge={fake}>
+        <LiveTranscript session="s1" onDone={vi.fn()} />
+      </BridgeProvider>,
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByTestId("live-transcript-empty")).toHaveTextContent("Transcribing…");
+  });
+
   it("resets the cursor when the session prop changes", async () => {
     vi.useFakeTimers();
     const fake = new FakeBridge();

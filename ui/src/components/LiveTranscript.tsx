@@ -117,9 +117,13 @@ export function LiveTranscript({ session, onDone }: LiveTranscriptProps) {
         </p>
       )}
       {lines.length === 0 ? (
-        <p className="text-muted-foreground text-sm" data-testid="live-transcript-empty">
-          {state === "transcribing" ? "Transcribing…" : "Listening…"}
-        </p>
+        // Nothing renders until the first reply lands: before that, `state`
+        // is `undefined` and neither empty-state string is warranted yet.
+        state !== undefined && (
+          <p className="text-muted-foreground text-sm" data-testid="live-transcript-empty">
+            {state === "transcribing" ? "Transcribing…" : "Listening…"}
+          </p>
+        )
       ) : (
         <div className="flex flex-col gap-2" data-testid="live-transcript-lines">
           {lines.map((line, i) => (
