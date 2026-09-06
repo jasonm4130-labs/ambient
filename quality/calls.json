@@ -1,0 +1,34 @@
+[
+  {
+    "speaker": "4320211",
+    "reference_words": 755,
+    "substitutions": 37,
+    "insertions": 32,
+    "deletions": 4,
+    "wer": 0.09668874172185431
+  },
+  {
+    "speaker": "4330115",
+    "reference_words": 773,
+    "substitutions": 54,
+    "insertions": 25,
+    "deletions": 5,
+    "wer": 0.10866752910737387
+  },
+  {
+    "speaker": "4341191",
+    "reference_words": 762,
+    "substitutions": 43,
+    "insertions": 26,
+    "deletions": 3,
+    "wer": 0.09448818897637795
+  },
+  {
+    "speaker": "total",
+    "reference_words": 2290,
+    "substitutions": 134,
+    "insertions": 83,
+    "deletions": 12,
+    "wer": 0.1
+  }
+]
