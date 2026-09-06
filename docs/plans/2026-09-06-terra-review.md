@@ -41,7 +41,6 @@ The user requested moving that job to Blacksmith. The workflow now selects
 `blacksmith-6vcpu-macos-latest` and caps it at 15 minutes. This is a supported
 Apple Silicon runner in [Blacksmith's reference](https://docs.blacksmith.sh/blacksmith-runners/overview).
 The custom runner labels are declared for actionlint; validation reports
-`actionlint: passed`. The first hosted run remains pending the user's cost
-approval. The [listed macOS rate](https://www.blacksmith.sh/pricing) is $0.08/minute, so the Mac job is capped at
-$1.20 per run before credits, plus the existing Linux jobs. No hosted result
-or release is claimed.
+`actionlint: passed`. The user approved a hosted CI run and merging on September 6. The [listed macOS rate](https://www.blacksmith.sh/pricing) is $0.08/minute, so the Mac job is capped at
+$1.20 per run before credits, plus the existing Linux jobs. The pull request records the hosted result; the local measurements above do
+not establish release approval.

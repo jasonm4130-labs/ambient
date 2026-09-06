@@ -53,5 +53,5 @@ checks passed 10/10. The full completion evidence and limits are in the
 and a vault-access check subsequently passed. The user then approved the
 independent Terra review. Its three findings were reproduced and repaired;
 the expanded UI suite reports `Tests 67 passed (67)`. The [follow-up record](2026-09-06-terra-review.md)
-also tracks the Blacksmith migration and pending hosted-run cost approval.
-The branch has not been merged or published.
+also tracks the Blacksmith migration. The user subsequently approved hosted CI
+and merging; the pull request records the hosted result.

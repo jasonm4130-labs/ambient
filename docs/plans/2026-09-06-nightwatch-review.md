@@ -9,9 +9,8 @@ The September 5 Nightwatch branch left four UI tasks unfinished. The September
 independent CLI review subsequently ran after explicit user approval. Terra
 reported three defects, reproduced and repaired in the follow-up; the UI suite
 now reports `Tests 67 passed (67)`. See [the Terra review record](2026-09-06-terra-review.md)
-for the findings, verification and prepared Blacksmith runner change. The first
-hosted Blacksmith run awaits cost approval. No merge or publication has been
-performed.
+for the findings, verification and prepared Blacksmith runner change. The user subsequently approved hosted CI and merging; the pull request records
+the hosted result.
 
 The original audit compared `e5e2de5` with `f6acc6d8` and the six specifications
 in `~/.local/state/nightwatch/ambient/specs/`. Its initial defect repairs are in
