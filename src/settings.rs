@@ -1,8 +1,6 @@
-//! The settings pane.
+//! The full-window web page and native bridge.
 //!
-//! A `WKWebView` rendering the same page the design canvas draws, living as one
-//! of the main window's sibling views rather than in a window of its own. The
-//! page is embedded with `include_str!` rather than shipped in the bundle's
+//! Sessions, Settings and Welcome share one `WKWebView`. The page is embedded with `include_str!` rather than shipped in the bundle's
 //! Resources: launched through LaunchServices the working directory is `/`, and
 //! that is the only launch that has the audio-capture grant, so a relative path
 //! would break the one path that matters.
@@ -428,9 +426,8 @@ impl Bridge {
         Some(PathBuf::from(panel.URL()?.path()?.to_string()))
     }
 
-    /// The [`api::Paths`] every `api::call` fallthrough and [`Bridge::reveal`]
-    /// build from `AMBIENT_HOME`, so a test run with it set cannot be talked
-    /// into touching the real config, roster or sessions folder.
+    /// Resolve the shared dispatcher paths. `AMBIENT_HOME` overrides only
+    /// sessions; config and roster still use their normal application paths.
     fn paths(&self) -> api::Paths {
         api::Paths {
             config_file: crate::config::path(),
@@ -484,13 +481,8 @@ impl Bridge {
         self.eval(&reply_js(id, Ok(json!({"sent": sent}))));
     }
 
-    /// `diarize.start {session}`: the same `session::diarize_session` worker
-    /// `separateVoices:` spawns (`src/window.rs:892-895`), owned by the
-    /// bridge instead of the window. One job at a time, like the native
-    /// pane's own `diarizing` ivar — a request while any session is
-    /// separating is refused rather than queued. The worker claims
-    /// `session::claim_transcription` first, which is what keeps this job
-    /// and the native pane's from racing on the same directory.
+    /// Run one diarization worker at a time. The session lock excludes CLI
+    /// transcription and naming while the worker writes speaker assignments.
     fn diarize_start(&self, session: Option<&str>) -> Result<Value, ApiError> {
         let session =
             session.ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
@@ -519,7 +511,7 @@ impl Bridge {
 
     /// Drain the diarize worker's channel, the same way the recording
     /// worker's receiver is polled from `menubar.rs`'s timer tick — a
-    /// channel, not a flag file. Called from `SessionList::render`, beside
+    /// channel, not a flag file. Called from `MainWindow::render`, beside
     /// the `phase` event. Emits no `running` event: the page already knows
     /// it started, because its own `diarize.start` resolved.
     pub fn poll_diarize(&self) {
@@ -629,7 +621,7 @@ impl SettingsPane {
     }
 
     /// Forwards to the bridge's own diarize poll. `window.rs` only holds the
-    /// pane, so `SessionList::render` reaches the bridge's job through here,
+    /// pane, so `MainWindow::render` reaches the bridge's job through here,
     /// beside the `event("phase", …)` call.
     pub fn poll_diarize(&self) {
         self.bridge.poll_diarize();
@@ -642,6 +634,11 @@ impl SettingsPane {
     pub fn select_settings(&self) {
         self.bridge.ivars().route.set("settings");
         self.bridge.event("navigate", &json!({"page": "settings"}));
+    }
+
+    pub fn select_sessions(&self) {
+        self.bridge.ivars().route.set("sessions");
+        self.bridge.event("navigate", &json!({"page": "sessions"}));
     }
 
     /// For the launch log. A `WKWebView` that was re-parented into a view

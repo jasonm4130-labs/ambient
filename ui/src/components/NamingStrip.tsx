@@ -37,9 +37,14 @@ export function NamingStrip({ session, onChanged }: NamingStripProps) {
   const [unnamed, setUnnamed] = useState<UnnamedSpeaker[]>([]);
   const [roster, setRoster] = useState<string[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string>();
+  const failed = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
 
   const loadUnnamed = useLatest(
-    useCallback(() => bridge.call<UnnamedSpeaker[]>("speakers.unnamed", { session }), [bridge, session]),
+    useCallback(
+      () => bridge.call<UnnamedSpeaker[]>("speakers.unnamed", { session }),
+      [bridge, session],
+    ),
   );
   const loadRoster = useLatest(useCallback(() => bridge.call<ConfigReply>("config.get"), [bridge]));
 
@@ -51,21 +56,37 @@ export function NamingStrip({ session, onChanged }: NamingStripProps) {
   }, [loadUnnamed, loadRoster]);
 
   useEffect(() => {
-    void refresh();
+    void refresh().catch(failed);
   }, [refresh]);
+  useEffect(
+    () =>
+      bridge.on("diarize", (payload) => {
+        const event = payload as { session: string; state: string };
+        if (event.session === session && event.state === "done") void refresh().catch(failed);
+      }),
+    [bridge, session, refresh],
+  );
 
   return (
-    <div className="flex flex-col gap-2 border-t p-3" data-testid="naming-strip">
+    <div
+      className="flex max-h-[35vh] shrink-0 flex-col gap-2 overflow-y-auto border-t p-3"
+      data-testid="naming-strip"
+    >
+      {error !== undefined && (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      )}
       {unnamed.map((speaker) => (
         <div key={speaker.label} className="flex items-center gap-2" data-testid="naming-strip-row">
-          <span className="text-sm">
+          <span className="min-w-0 flex-1 truncate text-sm" title={speaker.sample}>
             {speaker.label} — {speaker.sample === "" ? "(no speech)" : speaker.sample}
           </span>
           <input
             list={`naming-strip-roster-${speaker.label}`}
             aria-label={`Name for ${speaker.label}`}
             data-testid="naming-strip-input"
-            className="border-input h-9 rounded-md border bg-transparent px-2 text-sm"
+            className="border-input h-9 w-32 min-w-0 rounded-md border bg-transparent px-2 text-sm"
             value={drafts[speaker.label] ?? ""}
             onChange={(e) => {
               const value = e.target.value;
@@ -84,10 +105,12 @@ export function NamingStrip({ session, onChanged }: NamingStripProps) {
             onClick={() => {
               const name = (drafts[speaker.label] ?? "").trim();
               if (name === "") return;
+              setError(undefined);
               void bridge
                 .call("speakers.name", { session, label: speaker.label, name })
                 .then(refresh)
-                .then(onChanged);
+                .then(onChanged)
+                .catch(failed);
             }}
           >
             Name
@@ -100,7 +123,12 @@ export function NamingStrip({ session, onChanged }: NamingStripProps) {
         size="sm"
         data-testid="naming-strip-undo"
         onClick={() => {
-          void bridge.call("speakers.undo", { session }).then(refresh).then(onChanged);
+          setError(undefined);
+          void bridge
+            .call("speakers.undo", { session })
+            .then(refresh)
+            .then(onChanged)
+            .catch(failed);
         }}
       >
         Undo

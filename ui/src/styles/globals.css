@@ -40,6 +40,8 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
   --font-sans: -apple-system, "SF Pro Text", system-ui, sans-serif;
+  --text-sm: 13px;
+  --text-xs: 11px;
 }
 
 /* shadcn `neutral` base colour, radius 0.5rem per the spec (not the 0.625rem
@@ -119,5 +121,20 @@
   }
   body {
     @apply bg-background text-foreground font-sans;
+    font-size: 13px;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
   }
 }

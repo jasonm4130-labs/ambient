@@ -160,6 +160,8 @@ fn sessions(root: &Path) -> Value {
                 error: Some(refusal),
                 tags: Vec::new(),
                 notes: String::new(),
+                warnings: Vec::new(),
+                audio_available: false,
                 pinned: false,
             }),
             None => session::summarise(dir),

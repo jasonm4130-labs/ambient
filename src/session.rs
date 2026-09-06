@@ -1004,7 +1004,9 @@ pub struct SessionSummary {
     pub error: Option<String>,
     pub tags: Vec<String>,
     pub notes: String,
+    pub warnings: Vec<String>,
     pub pinned: bool,
+    pub audio_available: bool,
 }
 
 impl SessionSummary {
@@ -1065,7 +1067,11 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
         error: None,
         tags: Vec::new(),
         notes: String::new(),
+        warnings: Vec::new(),
         pinned: false,
+        audio_available: ["room.wav", "call.wav", "room.native.wav", "call.native.wav"]
+            .iter()
+            .any(|name| dir.join("audio").join(name).is_file()),
     };
     match present {
         // A capture in flight writes `session.json` last, so its absence here
@@ -1082,6 +1088,7 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
                 s.duration_s = Some(meta.duration_s);
                 s.tags = meta.tags;
                 s.notes = meta.notes;
+                s.warnings = meta.warnings;
                 s.pinned = meta.pinned;
             }
             // The id stays the directory name: it is what the caller typed to

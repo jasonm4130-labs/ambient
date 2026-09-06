@@ -70,6 +70,7 @@ interface DiarizeEvent {
 
 interface TranscriptProps {
   session: string;
+  unavailable?: string | undefined;
   revision?: number;
   /// The absolute append-order index (over `reply.lines`, not group-local)
   /// of a line to scroll into view and highlight for ~2 s — set by a
@@ -85,7 +86,7 @@ interface TranscriptProps {
 /// the API never calls `session::dedup_bleed`, so this never re-implements
 /// it, and the empty-transcript note here is short because the API does not
 /// expose the `Detail` flags the native pane's note picked between.
-export function Transcript({ session, revision, highlightIndex }: TranscriptProps) {
+export function Transcript({ session, revision, highlightIndex, unavailable }: TranscriptProps) {
   const bridge = useBridge();
   const [verbatim, setVerbatim] = useState(false);
   const [reply, setReply] = useState<TranscriptReply>();
@@ -96,13 +97,15 @@ export function Transcript({ session, revision, highlightIndex }: TranscriptProp
 
   const loadTranscript = useLatest(
     useCallback(
-      (s: string, v: boolean) => bridge.call<TranscriptReply>("transcript", { session: s, verbatim: v }),
+      (s: string, v: boolean) =>
+        bridge.call<TranscriptReply>("transcript", { session: s, verbatim: v }),
       [bridge],
     ),
   );
 
   useEffect(() => {
     setError(undefined);
+    setReply(undefined);
     loadTranscript(session, verbatim)
       .then((next) => {
         if (next !== undefined) setReply(next);
@@ -134,6 +137,16 @@ export function Transcript({ session, revision, highlightIndex }: TranscriptProp
       setError(e instanceof Error ? e.message : String(e));
     });
   }, [bridge, session]);
+
+  useEffect(
+    () =>
+      bridge.on("command", (payload) => {
+        const { action } = payload as { action: string };
+        if (action === "copy-markdown") copyMarkdown();
+        else if (action === "reveal") reveal();
+      }),
+    [bridge, copyMarkdown, reveal],
+  );
 
   // Ignores an event for a session other than the one on screen — the bridge
   // runs one diarize job at a time, but the selection can move on while it
@@ -178,7 +191,7 @@ export function Transcript({ session, revision, highlightIndex }: TranscriptProp
 
   return (
     <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-6" data-testid="transcript">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div role="group" aria-label="Transcript detail" className="inline-flex rounded-md border">
           <button
             type="button"
@@ -199,11 +212,23 @@ export function Transcript({ session, revision, highlightIndex }: TranscriptProp
             Verbatim
           </button>
         </div>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" size="sm" data-testid="copy-markdown" onClick={copyMarkdown}>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="copy-markdown"
+            onClick={copyMarkdown}
+          >
             Copy Markdown
           </Button>
-          <Button type="button" variant="outline" size="sm" data-testid="reveal-button" onClick={reveal}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="reveal-button"
+            onClick={reveal}
+          >
             Reveal in Finder
           </Button>
           <Button
@@ -211,24 +236,37 @@ export function Transcript({ session, revision, highlightIndex }: TranscriptProp
             variant="outline"
             size="sm"
             data-testid="separate-voices"
-            disabled={separating}
+            disabled={separating || unavailable !== undefined}
+            title={unavailable}
             onClick={separateVoices}
           >
             {separating ? "Separating voices…" : "Separate voices"}
           </Button>
         </div>
       </div>
+      {unavailable !== undefined && <p className="text-muted-foreground text-xs">{unavailable}</p>}
       {error !== undefined && (
         <p role="alert" data-testid="transcript-warning" className="text-destructive text-sm">
           {error}
         </p>
+      )}
+      {reply === undefined && error === undefined && (
+        <div
+          role="status"
+          aria-label="Loading transcript"
+          className="flex max-w-[68ch] animate-pulse flex-col gap-3"
+        >
+          {[0, 1, 2].map((line) => (
+            <div key={line} className="bg-muted h-4 rounded" />
+          ))}
+        </div>
       )}
       {reply !== undefined && groups.length === 0 ? (
         <p className="text-muted-foreground text-sm" data-testid="transcript-empty">
           No transcript yet — this session is {reply.state}.
         </p>
       ) : (
-        <div className="flex flex-col gap-4" data-testid="transcript-lines">
+        <div className="flex max-w-[68ch] flex-col gap-4" data-testid="transcript-lines">
           {groups.map((group) => (
             <div key={group.key}>
               <div className="text-muted-foreground flex items-baseline gap-2 text-xs font-semibold">

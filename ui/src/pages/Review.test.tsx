@@ -63,7 +63,7 @@ it("refreshes the transcript after naming a speaker", async () => {
   );
   await userEvent.click(await screen.findByRole("button", { name: /Standup/u }));
   await userEvent.type(await screen.findByRole("combobox", { name: "Name for speaker_0" }), "Ana");
-  await userEvent.click(screen.getByRole("button", { name: "Name", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: /^Name$/u }));
   await screen.findByText("Ana");
 });
 

@@ -34,10 +34,12 @@ function NameField({
   summary,
   disabled,
   onChanged,
+  onError,
 }: {
   summary: SessionSummary;
   disabled: boolean;
   onChanged: () => void;
+  onError: (error: unknown) => void;
 }) {
   const bridge = useBridge();
   const [draft, setDraft] = useState(summary.name ?? "");
@@ -56,7 +58,10 @@ function NameField({
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          void bridge.call("session.update", { session: summary.id, name: draft }).then(onChanged);
+          void bridge
+            .call("session.update", { session: summary.id, name: draft })
+            .then(onChanged)
+            .catch(onError);
         } else if (e.key === "Escape") {
           e.preventDefault();
           setDraft(summary.name ?? "");
@@ -73,10 +78,12 @@ function TagsRow({
   summary,
   disabled,
   onChanged,
+  onError,
 }: {
   summary: SessionSummary;
   disabled: boolean;
   onChanged: () => void;
+  onError: (error: unknown) => void;
 }) {
   const bridge = useBridge();
   const [draft, setDraft] = useState("");
@@ -93,7 +100,8 @@ function TagsRow({
             onClick={() => {
               void bridge
                 .call("session.update", { session: summary.id, remove_tag: tag })
-                .then(onChanged);
+                .then(onChanged)
+                .catch(onError);
             }}
           >
             ×
@@ -102,6 +110,7 @@ function TagsRow({
       ))}
       <Input
         aria-label="Add tag"
+        placeholder="Add tag…"
         data-testid="session-header-add-tag"
         className="h-7 w-24"
         disabled={disabled}
@@ -112,8 +121,13 @@ function TagsRow({
           e.preventDefault();
           const tag = draft.trim();
           if (tag === "") return;
-          void bridge.call("session.update", { session: summary.id, add_tag: tag }).then(onChanged);
-          setDraft("");
+          void bridge
+            .call("session.update", { session: summary.id, add_tag: tag })
+            .then(() => {
+              setDraft("");
+              onChanged();
+            })
+            .catch(onError);
         }}
       />
     </div>
@@ -291,12 +305,23 @@ function DeleteMenu({
 /// too.
 export function SessionHeader({ summary, onChanged, onDeleted }: SessionHeaderProps) {
   const bridge = useBridge();
+  const [error, setError] = useState<string>();
+  const failed = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+  const changed = () => {
+    setError(undefined);
+    onChanged();
+  };
   const disabled = sessionState(summary) === "live";
 
   return (
     <div className="flex flex-col gap-2 border-b p-3" data-testid="session-header">
+      {error !== undefined && (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex items-center gap-2">
-        <NameField summary={summary} disabled={disabled} onChanged={onChanged} />
+        <NameField summary={summary} disabled={disabled} onChanged={changed} onError={failed} />
         <Button
           type="button"
           variant={summary.pinned ? "secondary" : "outline"}
@@ -308,7 +333,8 @@ export function SessionHeader({ summary, onChanged, onDeleted }: SessionHeaderPr
           onClick={() => {
             void bridge
               .call("session.update", { session: summary.id, pinned: !summary.pinned })
-              .then(onChanged);
+              .then(changed)
+              .catch(failed);
           }}
         >
           {summary.pinned ? "Pinned" : "Pin"}
@@ -316,8 +342,8 @@ export function SessionHeader({ summary, onChanged, onDeleted }: SessionHeaderPr
         <DeleteMenu summary={summary} disabled={disabled} onDeleted={onDeleted ?? onChanged} />
         {!disabled && <ExportMenu session={summary.id} />}
       </div>
-      <TagsRow summary={summary} disabled={disabled} onChanged={onChanged} />
-      <NotesField summary={summary} disabled={disabled} onChanged={onChanged} />
+      <TagsRow summary={summary} disabled={disabled} onChanged={changed} onError={failed} />
+      <NotesField summary={summary} disabled={disabled} onChanged={changed} />
     </div>
   );
 }

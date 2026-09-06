@@ -4,14 +4,15 @@ title: "Nightwatch review and completion audit"
 
 # Nightwatch review and completion audit
 
-The September 5 Nightwatch branch did not complete all six specifications.
-This record identifies what a maintainer can use and what remains before the
-planned UI is finished. The audit compares `e5e2de5` with `f6acc6d8` and the six
-specifications in `~/.local/state/nightwatch/ambient/specs/`.
+The September 5 Nightwatch branch left four UI tasks unfinished. The September
+6 follow-up completes those implementation tasks on the review branch. The
+independent CLI review remains pending because `op whoami` reports `account is
+not signed in`; the shared instructions require 1Password readiness before
+that review is dispatched. No merge or publication has been performed.
 
-The review fixes defects in delivered code and verifies them with regression
-tests and the existing runners. Implementing the missing UI tasks is separate
-work; this review does not mark those tasks complete or merge the branch.
+The original audit compared `e5e2de5` with `f6acc6d8` and the six specifications
+in `~/.local/state/nightwatch/ambient/specs/`. Its initial defect repairs are in
+`bc4c467`. The follow-up implements the missing UI and preserves those repairs.
 
 ## Completion by specification
 
@@ -19,29 +20,65 @@ work; this review does not mark those tasks complete or merge the branch.
 | --- | --- |
 | 01: Session API | Dispatcher, CLI verbs, metadata, deletion, six export formats, config, roster and speaker methods delivered. This review repairs API pin ordering, exposes saved notes and makes metadata staging safe. |
 | 02: Session tools | `doctor`, ten checks, JSON output and shared model paths delivered. Tasks 1–4 of the source plan were already on main; only Task 5 belonged to this run. |
-| 03: UI shell | **Incomplete.** React components and bridge delivered, but source-plan Task 5 (native host replacement) and Task 6 (polish and documentation) remain. |
-| 04: UI features | **Incomplete.** Search, editing, exports, live transcript polling and the doctor API delivered. Task 5 (filters and virtualised sidebar) and Task 6 (Welcome page) remain. The normal window still uses the native browser. |
+| 03: UI shell | **Implemented.** Tasks 5–6 now replace the native views with the full-window React page and add shortcuts, loading states, focus rings, reduced motion, light/dark screenshots and documentation. |
+| 04: UI features | **Implemented.** Tasks 5–6 now add text/tag filters, fixed-height virtual rows, month groups and Welcome with doctor checks and tested inline fixes. The normal window exposes these features. |
 | 05: WER experiments | Resampling, silence-gap, padding and chunk sweeps, calls fixtures and the separate calls gate delivered. Dated measurements retain the shipped defaults. |
 | 06: Live-ASR measurements | Replay benchmark, queue arithmetic, drain readiness/counting and dated go/no-go measurements delivered. The spec explicitly excludes implementing live transcription. |
 
-## Unfinished acceptance criteria
+## UI completion evidence
 
-UI-shell acceptance 8 requires the page to be the window's content view and
-`windowcheck` to query page selection. The actual probe still reports native
-table rows and `settings pane: hidden`. `src/window.rs` still constructs the
-native sidebar, transcript, naming strip and live pane. Its new phase events
-do not replace those views.
+The remaining work is recorded in [the completion spec](2026-09-06-ui-completion.md).
+The UI suite now reports `Test Files 17 passed (17)` and `Tests 65 passed (65)`.
+The new sidebar tests fail against the pre-completion `SessionList` and pass
+against the virtual list. Welcome fixes are checked against troubleshooting
+text; integration tests cover empty libraries, failed health checks, shortcuts,
+accessible controls, metadata errors and naming refresh after diarization.
 
-UI-shell acceptance 5 requires empty-state and shortcut tests. The full planned
-polish pass, light/dark screenshots and `docs/developing/ui.md` are outstanding.
-Acceptance 9 also requires the host architecture and getting-started docs to be
-updated. A passing link checker does not establish that those edits happened.
+The real host reports
+`windowcheck: ok — WKWebView, transcript, phase, selection, Stop, Settings, File menu`.
+Its Stop click reaches the app delegate; it does not open an audio device.
+The activation-policy probe reports `policycheck: ok`, including modal and
+other-window guards and reopening after close.
 
-UI-features acceptance 5 requires the 2,000-session virtualisation test, fixed
-56 px rows, month headers, text and tag filters, and Welcome checks whose fix
-sentences match troubleshooting documentation. `SessionList` currently renders
-every session with `sessions.map`; `App` routes only to Sessions and Settings.
-The doctor API exists, but that does not deliver the Welcome page.
+Both appearance runs report
+`uicheck: ok — clipboard, live card, settings, 2,000 rows, snapshot`.
+Each measured `maxMs: 9`, `maxRows: 29`, `last: true`. The probe includes a
+scheduled wait and layout read in each sample. The [UI chapter](../developing/ui.md)
+embeds the resulting light and dark screenshots. These are synthetic sessions
+in WebKit, separate from the real-dispatcher host check.
+
+UI type checking, lint and bundle generation pass. Lint retains advisory
+function/file-length and style warnings; it is not warning-free. Source links
+report `56 file(s) scanned, 0 broken link(s)`, and typo and whitespace checks
+pass. Native save-panel interaction and recording with microphone/system-audio
+grants remain interactive checks in the signed app. They were not simulated.
+
+The final Rust run returned `CHECK OK`. The frozen UI install reported
+`Lockfile is up to date, resolution step is skipped`. The signed bundle passed
+`codesign --verify --deep --strict`, reporting `valid on disk` and
+`satisfies its Designated Requirement`. The rebuilt app was launched from
+`build/Ambient.app`; macOS reported PID 86628 and a visible 981 × 832 window.
+The real sessions folder passed `doctor: 10/10 checks passed`.
+
+The docs build returned `56 page(s) built` with Pagefind indexing, and the built
+route check returned `check-routes: 56 pages, every internal link resolves`.
+Astro was invoked directly with `node_modules/.bin` on PATH because pnpm's
+automatic reinstall stopped on unapproved dependency installation scripts.
+Those scripts were not enabled. Generated package-manager files were moved out
+of the checkout; no docs dependency changes are included.
+
+## Additional integration repairs
+
+Capture warnings and retained-audio availability now reach the page through
+session summaries. The page explains when audio cannot be diarized. Native
+File commands reach the selected transcript, and Reveal with no selection
+opens the sessions folder. Failed name, tag and pin writes display an error;
+a rejected tag remains available to retry. Speaker naming reports failures and
+reloads labels when a diarization job finishes.
+
+The original window's pure regression assertions remain in `src/window_tests.rs`
+with their historical fixtures compiled only for tests. Production code no
+longer constructs the native session table, transcript or naming views.
 
 ## Defects repaired
 
@@ -58,7 +95,7 @@ The doctor API exists, but that does not deliver the Welcome page.
   test demonstrated an unrelated disposable file being overwritten. Updates now
   exclusively create a unique staging file before atomically replacing metadata.
 
-## Validation
+## Initial review validation (before UI completion)
 
 The final Rust verifier returned `CHECK OK`. The UI suite returned
 `Test Files 14 passed (14)` and `Tests 55 passed (55)`. New regressions first
@@ -93,4 +130,5 @@ readiness before dispatching long work. The findings above are this session's
 source review and observed test results, not an independent review verdict.
 
 Nightwatch's generated PR body covers only its final WER retry. Any eventual PR
-must describe the entire branch and explicitly retain these unfinished tasks.
+must describe the entire branch, include this UI completion and record the
+independent review outcome.

@@ -9,7 +9,7 @@ sidebar:
 `src/api.rs` holds one dispatcher, `api::call(method, params, paths)`. `ambient
 mcp` ([../using/mcp.md](../using/mcp.md)) is a JSON-RPC parser in front of it
 today, and the window ([../adr/0017-one-web-page-for-the-window.md](../adr/0017-one-web-page-for-the-window.md))
-calls the same function directly once it exists — one dispatcher that both
+calls the same function directly — one dispatcher that both
 cannot drift apart on, because there is only one implementation of each verb.
 
 A method either answers with a JSON value or fails with an `ApiError`:
@@ -21,6 +21,8 @@ maps it to a tool result with `isError: true`).
 
 Every recorded session on this machine, pinned sessions first and newest first
 within each group. Saved notes are included so reopening the editor preserves them.
+Capture warnings remain visible in the window, and `audio_available` tells the
+page whether retained audio can be used to separate voices.
 
 Request:
 
@@ -43,6 +45,8 @@ Reply:
     "error": null,
     "tags": [],
     "notes": "",
+    "warnings": [],
+    "audio_available": true,
     "pinned": false
   }
 ]

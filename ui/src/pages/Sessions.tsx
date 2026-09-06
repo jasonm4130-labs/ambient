@@ -8,9 +8,12 @@ import { SessionList, sessionState, type SessionSummary } from "@/components/Ses
 import { Transcript } from "@/components/Transcript";
 import { useBridge } from "@/lib/bridge-context";
 import { useLatest } from "@/lib/latest";
+import { Welcome, type HealthCheck } from "./Welcome";
 
 interface SessionsProps {
   onSettings: () => void;
+  health?: HealthCheck[] | undefined;
+  onRetryHealth?: () => void;
 }
 
 /// The sidebar-plus-content screen: sessions on the left, the selected
@@ -19,7 +22,7 @@ interface SessionsProps {
 /// speaker, and on a `phase` edge (below) — never on every `phase` event,
 /// which fires twice a second. Selection is the one piece of page-local
 /// state: it is "what is on screen", not anything the bridge holds.
-export function Sessions({ onSettings }: SessionsProps) {
+export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
   const bridge = useBridge();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -27,17 +30,36 @@ export function Sessions({ onSettings }: SessionsProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState<number>();
   const [transcriptRevision, setTranscriptRevision] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string>();
 
-  const loadSessions = useLatest(useCallback(() => bridge.call<SessionSummary[]>("sessions"), [bridge]));
+  const loadSessions = useLatest(
+    useCallback(() => bridge.call<SessionSummary[]>("sessions"), [bridge]),
+  );
 
   const refresh = useCallback(async () => {
-    const next = await loadSessions();
-    if (next !== undefined) setSessions(next);
+    try {
+      const next = await loadSessions();
+      if (next !== undefined) {
+        setSessions(next);
+        setLoaded(true);
+        setError(undefined);
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }, [loadSessions]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+  useEffect(
+    () =>
+      bridge.on("config", () => {
+        void refresh();
+      }),
+    [bridge, refresh],
+  );
 
   // The phase payload is the state Rust handed over, and the event fires on
   // a timer rather than on a change — reloading `sessions` on every one of
@@ -50,12 +72,18 @@ export function Sessions({ onSettings }: SessionsProps) {
       bridge.on("phase", (payload) => {
         const next = payload as PhasePayload;
         setPhase(next);
-        const edge = { kind: next.kind, liveId: next.live?.id ?? null, hadQueue: next.queue !== null };
+        const edge = {
+          kind: next.kind,
+          liveId: next.live?.id ?? null,
+          hadQueue: next.queue !== null,
+        };
         const prev = lastEdge.current;
         lastEdge.current = edge;
         if (
           prev !== null &&
-          (prev.kind !== edge.kind || prev.liveId !== edge.liveId || (prev.hadQueue && !edge.hadQueue))
+          (prev.kind !== edge.kind ||
+            prev.liveId !== edge.liveId ||
+            (prev.hadQueue && !edge.hadQueue))
         ) {
           void refresh();
         }
@@ -96,9 +124,18 @@ export function Sessions({ onSettings }: SessionsProps) {
 
   const selectedSummary = sessions.find((s) => s.id === selected) ?? null;
 
+  useEffect(
+    () =>
+      bridge.on("command", (payload) => {
+        if (selected !== null || (payload as { action: string }).action !== "reveal") return;
+        void bridge.call("reveal").catch((e: unknown) => setError(String(e)));
+      }),
+    [bridge, selected],
+  );
+
   return (
     <div className="flex h-screen">
-      <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border flex w-64 flex-col border-r">
+      <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border flex w-[260px] shrink-0 flex-col border-r">
         <div className="flex items-center justify-between p-4">
           <h1 className="text-lg font-semibold">Sessions</h1>
           <button
@@ -112,7 +149,7 @@ export function Sessions({ onSettings }: SessionsProps) {
           </button>
         </div>
         <LivePane payload={phase} />
-        <div className="flex-1 overflow-y-auto px-2">
+        <div className="flex min-h-0 flex-1 flex-col">
           <SessionList sessions={sessions} selectedId={selected} onSelect={selectSession} />
         </div>
         <button
@@ -124,13 +161,44 @@ export function Sessions({ onSettings }: SessionsProps) {
           Settings
         </button>
       </aside>
-      <main className="flex flex-1 flex-col overflow-hidden">
-        {selected === null ? (
+      <main
+        className="flex min-w-0 flex-1 flex-col overflow-hidden"
+        data-selected-session={selected ?? ""}
+      >
+        {error !== undefined && (
+          <p role="alert" className="text-destructive p-4">
+            {error}
+          </p>
+        )}
+        {health !== undefined &&
+        (health.some((check) => !check.ok) ||
+          (loaded &&
+            sessions.length === 0 &&
+            (phase?.live === null || phase?.live === undefined))) ? (
+          <Welcome
+            checks={health}
+            onRetry={() => {
+              onRetryHealth?.();
+              void refresh();
+            }}
+          />
+        ) : selected === null ? (
           <div className="flex flex-1 items-center justify-center p-8">
-            <p className="text-muted-foreground text-sm">Select a session to see its transcript.</p>
+            <p className="text-muted-foreground text-sm">
+              {loaded
+                ? sessions.length === 0
+                  ? "No sessions yet."
+                  : "Select a session to see its transcript."
+                : "Loading sessions…"}
+            </p>
           </div>
         ) : (
           <>
+            {(selectedSummary?.warnings ?? []).map((warning) => (
+              <p key={warning} role="alert" className="bg-accent p-3">
+                {warning}
+              </p>
+            ))}
             {selectedSummary !== null && (
               <SessionHeader
                 key={selectedSummary.id}
@@ -140,15 +208,32 @@ export function Sessions({ onSettings }: SessionsProps) {
               />
             )}
             {selectedSummary !== null &&
-            (sessionState(selectedSummary) === "live" || sessionState(selectedSummary) === "transcribing") ? (
+            (sessionState(selectedSummary) === "live" ||
+              sessionState(selectedSummary) === "transcribing") ? (
               <LiveTranscript key={selected} session={selected} onDone={refresh} />
             ) : (
-              <Transcript session={selected} revision={transcriptRevision} {...(highlightIndex !== undefined && { highlightIndex })} />
+              <Transcript
+                key={selected}
+                unavailable={
+                  selectedSummary !== null && !selectedSummary.transcribed
+                    ? "Separate voices needs a finished transcript."
+                    : selectedSummary?.audio_available === false
+                      ? "The audio is no longer available to separate voices."
+                      : undefined
+                }
+                session={selected}
+                revision={transcriptRevision}
+                {...(highlightIndex !== undefined && { highlightIndex })}
+              />
             )}
-            <NamingStrip key={`naming-${selected}`} session={selected} onChanged={() => {
-              setTranscriptRevision((revision) => revision + 1);
-              void refresh();
-            }} />
+            <NamingStrip
+              key={`naming-${selected}`}
+              session={selected}
+              onChanged={() => {
+                setTranscriptRevision((revision) => revision + 1);
+                void refresh();
+              }}
+            />
           </>
         )}
       </main>

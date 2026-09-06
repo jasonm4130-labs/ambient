@@ -15,7 +15,8 @@
 //! Does not click "+ Add", "Change…" or "Save as…": all three open a modal
 //! `NSOpenPanel` or `NSSavePanel` that nothing here would dismiss, and the
 //! run would hang.
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -70,7 +71,7 @@ fn config_payload() -> Value {
 /// derives — `live`/`transcribing`/`error`/`transcribed` booleans and **no**
 /// `state` field, so this probe would catch a page that assumed one.
 fn sessions_payload() -> Value {
-    json!([
+    let mut sessions = json!([
         {
             "id": "2026-08-29T1517",
             "dir": "/Users/x/Documents/Ambient/2026-08-29T1517",
@@ -97,7 +98,16 @@ fn sessions_payload() -> Value {
             "tags": [],
             "pinned": false,
         },
-    ])
+    ]);
+    let template = sessions[0].clone();
+    for i in 2..2000 {
+        let mut session = template.clone();
+        session["id"] = json!(format!("archive-{i:04}"));
+        session["name"] = json!(format!("Review {i:04}"));
+        session["tags"] = json!(["review"]);
+        sessions.as_array_mut().unwrap().push(session);
+    }
+    sessions
 }
 
 fn transcript_payload() -> Value {
@@ -127,7 +137,8 @@ fn canned(method: &str) -> Value {
         "sessions" => sessions_payload(),
         "transcript" => transcript_payload(),
         "export" => export_payload(),
-        "config.get" => config_payload(),
+        "config.get" | "config.set" => config_payload(),
+        "doctor" => json!([{"name": "config", "ok": true, "detail": "defaults"}]),
         "devices" => json!({"devices": ["MacBook Pro Microphone", "Iriun Webcam Audio"]}),
         "speakers.unnamed" => json!([
             {"label": "call-1", "sample": "shall we start with the export spec"},
@@ -181,7 +192,7 @@ fn main() {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(600.0, 620.0));
+    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(960.0, 620.0));
     let window: Retained<NSWindow> = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -220,6 +231,8 @@ fn main() {
     let w = web.clone();
     let p = probe.clone();
     let step = RefCell::new(0u32);
+    let snapshot = Rc::new(Cell::new(false));
+    let snapshot_done = snapshot.clone();
     let block = RcBlock::new(move |_t: core::ptr::NonNull<NSTimer>| {
         let mut n = step.borrow_mut();
         *n += 1;
@@ -330,9 +343,40 @@ fn main() {
                 );
             }
             12 => {
+                let dark = std::env::args().nth(2).as_deref() == Some("dark");
+                js(&w, &format!("document.documentElement.classList.toggle('dark', {dark}); window.ambient.event('navigate', {{page: 'sessions'}});"));
+            }
+            13 => {
+                js(
+                    &w,
+                    r#"(async () => {
+                    const viewport = document.querySelector('[data-testid="session-list-viewport"]');
+                    let maxMs = 0, maxRows = 0;
+                    for (let i = 0; i < 30; i++) {
+                        const start = performance.now();
+                        viewport.scrollTop = (viewport.scrollHeight - viewport.clientHeight) * i / 29;
+                        viewport.dispatchEvent(new Event('scroll', {bubbles: true}));
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                        maxRows = Math.max(maxRows, document.querySelectorAll('[data-testid="session-row"]').length);
+                        void viewport.getBoundingClientRect();
+                        maxMs = Math.max(maxMs, performance.now() - start);
+                    }
+                    const last = !!document.querySelector('[data-session="archive-1999"]');
+                    window.webkit.messageHandlers.ambient.postMessage(JSON.stringify({scale_probe: {maxMs, maxRows, last}}));
+                    viewport.scrollTop = 0;
+                    viewport.dispatchEvent(new Event('scroll', {bubbles: true}));
+                })();"#,
+                );
+            }
+            15 => js(
+                &w,
+                r#"document.querySelector('[data-testid="session-row"]').click();"#,
+            ),
+            17 => {
                 let out = std::env::args()
                     .nth(1)
                     .unwrap_or_else(|| "uicheck.png".into());
+                let done = snapshot_done.clone();
                 let handler = RcBlock::new(move |img: *mut NSImage, _e: *mut NSError| unsafe {
                     if let Some(img) = img.as_ref() {
                         if let Some(tiff) = img.TIFFRepresentation() {
@@ -341,7 +385,9 @@ fn main() {
                                     NSBitmapImageFileType::PNG,
                                     &NSDictionary::new(),
                                 ) {
-                                    png.writeToFile_atomically(&NSString::from_str(&out), true);
+                                    done.set(
+                                        png.writeToFile_atomically(&NSString::from_str(&out), true),
+                                    );
                                 }
                             }
                         }
@@ -350,12 +396,42 @@ fn main() {
                 unsafe { w.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
                 std::mem::forget(handler);
             }
-            13 => {
+            20 => {
+                let seen: Vec<Value> = p
+                    .ivars()
+                    .seen
+                    .borrow()
+                    .iter()
+                    .filter_map(|s| serde_json::from_str(s).ok())
+                    .collect();
+                let count = |method: &str| seen.iter().filter(|v| v["method"] == method).count();
+                let live = seen.iter().find_map(|v| v.get("live_probe"));
+                let settings = seen.iter().find_map(|v| v.get("probe_render"));
+                let scale = seen.iter().find_map(|v| v.get("scale_probe"));
+                let ok = count("clipboard.write") == 2
+                    && count("export") == 2
+                    && count("config.set") == 1
+                    && live.is_some_and(|v| {
+                        v["card"] == true
+                            && v["clock"] == "00:42"
+                            && v["room"] == "0.3"
+                            && v["call"] == "0.6"
+                    })
+                    && settings.is_some_and(|v| {
+                        v["scope"] == "some" && v["diarize"] == "true" && v["naming_rows"] == 2
+                    })
+                    && scale.is_some_and(|v| {
+                        v["maxRows"].as_u64().is_some_and(|n| n < 300)
+                            && v["maxMs"].as_f64().is_some_and(|ms| ms < 16.0)
+                            && v["last"] == true
+                    })
+                    && snapshot.get();
+                println!("{} message(s) reached the bridge", seen.len());
                 println!(
-                    "\n{} message(s) reached the bridge",
-                    p.ivars().seen.borrow().len()
+                    "uicheck: {} — clipboard, live card, settings, 2,000 rows, snapshot",
+                    if ok { "ok" } else { "FAILED" }
                 );
-                std::process::exit(0);
+                std::process::exit(i32::from(!ok));
             }
             _ => {}
         }

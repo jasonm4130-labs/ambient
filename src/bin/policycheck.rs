@@ -169,13 +169,13 @@ fn main() {
                 let state = window.describe_state();
                 println!("   {state}");
                 expect(
-                    state.contains("settings pane: shown"),
-                    "the settings page is a sibling view of this window",
+                    state.contains("content: WKWebView"),
+                    "the web page is the window content view",
                     &failures,
                 );
                 expect(
-                    state.contains("selected: <settings>"),
-                    "the Settings row stays selected rather than acting as a button",
+                    !state.contains("(loading)"),
+                    "the page has finished loading",
                     &failures,
                 );
             }
