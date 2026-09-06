@@ -37,8 +37,7 @@ use crate::config::Config;
 const PAGE: &str = include_str!("../assets/settings.html");
 
 /// A routed request from the page: `{id, method, params}`. Anything that
-/// fails to parse as this (today, only the `Patch` shape) falls back to
-/// [`Bridge::handle`].
+/// fails to parse as this shape is logged to stderr and ignored.
 #[derive(Debug, Deserialize)]
 struct Request {
     id: u64,
@@ -112,36 +111,17 @@ fn event_js(name: &str, payload: &Value) -> String {
     escape_line_terminators(format!("window.ambient.event({name_json}, {payload});"))
 }
 
-/// One edit from the page. Every field is optional because the page sends only
-/// what changed.
-#[derive(Debug, Default, Deserialize)]
-struct Patch {
-    /// "all" or "some" — whether to filter by app at all.
-    scope: Option<String>,
-    input_device: Option<String>,
-    diarize: Option<bool>,
-    threshold: Option<f32>,
-    remove_app: Option<String>,
-    /// "add_app" or "choose_dir": needs a native panel.
-    action: Option<String>,
-    ask_before_recording: Option<bool>,
-    /// A number of days, or "forever". A string rather than an integer so that
-    /// keeping audio indefinitely stays a deliberate word on both sides.
-    audio_retention: Option<String>,
-    add_person: Option<String>,
-    remove_person: Option<String>,
-    /// Put a roster name on one of the recording's speaker labels.
-    assign: Option<Assign>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Assign {
-    label: String,
-    name: String,
-    /// The session the page was showing when the name was chosen. A recording
-    /// can finish while the window is open, and without this the name would
-    /// land on whichever session is newest by then — a different conversation.
-    session: String,
+/// Switches the capture scope between "everything" and "selected apps",
+/// stashing (or restoring) the app list so a round trip through "Everything"
+/// does not silently discard what was chosen. Pure and cheap to pin — the
+/// risky half of `capture.scope` is the `Config::load`/`cfg.save` round trip
+/// against the user's real config file, which stays untested either way.
+fn switch_scope(apps: &mut Vec<String>, stash: &mut Vec<String>, everything: bool) {
+    if everything {
+        *stash = std::mem::take(apps);
+    } else {
+        *apps = std::mem::take(stash);
+    }
 }
 
 struct Ivars {
@@ -186,20 +166,27 @@ define_class!(
 
 impl Bridge {
     /// The one entry point for a message off the wire: a request with an
-    /// `id` is routed through `init` or [`api::call`]; anything else (today,
-    /// only the old `Patch` shape) falls back to [`Bridge::handle`].
+    /// `id` is routed through [`Bridge::answer`]; anything that fails to
+    /// parse as a request is logged to stderr and ignored.
     fn route_message(&self, json: &str) {
         match serde_json::from_str::<Request>(json) {
             Ok(req) => self.answer(req),
-            Err(_) => self.handle(json),
+            Err(e) => eprintln!("settings: could not parse {json:?} as a request ({e})"),
         }
     }
 
-    /// `init` is intercepted before [`api::call`], which has no `init` arm:
-    /// it answers with the pane's current route and opens the event queue,
+    /// Every path out of here must reply: `pick_app`/`pick_dir` run a modal
+    /// `NSOpenPanel` synchronously, and under request/response an id that is
+    /// never answered is a control that hangs for the rest of the session.
+    ///
+    /// `init` is intercepted first, since [`api::call`] has no arm for it: it
+    /// answers with the pane's current route and opens the event queue,
     /// delivering everything held. Idempotent — a second `init` re-opens an
     /// already-open queue and drains an empty one, which is what
-    /// `StrictMode`'s double-invoked mount effect needs.
+    /// `StrictMode`'s double-invoked mount effect needs. `capture.scope`,
+    /// `pick_app` and `pick_dir` are bridge-only methods matched next,
+    /// because [`api::call`] has no arm for any of them and would answer
+    /// `invalid_params`; everything else goes through [`api::call`].
     fn answer(&self, req: Request) {
         if req.method == "init" {
             let route = self.ivars().route.get();
@@ -210,14 +197,55 @@ impl Bridge {
             }
             return;
         }
-        let params = req.params.unwrap_or_else(|| json!({}));
-        let paths = api::Paths {
-            config_file: crate::config::path(),
-            roster_file: crate::roster::path(),
-            sessions_root: std::env::var_os("AMBIENT_HOME").map(PathBuf::from),
-        };
-        let result = api::call(&req.method, &params, &paths);
-        self.eval(&reply_js(req.id, result));
+        match req.method.as_str() {
+            "capture.scope" => {
+                let everything = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("everything"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let mut cfg = Config::load();
+                switch_scope(
+                    &mut cfg.apps,
+                    &mut self.ivars().stashed.borrow_mut(),
+                    everything,
+                );
+                let result = cfg
+                    .save()
+                    .map(|()| json!({}))
+                    .map_err(|e| ApiError::Failed(format!("{e:#}")));
+                self.eval(&reply_js(req.id, result));
+            }
+            "pick_app" => {
+                let chosen = self.pick_app();
+                self.eval(&reply_js(req.id, Ok(json!({"chosen": chosen}))));
+            }
+            "pick_dir" => {
+                let chosen = if self.ivars().recording.get() {
+                    self.refuse(
+                        "Ambient is recording",
+                        "The sessions folder cannot be changed while a recording is \
+                         running.\n\nStop the recording first, and this session will \
+                         finish where it started.",
+                    );
+                    None
+                } else {
+                    self.pick_dir()
+                };
+                self.eval(&reply_js(req.id, Ok(json!({"chosen": chosen}))));
+            }
+            _ => {
+                let params = req.params.unwrap_or_else(|| json!({}));
+                let paths = api::Paths {
+                    config_file: crate::config::path(),
+                    roster_file: crate::roster::path(),
+                    sessions_root: std::env::var_os("AMBIENT_HOME").map(PathBuf::from),
+                };
+                let result = api::call(&req.method, &params, &paths);
+                self.eval(&reply_js(req.id, result));
+            }
+        }
     }
 
     /// A one-way notification to the page: `config`, `navigate`, `phase` and
@@ -235,117 +263,7 @@ impl Bridge {
         }
     }
 
-    fn handle(&self, json: &str) {
-        let patch: Patch = match serde_json::from_str(json) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("settings: could not read {json:?} ({e})");
-                return;
-            }
-        };
-        let mut cfg = Config::load();
-
-        if let Some(scope) = &patch.scope {
-            if scope == "all" {
-                // Keep the list rather than destroying it — the user is
-                // switching a mode, not clearing their choices.
-                *self.ivars().stashed.borrow_mut() = std::mem::take(&mut cfg.apps);
-            } else {
-                cfg.apps = std::mem::take(&mut self.ivars().stashed.borrow_mut());
-            }
-        }
-        if let Some(d) = &patch.input_device {
-            cfg.input_device = (d != "default").then(|| d.clone());
-        }
-        if let Some(d) = patch.diarize {
-            cfg.diarize = d;
-        }
-        if let Some(t) = patch.threshold {
-            cfg.threshold = t;
-        }
-        if let Some(id) = &patch.remove_app {
-            cfg.apps.retain(|a| a != id);
-        }
-        if let Some(a) = patch.ask_before_recording {
-            cfg.ask_before_recording = a;
-        }
-        if let Some(d) = &patch.audio_retention {
-            if let Err(e) = cfg.set("audio_retention_days", d) {
-                eprintln!("settings: {e}");
-            }
-        }
-        if let Some(who) = &patch.add_person {
-            let mut names = crate::roster::load();
-            if crate::roster::add(&mut names, who) {
-                if let Err(e) = crate::roster::save(&names) {
-                    eprintln!("settings: could not save the roster ({e})");
-                }
-            }
-        }
-        if let Some(who) = &patch.remove_person {
-            let mut names = crate::roster::load();
-            if crate::roster::remove(&mut names, who) {
-                if let Err(e) = crate::roster::save(&names) {
-                    eprintln!("settings: could not save the roster ({e})");
-                }
-            }
-        }
-        if let Some(a) = &patch.assign {
-            // Naming goes through the same path the CLI uses, so the edit is
-            // recorded as the user's and survives a re-diarize.
-            let dir = crate::session::home().join(&a.session);
-            let still_there =
-                dir.file_name().is_some_and(|n| n == a.session.as_str()) && dir.is_dir();
-            if !still_there {
-                // Refuses rather than guessing: putting a name on the wrong
-                // recording is worse than putting none on this one.
-                eprintln!("settings: {:?} is not a session here", a.session);
-            } else {
-                match crate::session::name_speaker(&dir, &a.label, &a.name) {
-                    Ok(n) => eprintln!("settings: {n} line(s) now attributed to {}", a.name),
-                    Err(e) => eprintln!("settings: could not name {}: {e}", a.label),
-                }
-            }
-        }
-        match patch.action.as_deref() {
-            Some("add_app") => {
-                if let Some(id) = self.pick_app() {
-                    if !cfg.apps.contains(&id) {
-                        cfg.apps.push(id);
-                    }
-                }
-            }
-            Some("choose_dir") => {
-                // Bug 1's root cause, blocked from the other side. A recording
-                // writes into the directory it claimed, so moving the folder
-                // under it no longer makes the capture unreachable — but the
-                // sessions the browser lists, the retention sweep and the next
-                // claim all follow the setting, and changing it mid-capture
-                // splits one conversation across two folders for no gain.
-                if self.ivars().recording.get() {
-                    self.refuse(
-                        "Ambient is recording",
-                        "The sessions folder cannot be changed while a recording is \
-                         running.\n\nStop the recording first, and this session will \
-                         finish where it started.",
-                    );
-                } else if let Some(p) = self.pick_dir() {
-                    cfg.sessions_dir = Some(p);
-                }
-            }
-            Some(other) => eprintln!("settings: unknown action {other:?}"),
-            None => {}
-        }
-
-        if let Err(e) = cfg.save() {
-            eprintln!("settings: could not save ({e})");
-        }
-        self.push(&cfg);
-    }
-
-    /// Say no, and say why. The page is a view of the file, so `push` at the
-    /// end of `handle` already puts the unchanged folder back on screen —
-    /// this is what stops that reading as the click having done nothing.
+    /// Say no, and say why.
     fn refuse(&self, title: &str, body: &str) {
         eprintln!("settings: refused — {title}: {body}");
         let mtm = MainThreadMarker::from(self);
@@ -397,57 +315,6 @@ impl Bridge {
             Some(PathBuf::from(panel.URL()?.path()?.to_string()))
         }
     }
-
-    /// Hand the whole config back to the page. Always the whole thing, never a
-    /// delta: the page is a view and the file is the truth.
-    fn push(&self, cfg: &Config) {
-        let devices: Vec<String> = crate::capture::input_devices()
-            .into_iter()
-            .map(|(_, n)| n)
-            .collect();
-        let home = std::env::var("HOME").unwrap_or_default();
-        // The naming section is about one recording — the most recent — so it
-        // is empty until there is a session with speakers nobody has named.
-        let latest = crate::session::latest(&crate::session::home());
-        // `null` when the session could not be read at all, which the page
-        // reports as such rather than claiming everyone already has a name.
-        let unnamed: Option<Vec<serde_json::Value>> = latest.as_deref().and_then(|d| {
-            match crate::session::unnamed_labels(d) {
-                Ok(v) => Some(
-                    v.into_iter()
-                        .map(|(label, sample)| {
-                            serde_json::json!({ "label": label, "sample": sample })
-                        })
-                        .collect(),
-                ),
-                Err(e) => {
-                    eprintln!("settings: could not read {}: {e}", d.display());
-                    None
-                }
-            }
-        });
-        let payload = serde_json::json!({
-            "apps": cfg.apps,
-            "input_device": cfg.input_device,
-            "diarize": cfg.diarize,
-            "threshold": cfg.threshold,
-            "sessions_dir": cfg.sessions_dir,
-            "devices": devices,
-            "default_dir": format!("{home}/Documents/Ambient"),
-            "ask_before_recording": cfg.ask_before_recording,
-            "audio_retention": match cfg.audio_retention_days {
-                None => "forever".to_string(),
-                Some(n) => n.to_string(),
-            },
-            "roster": crate::roster::load(),
-            "unnamed": unnamed,
-            "latest_session": latest
-                .as_deref()
-                .and_then(|d| d.file_name())
-                .map(|n| n.to_string_lossy().to_string()),
-        });
-        self.event("config", &payload);
-    }
 }
 
 /// The settings pane: the `WKWebView` and the bridge that answers it, kept
@@ -458,9 +325,8 @@ impl Bridge {
 /// under the activation-policy flip — closing the main one would have stripped
 /// the settings window's menu bar out from under it — and one of them showed
 /// the naming section for `latest()` alone while the other could name any
-/// session. It is a sibling view of the main window's pane now, selected by the
-/// Settings row, and the page, the bridge and `Bridge::handle` are otherwise
-/// exactly what they were.
+/// session. It is a sibling view of the main window's pane now, selected by
+/// the Settings row.
 pub struct SettingsPane {
     web: Retained<WKWebView>,
     bridge: Retained<Bridge>,
@@ -503,11 +369,12 @@ impl SettingsPane {
         &self.web
     }
 
-    /// Re-read the file and repaint. The CLI can change settings behind the
-    /// pane's back, so showing it re-reads rather than trusting what it last
-    /// drew.
+    /// A nudge, not a payload. The CLI can change settings behind the pane's
+    /// back, so showing it tells the page to re-request `config.get` rather
+    /// than trusting what it last drew — the page's rule is "re-request after
+    /// every event", so this event carries nothing.
     pub fn refresh(&self) {
-        self.bridge.push(&Config::load());
+        self.bridge.event("config", &json!({}));
     }
 
     /// Told from the window's one renderer, off the phase. The bridge refuses
@@ -558,76 +425,35 @@ impl SettingsPane {
 mod tests {
     use super::*;
 
-    fn parse(json: &str) -> Result<Patch, serde_json::Error> {
-        serde_json::from_str(json)
-    }
+    // The seven tests that used to live here — `an_empty_message_changes_nothing`,
+    // `a_patch_carries_the_fields_it_names_and_no_others`,
+    // `an_assignment_carries_the_session_it_was_chosen_in`,
+    // `a_half_written_assignment_is_refused_rather_than_half_applied`,
+    // `a_threshold_sent_as_a_string_is_refused`,
+    // `forever_stays_a_word_all_the_way_through_the_bridge`,
+    // `an_unknown_key_is_ignored_rather_than_failing_the_whole_message` — pinned
+    // the `Patch`/`Assign` wire shape. They are deleted alongside `Patch` and
+    // `Assign` in this unit: the outcome's one sanctioned exception to "no
+    // editing existing tests" (spec acceptance item 6).
 
     #[test]
-    fn an_empty_message_changes_nothing() {
-        let p = parse("{}").expect("an empty object is a valid patch");
-        assert!(p.scope.is_none());
-        assert!(p.input_device.is_none());
-        assert!(p.diarize.is_none());
-        assert!(p.threshold.is_none());
-        assert!(p.remove_app.is_none());
-        assert!(p.action.is_none());
-        assert!(p.ask_before_recording.is_none());
-        assert!(p.audio_retention.is_none());
-        assert!(p.add_person.is_none());
-        assert!(p.remove_person.is_none());
-        assert!(p.assign.is_none());
-    }
+    fn switching_to_everything_stashes_the_apps_in_order_and_back_restores_them() {
+        let mut apps = vec!["us.zoom.xos".to_string(), "com.apple.FaceTime".to_string()];
+        let mut stash = Vec::new();
 
-    #[test]
-    fn a_patch_carries_the_fields_it_names_and_no_others() {
-        let p = parse(r#"{"threshold":0.6,"diarize":false}"#).expect("two known fields");
-        assert_eq!(p.threshold, Some(0.6));
-        assert_eq!(p.diarize, Some(false));
-        assert!(p.scope.is_none());
-        assert!(p.action.is_none());
-    }
-
-    #[test]
-    fn an_assignment_carries_the_session_it_was_chosen_in() {
-        let p =
-            parse(r#"{"assign":{"label":"SPEAKER_00","name":"Ana","session":"2026-09-05-1200"}}"#)
-                .expect("a complete assignment");
-        let a = p.assign.expect("assign is present");
-        assert_eq!(a.label, "SPEAKER_00");
-        assert_eq!(a.name, "Ana");
-        assert_eq!(a.session, "2026-09-05-1200");
-    }
-
-    #[test]
-    fn a_half_written_assignment_is_refused_rather_than_half_applied() {
-        let e = parse(r#"{"assign":{"label":"a"}}"#).expect_err("name and session are required");
-        assert!(
-            e.to_string().contains("name"),
-            "the error should name the missing field, got {e}"
+        switch_scope(&mut apps, &mut stash, true);
+        assert!(apps.is_empty(), "everything empties the app list");
+        assert_eq!(
+            stash,
+            vec!["us.zoom.xos".to_string(), "com.apple.FaceTime".to_string()]
         );
-    }
 
-    #[test]
-    fn a_threshold_sent_as_a_string_is_refused() {
-        // The page's slider sends a number. A string here means the page and
-        // this struct have drifted, and reading "0.6" as 0.6 would hide that.
-        parse(r#"{"threshold":"0.6"}"#).expect_err("a string is not a number");
-    }
-
-    #[test]
-    fn forever_stays_a_word_all_the_way_through_the_bridge() {
-        let p = parse(r#"{"audio_retention":"forever"}"#).expect("a retention word");
-        assert_eq!(p.audio_retention.as_deref(), Some("forever"));
-    }
-
-    #[test]
-    fn an_unknown_key_is_ignored_rather_than_failing_the_whole_message() {
-        // Today's rule, stated so that adding `deny_unknown_fields` is a
-        // deliberate change to this test and not a silent one: a page sending
-        // a key this build does not know still gets the rest of its edit
-        // applied.
-        let p = parse(r#"{"unknown":1,"diarize":true}"#).expect("unknown keys are skipped");
-        assert_eq!(p.diarize, Some(true));
+        switch_scope(&mut apps, &mut stash, false);
+        assert_eq!(
+            apps,
+            vec!["us.zoom.xos".to_string(), "com.apple.FaceTime".to_string()]
+        );
+        assert!(stash.is_empty());
     }
 
     #[test]

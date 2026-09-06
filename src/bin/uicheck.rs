@@ -1,10 +1,18 @@
-//! Drives the built settings page in a real WKWebView and reports what the
-//! bridge receives. Compiling and type-checking prove the page *says* the right
+//! Drives the built page in a real WKWebView and reports what the bridge
+//! receives. Compiling and type-checking prove the page *says* the right
 //! thing; only this proves it does anything.
 //!
-//! Loads `assets/settings.html`, pushes a config in through `applyConfig`, then
-//! synthesises the clicks a user would make and prints every message the page
-//! posts back. Snapshots a PNG so the rendering can be looked at too.
+//! A canned responder answers the page's requests the way Rust would —
+//! `init`, `config.get`, `devices`, `speakers.unnamed`, and `{}` for anything
+//! else — then two steps read back what the page rendered and click the
+//! diarize switch, printing every message the bridge receives. Snapshots a
+//! PNG so the rendering can be looked at too.
+//!
+//! Trimmed on purpose: acceptance item 7 asks this responder harness for two
+//! things, and both belong to later units (`clipboard.write` after Copy
+//! Markdown, unit 4; the live card after an injected `phase`, unit 5). It does
+//! not click "+ Add" or "Change…": both open a modal `NSOpenPanel` that
+//! nothing here would dismiss, and the run would hang.
 use std::cell::RefCell;
 
 use block2::RcBlock;
@@ -23,11 +31,56 @@ use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKWebView,
     WKWebViewConfiguration,
 };
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 const PAGE: &str = include_str!("../../assets/settings.html");
 
+/// A routed request from the page, the same shape `src/settings.rs` reads:
+/// `{id, method, params}`. `params` is not read here — every canned reply is
+/// keyed on `method` alone.
+#[derive(Debug, Deserialize)]
+struct Request {
+    id: u64,
+    method: String,
+}
+
+/// The `config.get` payload this probe hands back: apps non-empty so the
+/// scope select renders as "Selected apps" with a chip, and `latest_session`
+/// non-null so the page asks `speakers.unnamed` at all.
+fn config_payload() -> Value {
+    json!({
+        "apps": ["us.zoom.xos"],
+        "input_device": "MacBook Pro Microphone",
+        "diarize": true,
+        "threshold": 0.5,
+        "sessions_dir": null,
+        "devices": ["MacBook Pro Microphone", "Iriun Webcam Audio"],
+        "default_dir": "/Users/x/Documents/Ambient",
+        "ask_before_recording": true,
+        "audio_retention": "7",
+        "roster": ["Marcus", "Priya"],
+        "latest_session": "2026-08-29T1517",
+    })
+}
+
+/// What the responder answers `method` with, mirroring what Rust would.
+fn canned(method: &str) -> Value {
+    match method {
+        "init" => json!({"route": "settings"}),
+        "config.get" => config_payload(),
+        "devices" => json!({"devices": ["MacBook Pro Microphone", "Iriun Webcam Audio"]}),
+        "speakers.unnamed" => json!([
+            {"label": "call-1", "sample": "shall we start with the export spec"},
+            {"label": "room-1", "sample": "yes, go ahead"},
+        ]),
+        _ => json!({}),
+    }
+}
+
 struct Ivars {
     seen: RefCell<Vec<String>>,
+    web: RefCell<Option<Retained<WKWebView>>>,
 }
 
 define_class!(
@@ -43,13 +96,22 @@ define_class!(
         #[unsafe(method(userContentController:didReceiveScriptMessage:))]
         fn did_receive(&self, _c: &WKUserContentController, msg: &WKScriptMessage) {
             let body = unsafe { msg.body() };
-            match body.downcast::<NSString>() {
-                Ok(s) => {
-                    let text = s.to_string();
-                    println!("  bridge received: {text}");
-                    self.ivars().seen.borrow_mut().push(text);
+            let Ok(s) = body.downcast::<NSString>() else {
+                println!("  bridge received a NON-STRING body");
+                return;
+            };
+            let text = s.to_string();
+            println!("  bridge received: {text}");
+            self.ivars().seen.borrow_mut().push(text.clone());
+
+            if let Ok(req) = serde_json::from_str::<Request>(&text) {
+                let reply = json!({"result": canned(&req.method)});
+                let js = format!("window.ambient.reply({}, {reply});", req.id);
+                if let Some(web) = self.ivars().web.borrow().as_ref() {
+                    unsafe {
+                        web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None)
+                    };
                 }
-                Err(_) => println!("  bridge received a NON-STRING body"),
             }
         }
     }
@@ -73,6 +135,7 @@ fn main() {
 
     let probe = Probe::alloc(mtm).set_ivars(Ivars {
         seen: RefCell::new(Vec::new()),
+        web: RefCell::new(None),
     });
     let probe: Retained<Probe> = unsafe { msg_send![super(probe), init] };
 
@@ -89,6 +152,7 @@ fn main() {
     window.setContentView(Some(&web));
     window.center();
     window.makeKeyAndOrderFront(None);
+    *probe.ivars().web.borrow_mut() = Some(web.clone());
 
     let js = |web: &WKWebView, src: &str| unsafe {
         web.evaluateJavaScript_completionHandler(&NSString::from_str(src), None);
@@ -101,106 +165,39 @@ fn main() {
         let mut n = step.borrow_mut();
         *n += 1;
         match *n {
-            2 => {
-                println!("\n[1] pushing a config in");
-                js(
-                    &w,
-                    r#"applyConfig({"apps":["us.zoom.xos"],"input_device":"MacBook Pro Microphone",
-                       "diarize":true,"threshold":0.5,"sessions_dir":null,
-                       "devices":["MacBook Pro Microphone","Iriun Webcam Audio"],
-                       "default_dir":"/Users/x/Documents/Ambient",
-                       "ask_before_recording":true,"audio_retention":"7",
-                       "roster":["Marcus","Priya"],
-                       "unnamed":[{"label":"call-1","sample":"shall we start with the export spec"},
-                                  {"label":"room-1","sample":"yes, go ahead"}],
-                       "latest_session":"2026-08-29T1517"});"#,
-                );
-            }
             3 => {
-                println!("\n[2] reading back what the page rendered");
+                println!("\n[1] reading back what the page rendered");
                 js(
                     &w,
                     r#"(() => {
-                        const t = (id) => document.getElementById(id);
-                        console.log("RENDERED scope=" + t("scope").value
-                          + " mic=" + t("mic").value
-                          + " chips=" + [...document.querySelectorAll(".chip b")].map(e=>e.textContent).join("/")
-                          + " micoptions=" + t("mic").options.length
-                          + " diarize=" + t("diarize").classList.contains("on")
-                          + " sens=" + t("sens").value
-                          + " dir=" + t("dir").textContent
-                          + " ask=" + t("ask").classList.contains("on")
-                          + " keep=" + t("keep").value
-                          + " people=" + [...document.querySelectorAll('#people .chip b')].map(e=>e.textContent).join("/")
-                          + " naming=" + [...document.querySelectorAll('#naming .row')].length
-                          + " namehint=" + t("namehint").textContent);
+                        const t = (id) => document.querySelector(`[data-testid="${id}"]`);
+                        const chip = (root) => [...root.querySelectorAll("span")]
+                          .map((e) => e.textContent.replace(/×$/, ""));
+                        const render = {
+                          scope: t("scope-select").value,
+                          mic: t("mic-select").value,
+                          chips: chip(t("app-chips") ?? document.createElement("div")),
+                          diarize: t("diarize-switch").getAttribute("aria-checked"),
+                          sensitivity: t("sensitivity-slider").value,
+                          folder: t("sessions-dir").textContent,
+                          retention: t("retention-select").value,
+                          people: chip(t("roster-chips")),
+                          naming_rows: document.querySelectorAll('[data-testid="naming-row"]').length,
+                        };
                         window.webkit.messageHandlers.ambient.postMessage(JSON.stringify({
-                          probe_render: t("scope").value + "|" + t("mic").value + "|"
-                            + t("sens").value + "|" + t("dir").textContent + "|"
-                            + t("diarize").classList.contains("on") + "|"
-                            + t("ask").classList.contains("on") + "|" + t("keep").value + "|"
-                            + document.querySelectorAll('#people .chip').length + "|"
-                            + document.querySelectorAll('#naming .row').length
+                          probe_render: render,
                         }));
-                    })();"#,
+                     })();"#,
                 );
             }
             4 => {
-                println!("\n[3] clicking the diarize switch");
-                js(&w, r#"document.getElementById("diarize").click();"#);
+                println!("\n[2] clicking the diarize switch");
+                js(
+                    &w,
+                    r#"document.querySelector('[data-testid="diarize-switch"]').click();"#,
+                );
             }
             5 => {
-                println!("\n[4] dragging the sensitivity slider to the 'More' end");
-                js(
-                    &w,
-                    r#"(() => { const s = document.getElementById("sens");
-                       s.value = "80"; s.dispatchEvent(new Event("change")); })();"#,
-                );
-            }
-            6 => {
-                println!("\n[5] removing the app chip");
-                js(&w, r#"document.querySelector(".chip .x").click();"#);
-            }
-            7 => {
-                println!("\n[6] toggling ask-before-recording and picking a retention");
-                js(
-                    &w,
-                    r#"(() => { document.getElementById("ask").click();
-                       const k = document.getElementById("keep");
-                       k.value = "forever"; k.dispatchEvent(new Event("change")); })();"#,
-                );
-            }
-            8 => {
-                println!("\n[7] adding a person and naming a speaker");
-                js(
-                    &w,
-                    r#"(() => {
-                        const n = document.getElementById("personname");
-                        n.value = "Dana";
-                        document.getElementById("addperson").click();
-                        const s = document.querySelector('#naming select');
-                        s.value = "Priya"; s.dispatchEvent(new Event("change"));
-                        document.querySelector('#people .chip .x').click();
-                     })();"#,
-                );
-            }
-            9 => {
-                println!("\n[8] the empty-list trap: switch to Everything, then back");
-                js(
-                    &w,
-                    r#"(() => {
-                        const sc = document.getElementById("scope");
-                        sc.value = "all"; sc.dispatchEvent(new Event("change"));
-                        sc.value = "some"; sc.dispatchEvent(new Event("change"));
-                        const chips = document.getElementById("chips");
-                        window.webkit.messageHandlers.ambient.postMessage(JSON.stringify({
-                          probe_trap: sc.value + "|shown=" + (chips.style.display !== "none")
-                            + "|add=" + (document.querySelector(".add") !== null)
-                        }));
-                     })();"#,
-                );
-            }
-            10 => {
                 let out = std::env::args()
                     .nth(1)
                     .unwrap_or_else(|| "uicheck.png".into());
@@ -221,7 +218,7 @@ fn main() {
                 unsafe { w.takeSnapshotWithConfiguration_completionHandler(None, &handler) };
                 std::mem::forget(handler);
             }
-            11 => {
+            6 => {
                 println!(
                     "\n{} message(s) reached the bridge",
                     p.ivars().seen.borrow().len()
