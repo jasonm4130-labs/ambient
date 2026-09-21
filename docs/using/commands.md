@@ -88,8 +88,9 @@ bundle's audio-capture grant.
 ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>] [--seconds <n>]
 ```
 
-Captures until stopped, then resamples, transcribes and writes a session
-directory, printing its path on stdout. `--app` may be repeated; with no `--app`
+Captures until stopped and publishes completed speech turns during recording.
+After Stop, it finishes the remaining text and speaker labels, then prints the
+session directory on stdout. `--app` may be repeated; with no `--app`
 the `apps` setting decides. `--model` overrides the ASR directory, which
 otherwise defaults to `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` under the
 models root; a missing ASR or VAD model is a hard error before any audio is

@@ -16,7 +16,8 @@ bot, transcription account or cloud inference service is required.
 ## What it does
 
 - Captures microphone and system audio as separate tracks, without joining the call.
-- Transcribes speech and groups speakers using models running on the CPU.
+- Transcribes completed speech turns during recording using local CPU models,
+  then groups speakers after Stop.
 - Lets you name speakers, edit session details, pin sessions and search transcripts.
 - Exports Markdown, text, JSON, SRT and WebVTT; a read-only MCP server lets an
   assistant read the session library made available to it.

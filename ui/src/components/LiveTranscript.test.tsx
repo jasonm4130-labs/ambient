@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BridgeProvider } from "@/lib/bridge-context";
@@ -29,6 +29,41 @@ describe("LiveTranscript", () => {
     vi.useRealTimers();
   });
 
+  it("keeps live lines through Stop and appends only the final tail", async () => {
+    vi.useFakeTimers();
+    const fake = new FakeBridge();
+    const replies = [
+      { session: "s1", state: "live", next: 1, lines: [line("during recording")] },
+      { session: "s1", state: "pending", next: 1, lines: [] },
+      { session: "s1", state: "transcribing", next: 2, lines: [line("final tail")] },
+      { session: "s1", state: "done", next: 2, lines: [] },
+    ];
+    fake.answer("transcript", () => replies.shift());
+    const onDone = vi.fn();
+    render(
+      <BridgeProvider bridge={fake}>
+        <LiveTranscript session="s1" onDone={onDone} />
+      </BridgeProvider>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("during recording")).toBeInTheDocument();
+    expect(onDone).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(screen.getAllByText("during recording")).toHaveLength(1);
+    expect(screen.getAllByText("final tail")).toHaveLength(1);
+    expect(sinceCalls(fake).map((c) => (c.params as { since: number }).since)).toEqual([0, 1, 1, 2]);
+    expect(onDone).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000);
+    });
+    expect(sinceCalls(fake)).toHaveLength(4);
+  });
+
   it("appends lines across polls, then calls onDone once, with since 0, 1, 2", async () => {
     vi.useFakeTimers();
     const fake = new FakeBridge();
@@ -51,14 +86,20 @@ describe("LiveTranscript", () => {
     // already in flight from mount (its call is pushed synchronously, but
     // the `.then` that arms the next `setTimeout` only runs on a microtask
     // tick) without advancing the fake clock.
-    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
     expect(sinceCalls(fake)).toHaveLength(1);
 
-    await vi.advanceTimersByTimeAsync(2000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
     expect(sinceCalls(fake)).toHaveLength(2);
     expect(screen.getAllByText(/^(one|two)$/u)).toHaveLength(2);
 
-    await vi.advanceTimersByTimeAsync(2000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
     expect(sinceCalls(fake)).toHaveLength(3);
     expect(onDone).toHaveBeenCalledTimes(1);
 
@@ -76,7 +117,9 @@ describe("LiveTranscript", () => {
       </BridgeProvider>,
     );
 
-    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
     expect(screen.getByTestId("live-transcript-empty")).toHaveTextContent("Listening…");
   });
 
@@ -91,7 +134,9 @@ describe("LiveTranscript", () => {
       </BridgeProvider>,
     );
 
-    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
     expect(screen.getByTestId("live-transcript-empty")).toHaveTextContent("Transcribing…");
   });
 
@@ -114,14 +159,18 @@ describe("LiveTranscript", () => {
       </BridgeProvider>,
     );
 
-    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
     expect(sinceCalls(fake)).toHaveLength(1);
 
     // Hold A's *second* call (`since: 5`) rather than its first: `hold`
     // gates the next call to the method, registered here so it catches the
     // poll the 2 s timer is about to fire, not the mount call already made.
     const releaseA2 = fake.hold("transcript");
-    await vi.advanceTimersByTimeAsync(2000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
     expect(sinceCalls(fake)).toHaveLength(2);
 
     rerender(
@@ -130,7 +179,9 @@ describe("LiveTranscript", () => {
       </BridgeProvider>,
     );
 
-    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
     expect(sinceCalls(fake)).toHaveLength(3);
     expect(sinceCalls(fake).at(-1)?.params).toEqual({ session: "B", since: 0 });
 
@@ -138,7 +189,9 @@ describe("LiveTranscript", () => {
     // unmounted (the `session` prop moved to B), so the effect's `cancelled`
     // guard drops the reply — no new call, and no "poison" text.
     releaseA2();
-    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
     expect(sinceCalls(fake)).toHaveLength(3);
 
     expect(screen.queryByText("poison")).not.toBeInTheDocument();
@@ -195,11 +248,17 @@ describe("Sessions live swap", () => {
     await user.click(await screen.findByText("Standup"));
     expect(await screen.findByTestId("live-transcript")).toBeInTheDocument();
 
-    await vi.advanceTimersByTimeAsync(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
     expect(sinceCalls(fake)).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(2000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
     expect(sinceCalls(fake)).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(2000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
     expect(sinceCalls(fake)).toHaveLength(3);
 
     await vi.waitFor(() => expect(screen.getByTestId("transcript")).toBeInTheDocument());

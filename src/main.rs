@@ -7,7 +7,7 @@ ambient — local-first ambient capture
 
 USAGE
   ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>]
-                 [--seconds <n>]       record until stopped, then transcribe
+                 [--seconds <n>]       record with live transcription
   ambient stop [<session-dir>]         stop the recording in progress
   ambient sessions [--json]            list the sessions on disk
   ambient search <query> [--json]      find words across every session

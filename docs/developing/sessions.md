@@ -26,15 +26,18 @@ until stopped, then resamples, transcribes and writes a session under
   audio/call.wav   mono 16 kHz, tap
 ```
 
-The work is two halves, `capture_into` and `transcribe_session`, and `record`
-is their composition. The capture half owns the tap and ends with the 16 kHz
-wavs and `session.json` on disk; the transcription half turns those into
-`raw.jsonl` and `transcript.md`. The CLI runs them back to back on one
-thread. The menu bar app runs the second on a serial queue instead, so a new
-recording can start while the last one is still being transcribed
-([ADR-0015](../adr/0015-capture-and-transcription-are-separate.md)). `status`
-records the stage: `recording …` with the level meter, then `finishing`,
+`capture_into` owns the tap and preserves native audio while a background worker
+publishes completed turns to `raw.jsonl`. Recognition processes bounded blocks;
+the capture drain does not wait for it. After Stop, the capture half writes the
+16 kHz WAVs and `session.json`, and `transcribe_session` completes the remaining
+transcription, speaker labels and `transcript.md` without replacing published
+lines. The CLI runs finalization after capture; the menu bar app uses its serial
+queue, so another recording can start while the previous session finishes.
+
+`status` records the stage: `recording …` with the level meter, then `finishing`,
 `captured`, `transcribing`, `separating voices`, `done` — or `failed: …`.
+The [implementation plan](../plans/2026-09-21-realtime-transcription.md) describes
+the live transcript's cursor and recovery requirements.
 A session with `session.json` and no `transcript.md` when the app is not
 running is waiting on a queue that no longer exists; the app re-queues it at
 its next launch. While a transcriber is working it holds `transcribing.lock`,

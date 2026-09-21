@@ -154,9 +154,8 @@ heard).
 `track` is `room` for the microphone and `call` for what the tap heard, and
 `speaker` is `null` until something has named it — the same fields
 [`ambient show --json`](commands.md#show) prints. The lines arrive in the order
-they were written, every room line then every call line, which is why the call
-line above sits after a room line with a later `start_ms`; sort on `start_ms`
-if you want the clock.
+they were written. Room and call lines can interleave, and a later arrival can
+have an earlier `start_ms`; sort on `start_ms` if you want the clock.
 
 ## Following a session as it is recorded
 
@@ -173,27 +172,28 @@ with the previous reply's `next`.
 | `state` | What it means | Ask again? |
 | --- | --- | --- |
 | `live` | Audio is being captured right now. | Yes |
-| `transcribing` | Capture finished; the recogniser is running. | Yes |
+| `transcribing` | Capture finished; remaining text or speaker labels are being processed. | Yes |
 | `pending` | Captured, waiting its turn in the queue. | Yes |
 | `done` | `transcript.md` is written. `next` will not move. | No |
 
-The cursor counts lines rather than milliseconds because `raw.jsonl` is written
-one track at a time — every room line, then every call line — and the two
-tracks' clocks run independently. A cursor on `start_ms` would skip every call
-line that landed after a later room line.
+The cursor counts lines rather than milliseconds because the two tracks' clocks
+run independently. A cursor on `start_ms` would skip a call line that arrived
+after a room line with a later timestamp. The published line order stays stable
+when recording stops and finalization completes.
 
-One caveat, and it is the reason `live` reads as it does: **`raw.jsonl` is
-written after capture ends**, so a session that is still recording answers with
-`state: "live"` and no lines at all.
+During recording, Ambient processes audio in roughly 10-second blocks and
+appends completed speech turns to `raw.jsonl`. A `live` reply can therefore
+contain new lines. An empty reply means no new completed turn is available yet:
 
 ```json
 {"lines":[],"next":0,"session":"2026-09-05-1608","state":"live"}
 ```
 
-Live in the sense of "you can see it happening", not yet "you can read what was
-just said". Making the transcript grow during capture is a separate decision,
-and it waits on a measurement — [ADR 0016](../adr/0016-mcp-verb-for-live-reading.md)
-records why.
+This is completed-turn transcription, not word-by-word streaming. Model loading,
+ongoing speech and other transcription work can delay the first lines. Continue
+polling through Stop: the final speech tail and speaker separation finish
+afterward. To refresh speaker labels on earlier lines, read again with `since: 0`
+once the session is `done`.
 
 ## When it will not answer
 
