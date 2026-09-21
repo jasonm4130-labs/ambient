@@ -598,7 +598,7 @@ pub fn capture_into(
     let mut guard = ClaimGuard(Some(dir.path()));
     let id = dir.id();
     let dir = dir.path();
-    let (asr_dir, _) = model_paths(model_dir)?;
+    let (asr_dir, vad_path) = model_paths(model_dir)?;
 
     // A `--app` on the command line beats the stored setting; with no flag the
     // settings window decides.
@@ -635,8 +635,8 @@ pub fn capture_into(
         call_ch
     );
 
-    // Native-rate scratch. Resampling happens after the recording is safely on
-    // disk, so a bug in it costs a rerun and not the conversation.
+    // Native-rate scratch remains the recoverable source. The live worker
+    // resamples its disk queue; finalized 16 kHz tracks are written after Stop.
     let room_native = audio.join("room.native.wav");
     let call_native = audio.join("call.native.wav");
     let spec = |hz: u32| hound::WavSpec {
@@ -650,6 +650,24 @@ pub fn capture_into(
     // Everything that can fail before this point fails with nothing recorded.
     // Everything after it may be sitting on audio, so the directory stays.
     guard.disarm();
+
+    // The worker owns no capture objects. Its disk spools are the queue, so
+    // model work can fall behind without retaining audio in memory or making
+    // the 200 ms drain wait for inference.
+    let mut live_error = None;
+    let mut live_spooling = true;
+    let mut live = match crate::live::LiveTranscriber::start(
+        dir,
+        [mic_hz, call_hz],
+        asr_dir.clone(),
+        vad_path,
+    ) {
+        Ok(worker) => Some(worker),
+        Err(e) => {
+            live_error = Some(format!("live transcription did not start: {e:#}"));
+            None
+        }
+    };
 
     STOP.store(false, Ordering::SeqCst);
     unsafe {
@@ -731,10 +749,26 @@ pub fn capture_into(
             interval_room_peak = interval_room_peak.max(s.abs());
             room_w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
         }
+        if live_spooling {
+            if let Some(worker) = &mut live {
+                if let Err(e) = worker.append(Track::Room, &room) {
+                    live_error = Some(format!("live room spool failed: {e:#}"));
+                    live_spooling = false;
+                }
+            }
+        }
         for s in &call {
             call_peak = call_peak.max(s.abs());
             interval_call_peak = interval_call_peak.max(s.abs());
             call_w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
+        }
+        if live_spooling {
+            if let Some(worker) = &mut live {
+                if let Err(e) = worker.append(Track::Call, &call) {
+                    live_error = Some(format!("live call spool failed: {e:#}"));
+                    live_spooling = false;
+                }
+            }
         }
     }
 
@@ -793,17 +827,45 @@ pub fn capture_into(
         warnings.push(advice);
     }
 
-    // One track at a time, so the native buffer is gone before the next is read
-    // and neither is alive when the models load.
-    for (native, out) in [
-        (&room_native, audio.join("room.wav")),
-        (&call_native, audio.join("call.wav")),
+    // Finalize one track at a time so both full native buffers are never
+    // retained together. Live recognition may still be processing its spool.
+    for (track, native, out) in [
+        (Track::Room, &room_native, audio.join("room.wav")),
+        (Track::Call, &call_native, audio.join("call.wav")),
     ] {
         let (samples, rate) = resample::read_wav_any(native)?;
+        let spool_repaired = match crate::live::repair_spool(dir, track, &samples) {
+            Ok(()) => true,
+            Err(e) => {
+                live_error = Some(format!("live transcription spool recovery failed: {e:#}"));
+                false
+            }
+        };
         let sixteen = resample::to_16k(&samples, rate)?;
         drop(samples);
         write_wav_16k(&out, &sixteen)?;
-        std::fs::remove_file(native).ok();
+        if spool_repaired {
+            if dir.join("live-asr.json").exists() {
+                let source = audio.join(match track {
+                    Track::Room => "room.source.wav",
+                    Track::Call => "call.source.wav",
+                });
+                std::fs::rename(native, source)?;
+            } else {
+                std::fs::remove_file(native).ok();
+            }
+        }
+    }
+    if let Some(worker) = live.take() {
+        if let Err(e) = worker.finish() {
+            live_error = Some(format!(
+                "live transcription will retry after capture: {e:#}"
+            ));
+        }
+    }
+    if let Some(error) = live_error {
+        eprintln!("  WARNING: {error}");
+        warnings.push(error);
     }
 
     // Written here, at the end of the capture, rather than after ASR: the
@@ -843,8 +905,8 @@ pub fn capture_into(
 /// Transcribe a session whose audio [`capture_into`] has already written:
 /// ASR over both tracks into `raw.jsonl`, diarisation if configured, and
 /// `transcript.md`. Runs on whichever thread calls it — the CLI's, or the
-/// menu bar app's serial transcription queue — and never beside a tap this
-/// process owns.
+/// menu bar app's serial transcription queue. Model inference is serialized
+/// with the live worker; capture can continue independently.
 pub fn transcribe_session(
     dir: &Path,
     model_dir: Option<&str>,
@@ -885,42 +947,62 @@ fn transcribe_inner(
     // separates a session being transcribed from one killed mid-capture in
     // the window's "Interrupted" test, and a model load takes seconds.
     let raw_path = dir.join("raw.jsonl");
-    let mut raw = std::fs::File::create(&raw_path)?;
+    let live_session = dir.join("live-asr.json").exists();
     let mut lines = 0usize;
 
-    let mut vad = crate::vad::Vad::load(utf8_path(&vad_path)?)?;
-    let mut rec = crate::asr::Recognizer::load(
-        asr_dir
-            .to_str()
-            .ok_or_else(|| anyhow!("model path is not valid UTF-8"))?,
-    )?;
+    if live_session {
+        crate::live::repair_from_native(dir)?;
+        crate::live::finish_existing(dir, &asr_dir, &vad_path)?;
+        lines = complete_jsonl(&raw_path)?.len();
+    } else {
+        // Created before the models load, not after: its existence is what
+        // separates a session being transcribed from one killed mid-capture.
+        let mut raw = std::fs::File::create(&raw_path)?;
+        let (mut vad, mut rec) = {
+            let _serial = crate::live::decoder();
+            (
+                crate::vad::Vad::load(utf8_path(&vad_path)?)?,
+                crate::asr::Recognizer::load(
+                    asr_dir
+                        .to_str()
+                        .ok_or_else(|| anyhow!("model path is not valid UTF-8"))?,
+                )?,
+            )
+        };
 
-    for (track, wav) in [
-        (Track::Room, audio.join("room.wav")),
-        (Track::Call, audio.join("call.wav")),
-    ] {
-        let (samples, _) = resample::read_wav_any(&wav)?;
-        if samples.is_empty() {
-            continue;
-        }
-        // Turns, not merged chunks: a record that spans two people's speech
-        // cannot carry a speaker, and `diarize` can only label whole records.
-        let chunks = vad.turns(&samples, 30)?;
-        let segs = rec.transcribe_segments(&samples, &chunks)?;
-        for (seg, text, confidence) in segs {
-            let r = RawRecord {
-                track,
-                start_ms: (seg.start as u64 * 1000) / resample::TARGET_HZ as u64,
-                end_ms: (seg.end as u64 * 1000) / resample::TARGET_HZ as u64,
-                text,
-                confidence,
+        for (track, wav) in [
+            (Track::Room, audio.join("room.wav")),
+            (Track::Call, audio.join("call.wav")),
+        ] {
+            let (samples, _) = resample::read_wav_any(&wav)?;
+            if samples.is_empty() {
+                continue;
+            }
+            let chunks = {
+                let _serial = crate::live::decoder();
+                vad.turns(&samples, 30)?
             };
-            writeln!(raw, "{}", serde_json::to_string(&r)?)?;
-            lines += 1;
+            for chunk in &chunks {
+                let segs = {
+                    let _serial = crate::live::decoder();
+                    rec.transcribe_segments(&samples, std::slice::from_ref(chunk))?
+                };
+                for (seg, text, confidence) in segs {
+                    let r = RawRecord {
+                        track,
+                        start_ms: (seg.start as u64 * 1000) / resample::TARGET_HZ as u64,
+                        end_ms: (seg.end as u64 * 1000) / resample::TARGET_HZ as u64,
+                        text,
+                        confidence,
+                    };
+                    writeln!(raw, "{}", serde_json::to_string(&r)?)?;
+                    lines += 1;
+                }
+            }
+            eprintln!("  {} — {} segment(s)", track.as_str(), chunks.len());
         }
-        eprintln!("  {} — {} segment(s)", track.as_str(), chunks.len());
+        raw.flush()?;
     }
-    raw.flush()?;
 
     // Created empty so the append-only layer always exists to append to.
     let edits_path = dir.join("edits.jsonl");
@@ -946,6 +1028,9 @@ fn transcribe_inner(
 
     let md = dir.join("transcript.md");
     std::fs::write(&md, markdown(dir)?)?;
+    if live_session {
+        crate::live::cleanup(dir);
+    }
     std::fs::write(dir.join(STATUS_FILE), "done\n").ok();
     if let Some(m) = &meter {
         m.set_phase(MeterPhase::Done);
@@ -1435,12 +1520,9 @@ pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Hit>> {
 
 /// The one body both orders share, so they cannot drift.
 fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
-    let raw_text = std::fs::read_to_string(dir.join("raw.jsonl"))
-        .with_context(|| format!("reading {}", dir.join("raw.jsonl").display()))?;
-
     let mut lines: Vec<Line> = Vec::new();
-    for l in raw_text.lines().filter(|l| !l.trim().is_empty()) {
-        let r: RawRecord = serde_json::from_str(l).context("parsing raw.jsonl")?;
+    for l in complete_jsonl(&dir.join("raw.jsonl"))? {
+        let r: RawRecord = serde_json::from_str(&l).context("parsing raw.jsonl")?;
         lines.push(Line {
             track: r.track,
             start_ms: r.start_ms,
@@ -1453,11 +1535,9 @@ fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
     if !verbatim {
         let edits_path = dir.join("edits.jsonl");
         if edits_path.exists() {
-            let edits_text = std::fs::read_to_string(&edits_path)?;
-            let edits: Vec<Edit> = edits_text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| serde_json::from_str(l).context("parsing edits.jsonl"))
+            let edits: Vec<Edit> = complete_jsonl(&edits_path)?
+                .into_iter()
+                .map(|l| serde_json::from_str(&l).context("parsing edits.jsonl"))
                 .collect::<Result<_>>()?;
 
             // A revert names an earlier line, so gather them before applying.
@@ -1504,6 +1584,24 @@ fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
     Ok(lines)
 }
 
+/// Snapshot complete newline-terminated JSONL records while another thread
+/// may be appending. An incomplete UTF-8/JSON tail is ignored; malformed data
+/// before the last newline remains an error at the typed parse site.
+fn complete_jsonl(path: &Path) -> Result<Vec<String>> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let complete = bytes
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(&bytes[..0], |last| &bytes[..=last]);
+    let text = std::str::from_utf8(complete)
+        .with_context(|| format!("reading {} as UTF-8", path.display()))?;
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 pub fn show(dir: &Path, verbatim: bool, json: bool) -> Result<()> {
     let lines = transcript(dir, verbatim)?;
     // Under `--json` the reader is a script, so an empty session is an empty
@@ -1548,6 +1646,10 @@ pub const DIARIZE_BY: &str = "diarize";
 /// room and speaker 1 on the call are different people, and nothing downstream
 /// should be able to assume otherwise.
 pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
+    // Diarization loads and runs its own ONNX models. It shares the same
+    // inference lane as live VAD/ASR and queued transcription so capture's
+    // measured one-model-workload assumption remains true.
+    let _serial = crate::live::decoder();
     let raw_text = std::fs::read_to_string(dir.join("raw.jsonl"))
         .with_context(|| format!("reading {}", dir.join("raw.jsonl").display()))?;
     let records: Vec<RawRecord> = raw_text
@@ -2926,6 +3028,39 @@ mod tests {
             vec![5_000, 0],
             "the call line was appended after the room line and stays there"
         );
+    }
+
+    #[test]
+    fn transcript_snapshot_ignores_only_an_incomplete_appended_tail() {
+        let dir =
+            std::env::temp_dir().join(format!("ambient-partial-jsonl-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let complete = serde_json::to_string(&RawRecord {
+            track: Track::Room,
+            start_ms: 0,
+            end_ms: 1_000,
+            text: "complete".into(),
+            confidence: 0.9,
+        })
+        .unwrap();
+        let mut bytes = format!("{complete}\n{{\"track\":\"call\",\"text\":\"").into_bytes();
+        bytes.push(0xf0); // incomplete UTF-8 from an in-flight write
+        std::fs::write(dir.join("raw.jsonl"), bytes).unwrap();
+
+        let got = transcript_appended(&dir, true).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, "complete");
+
+        std::fs::write(dir.join("raw.jsonl"), format!("{complete}\nnot-json\n")).unwrap();
+        assert!(
+            transcript_appended(&dir, true)
+                .unwrap_err()
+                .to_string()
+                .contains("parsing raw.jsonl"),
+            "a newline makes malformed data durable and therefore an error"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 }
 

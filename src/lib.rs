@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod export;
 pub mod fbank;
 pub mod features;
+pub mod live;
 pub mod mcp;
 pub mod menubar;
 pub mod probe;

@@ -59,11 +59,10 @@ phase at `Recording`, because that is the honest state — the worker really is
 still recording, so Stop stays enabled and Start stays disabled rather than the
 app advancing past a capture it never stopped. `Failed` is watched exactly
 like `Idle`: a failure nobody has dismissed does not stop the next call being
-noticed. And **transcription is not a state at all**. `Stopping` lasts the
-seconds it takes to write the audio; the transcript is then written by a
-queue, one session at a time, while the app sits at `Idle` — so the next call
-can be recorded while the last is still being transcribed, which is what
-back-to-back meetings need. The menu shows what the queue is doing and how
+noticed. Transcription runs beside these recording states: completed turns
+appear during capture, and the queue finishes remaining text and speaker labels
+after Stop. A new recording can start while the previous session finishes.
+The menu shows what the queue is doing and how
 many sessions are waiting, and the icon is an hourglass until it is empty
 ([ADR-0015](../adr/0015-capture-and-transcription-are-separate.md)).
 
@@ -102,6 +101,11 @@ ever removes audio. The sweep runs at the end of every
 recording — the app is running whenever a recording happens, so no launchd
 agent is needed — and it never touches `raw.jsonl`, `edits.jsonl`,
 `session.json` or `transcript.md`.
+
+Live transcription temporarily keeps an additional native-rate PCM copy of
+each track under `audio/`. Those working copies are removed after the finished
+transcript is written. A small `live-asr.json` checkpoint remains so retries
+preserve lines already read by the window or an MCP client.
 
 Two guards matter. A session with no `transcript.md` is never swept: it is
 still being written, and its audio is the only copy of what was said. That guard
