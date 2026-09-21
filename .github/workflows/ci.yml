@@ -310,7 +310,9 @@ jobs:
 
   pages:
     needs: [gate, docs]
-    if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    # Path-filtered Rust/UI jobs may be skipped upstream of gate. Evaluate
+    # our explicit acceptance conditions even when those ancestors skipped.
+    if: always() && !cancelled() && needs.gate.result == 'success' && needs.docs.result == 'success' && github.ref == 'refs/heads/main' && !github.event.repository.private
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
