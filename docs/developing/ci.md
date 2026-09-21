@@ -6,131 +6,93 @@ sidebar:
 
 # What CI checks
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull
-request: a `changes` job decides which of four jobs the change needs, and a
-`gate` job at the end passes only when every job succeeded or was skipped.
-`gate` is the one check anything waits on — `merge-pr.sh` and the landing
-loop's merge workflow both read it. It is worth being explicit about the
-split, because the most important thing this project does is the one thing
-CI cannot test.
+`.github/workflows/ci.yml` runs on pushes to `main` and pull requests. A path
+filter selects the affected jobs. The final `gate` check passes only when every
+required job succeeds or is legitimately skipped.
 
-## The jobs
+CI verifies code, generated assets and bundle assembly. It does not verify
+microphone permissions or record live audio.
 
-| Job | Runner | Runs when | What it does |
-| --- | --- | --- | --- |
-| `hygiene` | `blacksmith-4vcpu-ubuntu-2404` | always | `typos`, and `cargo-deny check` |
-| `ui` | `blacksmith-4vcpu-ubuntu-2404` | `ui/**` or the bundle changed | `tsc`, `oxlint`, `vite build`, and a drift check on the committed bundle |
-| `rust` | `blacksmith-6vcpu-macos-latest` | code changed | `fmt`, `clippy -D warnings`, `test --all-targets`, `symbolcheck`, and `make-app.sh` |
-| `docs` | `blacksmith-4vcpu-ubuntu-2404` | `docs/**`, `docs-site/**` or `README.md` changed | the site build and its six guards — see [docs](docs.md) |
-| `gate` | `blacksmith-4vcpu-ubuntu-2404` | always | fails unless every job above succeeded or was skipped |
+## Jobs and runners
 
-Only `rust` needs macOS. The crate does not compile anywhere else — process
-taps, `objc2-app-kit` and `objc2-web-kit` have no other target — so the other
-jobs were deliberately kept off it. `cargo-deny` resolves the dependency
-graph from `Cargo.lock` without invoking rustc, so it reads the macOS-only
-dependencies rather than building them, and runs on Linux.
+| Job | Runs when | Checks |
+| --- | --- | --- |
+| `changes` | Always | Selects Rust, UI and docs work from changed paths |
+| `hygiene` | Always | Existing hook tests, spelling and dependency licenses/advisories |
+| `ui` | UI, generated bundle or workflow changes | TypeScript, lint, all UI tests, build and generated-bundle drift |
+| `rust` | Rust, UI, packaging, license or workflow changes | Formatting, Clippy, all-target tests, SF Symbols and signed bundle assembly |
+| `docs` | Docs, contributor/security guidance, licenses or workflow changes | Typecheck, static build, Markdown links, built routes, Mermaid and ADR navigation |
+| `gate` | Always | Fails if a required job failed or was cancelled |
 
-`changes` is `dorny/paths-filter`, pinned by commit. Until 2026-09-04 the
-docs build was its own workflow with a `paths:` filter, because filters are
-per-workflow; the cost is that no single workflow's conclusion then covered a
-change, and `merge-pr.sh` waited on a docs check that a code-only pull
-request never registers. One workflow with a skip-aware `gate` keeps the
-macOS saving and removes that failure.
+Maintainer branches use Blacksmith's Linux and Apple Silicon runners. Fork PRs
+select standard GitHub-hosted `ubuntu-24.04` and `macos-15` runners. Only the Rust
+job needs macOS. Job timeouts and per-ref concurrency limit wasted work.
 
-## Before CI: the format gate runs at commit time
+The fork runner selection avoids ordinary fork builds consuming Blacksmith
+capacity. It is not an authorization boundary: a contributor can propose a
+workflow change. Maintainers must review outside-contributor workflow runs and
+configure runner access at the organization level before opening contributions.
+See GitHub's [runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 
-`cargo fmt --check` is the first step of the `rust` job, and it stayed red on
-`main` for six pushes before anyone looked: pushes go straight to `main`, the
-repo's plan has no branch protection, and nothing on the machine watches CI.
-So the check that matters runs before the commit exists. `.githooks/pre-commit`
-refuses a commit whose *staged* Rust files rustfmt would change — staged
-content, not the working tree, so formatting after `git add` does not slip
-through — and says which files and what to run. Only staged files are checked,
-so drift elsewhere never blocks an unrelated commit. There is no bypass flag.
+## Permissions and supply chain
 
-The global `core.hooksPath` would normally hide a repo's own hooks; the global
-`pre-commit` dispatches to `.githooks/pre-commit` when it is executable, so
-this works for every clone on a machine with that config and is a no-op
-elsewhere. CI remains the check of record for anyone without the hook. The
-same hook refuses a commit on `main`; the path a change takes instead is
-[how changes reach main](branching.md).
+The workflow starts with `contents: read`. `changes` additionally needs
+`pull-requests: read` for the path filter. Checkout does not persist credentials
+into Git configuration. Actions are pinned to commit SHAs, with version comments
+for review; Dependabot proposes updates.
 
-Keeping jobs that do not need a Mac on Linux limits macOS usage. The Rust job
-now uses Blacksmith's 6-vCPU Apple Silicon runner, which follows GitHub's latest
-macOS image, with a 15-minute job timeout to bound runner usage. The previous
-GitHub-hosted job measured 2m43s cold and 1m51s warm;
-Blacksmith timing still needs a hosted run. Runner labels and billing details
-are in [Blacksmith's runner reference](https://docs.blacksmith.sh/blacksmith-runners/overview).
+No job notarizes, publishes a release or deploys the documentation. Do not expose
+signing keys, deployment tokens or privileged caches to untrusted PR code. Use
+repository settings to require approval for outside contributors. Verify those
+settings and require `gate` in a branch ruleset when changing repository visibility.
 
-## Before pushing: `scripts/check`
+## Run checks locally
 
-`scripts/check` runs the `rust` job's steps locally — `fmt --check`, `clippy -D
-warnings`, `test --all-targets`, `symbolcheck` — and prints one `✓` line per
-step and `CHECK OK` last. On the first failure it prints `ERROR <step>`, then
-that step's full output, and exits 1. Quiet on success on purpose: the
-unattended landing loop ([landing](landing.md)) runs it before every commit and
-again afterwards, and reads only the last line. It is narrower than CI by
-design; `typos`, `cargo-deny`, the `ui` job and `make-app.sh` still run only on
-the pull request, which is the cheap form of a holdout suite.
+From the repository root:
 
-`.claude/settings.json` allow-lists `scripts/check` and `merge-pr.sh` for
-Claude Code and denies `gh pr merge` and force pushes. Auto mode's classifier
-denied `./merge-pr.sh` once with no rule in place; an allow rule bypasses the
-classifier, and a denial mid-run stops an unattended session dead.
-
-## The caching line that is not obvious
-
-```yaml
-- uses: Swatinem/rust-cache@v2.9.2
-  with:
-    cache-directories: ~/Library/Caches/ort.pyke.io
+```sh
+scripts/check
 ```
 
-`ort-sys` downloads ONNX Runtime into its own cache directory rather than
-`$OUT_DIR` under `target/`. Without that line every run re-downloads 80 MB from
-`cdn.pyke.io`, warm cache included.
+This runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test --all-targets` and `cargo run --bin symbolcheck`. It stops at the
+first failure and prints `CHECK OK` on success. It does not run UI or docs checks;
+the [contributor guide](https://github.com/jasonm4130-labs/ambient/blob/main/CONTRIBUTING.md)
+lists those commands.
 
-## The drift check
+For workflow edits, run `actionlint`. For dependency changes, run the relevant
+package audit as well as its build and tests. `cargo deny check` checks the Rust
+graph against `deny.toml`; the allow-list is not a replacement for bundled
+third-party license notices.
 
-`assets/settings.html` is committed but generated, so `cargo build` never needs
-node. `git diff --exit-code assets/settings.html` after `pnpm run build` catches
-a committed bundle that no longer matches the TypeScript it was built from —
-which is otherwise invisible until someone opens the settings page and sees an
-old one.
+## Checks that need context
 
-## What CI deliberately does not do
+`assets/settings.html` is committed and embedded by Rust. The UI job rebuilds it
+and fails if Git detects a difference, preventing a stale UI from shipping.
 
-**It never records anything.** No hosted runner has an audio device, and none
-has a way to answer a TCC prompt, so capture, transcription and diarization
-cannot be exercised on one. CI verifies that the bundle assembles, is signed,
-has a valid `Info.plist` and contains an executable — not that it records.
+The Rust cache includes `~/Library/Caches/ort.pyke.io`. ONNX Runtime downloads
+live outside Cargo's target directory, so a target-only cache misses them.
 
-That leaves a gap, and the gap is filled by binaries that assert on what macOS
-actually does rather than on what the code says:
+The docs checkout includes Git history so page timestamps reflect their source
+commits. The source-link and built-route checks test different things: a Markdown
+link can work on GitHub and still be broken after rendering. See
+[building these docs](docs.md).
 
-- `cargo run --bin symbolcheck` asks the OS whether each menu bar SF Symbol
-  resolves, and runs in CI. `imageWithSystemSymbolName` returning nothing leaves
-  the previous icon in place, so a symbol this OS lacks would show "recording"
-  while merely armed. It caught `waveform.badge.questionmark` not existing.
-- `cargo run --release --bin uicheck -- out.png` drives the built settings page
-  in a real `WKWebView`, pushes a config in, synthesises every click and prints
-  what reaches the bridge. It does not run in CI, because it needs a window
-  server.
+`symbolcheck` asks macOS to resolve the menu bar's SF Symbols. `make-app.sh`
+assembles and signs a bundle, includes license notices, and refuses a binary that
+still contains the builder's home path. CI checks the signature and `Info.plist`.
+It does not download the model set or prove a recording will work.
 
-See [ADR-0012](../adr/0012-ci-verifies-assembly.md) for the reasoning, and
-[settings and the UI](settings-and-ui.md) for what each checking
-binary has actually caught.
+## Documentation deployment
 
-## Keeping the pins fresh
+After `gate` and `docs` pass on public `main`, the `pages` job deploys that run's
+site artifact to [GitHub Pages](https://jasonm4130-labs.github.io/ambient/).
+Pull requests never receive Pages deployment permissions. Manual `ci` runs
+always build docs so maintainers can redeploy without a source change.
 
-Every action is pinned to an exact tag, which only stays safe if something
-proposes the bumps. `.github/dependabot.yml` runs weekly against three
-ecosystems: `github-actions`, `cargo`, and `npm` in `/ui`.
+## Manual release acceptance
 
-## Licences
-
-`deny.toml` targets `aarch64-apple-darwin` with `all-features = true`, and its
-allow-list was enumerated from `cargo metadata` rather than guessed. One entry
-is worth knowing about: **CDLA-Permissive-2.0**, which arrives through
-`ort-sys` → `ureq` → `webpki-root-certs`. A new dependency introducing an
-unlisted licence fails `hygiene` rather than landing quietly.
+A downloadable release still needs a fresh-machine check: download, open, grant
+permissions, record a short permitted test, and verify both tracks and transcript.
+Keep that evidence separate from CI. See [release preparation](releasing.md) and
+[ADR-0012](../adr/0012-ci-verifies-assembly.md).

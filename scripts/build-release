@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Remap compiler paths for every crate, including dependencies. Setting the
+# flags only on `cargo rustc` would leave dependency build paths in the binary.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+repo_root=$(pwd -P)
+
+encoded_flags="${CARGO_ENCODED_RUSTFLAGS:-}"
+if [ -z "${CARGO_ENCODED_RUSTFLAGS+x}" ] && [ -n "${RUSTFLAGS:-}" ]; then
+  # Cargo splits RUSTFLAGS on whitespace, not shell quoting. Use the same
+  # split without evaluating shell syntax or expanding filename patterns.
+  inherited_flags=()
+  IFS=$' \t\n' read -r -d '' -a inherited_flags < <(printf '%s\0' "$RUSTFLAGS")
+  for flag in "${inherited_flags[@]}"; do
+    encoded_flags+="${encoded_flags:+$'\x1f'}$flag"
+  done
+fi
+
+# More specific mappings come last because rustc uses the last matching rule.
+if [ -n "${HOME:-}" ] && [ "$HOME" != / ]; then
+  encoded_flags+="${encoded_flags:+$'\x1f'}--remap-path-prefix=$HOME=/home/build"
+fi
+encoded_flags+="${encoded_flags:+$'\x1f'}--remap-path-prefix=$repo_root=/ambient"
+export CARGO_ENCODED_RUSTFLAGS="$encoded_flags"
+exec cargo build --release --bin ambient "$@"

@@ -14,6 +14,7 @@
 
 import { getIndexedEntries, type IndexedEntry } from "@cloudflare/nimbus-docs";
 import { config } from "virtual:nimbus/config";
+import { withBase } from "../../lib/urls";
 
 export const prerender = true;
 
@@ -55,7 +56,7 @@ export async function GET({ props }: { props: SlugProps }) {
     `title: ${JSON.stringify(title)}`,
     ...(description ? [`description: ${JSON.stringify(description)}`] : []),
     ...(socialImage
-      ? [`image: ${JSON.stringify(new URL(socialImage, config.site).href)}`]
+      ? [`image: ${JSON.stringify(new URL(withBase(socialImage), config.site).href)}`]
       : []),
     ...(version ? [`version: ${JSON.stringify(version)}`] : []),
     "---",

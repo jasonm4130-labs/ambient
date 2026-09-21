@@ -7,9 +7,8 @@ sidebar:
 # How changes reach main
 
 Every change is a branch, a pull request, a green CI run, and a merge commit.
-`main` is never committed to directly. The rule is short; what makes it worth
-a page is that nothing on GitHub enforces it here, so it is enforced on the
-machine instead.
+`main` is never committed to directly. The rule is short; the local hook helps catch mistakes before CI. Repository protections must
+also be configured and verified when opening public contributions.
 
 ## The path
 
@@ -31,9 +30,9 @@ see [landing work overnight](landing.md).
 
 ## Why it is enforced locally
 
-The repository is private on a plan without branch protection, so GitHub
-cannot require a green check or forbid a push to `main`. Two things stand in
-for that:
+The private repository originally ran on a plan without branch protection.
+These local conventions remain useful, but they do not replace a server-side
+ruleset requiring `gate`, review and protection against force pushes:
 
 - `.githooks/pre-commit` refuses a commit while `main` is checked out, and
   refuses staged Rust that rustfmt would change. The global

@@ -32,8 +32,8 @@ import { defineHastPlugin } from "satteri";
 
 const DOCS_ROOT = fileURLToPath(new URL("../../../docs/", import.meta.url));
 
-/** Anything already addressed absolutely: `https:`, `mailto:`, `//host`, `/abs`, `#frag`. */
-const NOT_RELATIVE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|\/|#)/i;
+/** Anything outside this site: `https:`, `mailto:`, `//host`, or `#frag`. */
+const NOT_SITE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i;
 
 /** `docs/`-relative filesystem path → built route, or null if it escapes `docs/`. */
 const routeFor = (absTarget: string): string | null => {
@@ -48,13 +48,21 @@ const routeFor = (absTarget: string): string | null => {
 	return segments.length ? `/${segments.join("/")}/` : "/";
 };
 
-export const rewriteMdLinks = defineHastPlugin({
+export const rewriteMdLinks = (base = "/") => defineHastPlugin({
 	name: "ambient:rewrite-md-links",
 	element: {
 		filter: ["a"],
 		visit(node, ctx) {
 			const href = node.properties?.href;
-			if (typeof href !== "string" || NOT_RELATIVE.test(href)) return;
+      if (typeof href !== "string" || NOT_SITE.test(href)) return;
+
+      const prefix = base === "/" ? "" : base.replace(/\/$/, "");
+      if (href.startsWith("/")) {
+        if (!href.startsWith(`${prefix}/`) && href !== prefix) {
+          ctx.setProperty(node, "href", `${prefix}${href}`);
+        }
+        return;
+      }
 
 			// Split `page.md#section` into target and the suffix to carry over.
 			const parts = href.match(/^([^#?]*)([#?].*)?$/);
@@ -72,7 +80,7 @@ export const rewriteMdLinks = defineHastPlugin({
 			}
 
 			const from = path.dirname(fileURLToPath(ctx.fileURL));
-			const route = routeFor(path.resolve(from, target));
+      const route = routeFor(path.resolve(from, target));
 			if (!route) {
 				// Outside docs/ — a link into src/ or the repo root. Left alone
 				// rather than guessed at, and surfaced so it is not silent.
@@ -84,7 +92,7 @@ export const rewriteMdLinks = defineHastPlugin({
 				return;
 			}
 
-			ctx.setProperty(node, "href", route + suffix);
+      ctx.setProperty(node, "href", `${prefix}${route}${suffix}`);
 		},
 	},
 });

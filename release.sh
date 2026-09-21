@@ -35,8 +35,8 @@ VERSION=$(cargo metadata --format-version 1 --no-deps \
           | sed -n 's/.*"name":"ambient","version":"\([^"]*\)".*/\1/p')
 [ -n "$VERSION" ] || { echo "could not read version from Cargo.toml" >&2; exit 1; }
 TAG="v$VERSION"
-APP=build/Ambient.app
-ZIP="build/Ambient-$VERSION.zip"
+APP="${AMBIENT_BUILD_DIR:-build}/Ambient.app"
+ZIP="${AMBIENT_BUILD_DIR:-build}/Ambient-$VERSION.zip"
 
 # Tag, push, upload. Separated so --publish-only can reach it without rebuilding.
 # Tags here are signed, so a locked 1Password vault fails this and nothing else —
@@ -59,6 +59,9 @@ publish() {
     --notes "Signed and notarized. Download, unzip, move to /Applications, open.
 
 Models are bundled — no fetch-models.sh, no setup needed.
+
+Ambient is MIT licensed. Model and third-party licenses and attribution are
+included in Ambient.app/Contents/Resources/THIRD_PARTY_NOTICES.md and licenses/.
 
 On first launch macOS asks for System Audio Recording and Microphone. Both are
 required: the first is the meeting audio, the second is you."
@@ -118,7 +121,10 @@ fi
 # than assumes that artefact is really notarised.
 if [ "$PUBLISH_ONLY" = 1 ]; then
   echo "==> publish-only: reusing the notarised bundle on disk"
-  [ -f "$ZIP" ] || { echo "no $ZIP — run a full release first" >&2; exit 1; }
+  ./scripts/check-bundle "$APP" --models
+  bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+  [ "$bundle_version" = "$VERSION" ] || { echo "bundle version does not match $TAG; rebuild first" >&2; exit 1; }
+  codesign --verify --deep --strict --verbose=2 "$APP"
   xcrun stapler validate "$APP" >/dev/null 2>&1 || {
     echo "$APP is not stapled — it has not been notarised, run a full release" >&2
     exit 1
@@ -129,6 +135,10 @@ if [ "$PUBLISH_ONLY" = 1 ]; then
     *) echo "Gatekeeper does not accept $APP:" >&2
        printf '%s\n' "$SPCTL" | sed 's/^/    /' >&2; exit 1 ;;
   esac
+  # Always create the uploaded archive from the bundle just validated. An old
+  # ZIP beside a newly notarized app must never be mistaken for that app.
+  rm -f "$ZIP"
+  ditto -c -k --keepParent "$APP" "$ZIP"
   publish
   exit 0
 fi
@@ -137,6 +147,7 @@ fi
 # The models are what make this a usable download rather than a binary that
 # errors on first launch.
 AMBIENT_BUNDLE_MODELS=1 AMBIENT_SIGN_ID="$SIGN_ID" ./make-app.sh
+./scripts/check-bundle "$APP" --models
 
 # --- verify the signature before spending minutes on notarization -----------
 echo "==> verifying signature"

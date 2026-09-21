@@ -17,6 +17,7 @@ import { PageActions } from "@/components/ui/page-actions";
 import { Badge } from "@/components/ui/badge";
 import type { DocsPageProps } from "@cloudflare/nimbus-docs/types";
 import { getVersionStatus, getVersionAlternates } from "@cloudflare/nimbus-docs";
+import { withBase } from "../lib/urls";
 
 type Props = DocsPageProps & { audience?: "human" };
 
@@ -107,7 +108,7 @@ const hasPagination = Astro.slots.has("pagination");
               Only emit when the sidebar is rendered; otherwise the script is
               dead code (the `desktop-sidebar` element doesn't exist). */}
           {showSidebar && (
-          <script aria-hidden="true">
+          <script is:inline aria-hidden="true">
           (function () {
             function centerActive(sidebar, active) {
               const sr = sidebar.getBoundingClientRect();
@@ -191,7 +192,7 @@ const hasPagination = Astro.slots.has("pagination");
                   content={
                     currentSiblingUrl
                       ? `This is the <strong>${versionStatus.version}</strong> version of the docs and is no longer maintained. The latest version of this page is at <a href="${currentSiblingUrl}">${currentSiblingUrl}</a>.`
-                      : `This is the <strong>${versionStatus.version}</strong> version of the docs and is no longer maintained. See the <a href="/">current docs</a> for up-to-date content.`
+                      : `This is the <strong>${versionStatus.version}</strong> version of the docs and is no longer maintained. See the <a href="${withBase("/")}">current docs</a> for up-to-date content.`
                   }
                 />
               )}
@@ -234,12 +235,13 @@ const hasPagination = Astro.slots.has("pagination");
                 </article>
                 {hasContentFooter ? (
                   <slot name="content-footer" />
-                ) : editUrl && (
+                ) : (
                   <div class="mt-8 mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                    <a href={editUrl} class="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors no-underline" target="_blank" rel="noopener">
+                    {editUrl && <a href={editUrl} class="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors no-underline" target="_blank" rel="noopener">
                       <Icon name="ph:pencil-simple" class="w-3.5 h-3.5" />
                       Edit this page
-                    </a>
+                    </a>}
+                    <a href={withBase("/THIRD_PARTY_NOTICES.md")} class="text-muted-foreground hover:text-foreground">Third-party licenses</a>
                   </div>
                 )}
               </div>

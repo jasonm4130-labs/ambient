@@ -12,7 +12,7 @@
 // mermaid.min.js is 2.6 MB and only five of ~30 pages carry a diagram, so it is
 // fetched on demand rather than shipped with every page.
 (() => {
-	const SRC = "/mermaid.min.js";
+	const SRC = new URL("mermaid.min.js", document.currentScript?.src ?? document.baseURI).href;
 	const sources = new WeakMap();
 	let loading = null;
 

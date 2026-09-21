@@ -27,6 +27,7 @@ import { readdirSync, statSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const DIST = process.argv[2] ?? "docs-site/dist";
+const BASE = "/ambient";
 
 if (!existsSync(DIST)) {
 	console.error(`check-routes: no build at ${DIST} — run the site build first`);
@@ -49,7 +50,8 @@ if (pages.length === 0) {
 
 /** A route resolves if it is a built file, or a directory with an index.html. */
 const resolves = (route) => {
-	const rel = decodeURIComponent(route).replace(/^\//, "");
+	if (route !== BASE && !route.startsWith(`${BASE}/`)) return false;
+	const rel = decodeURIComponent(route.slice(BASE.length)).replace(/^\//, "");
 	const target = path.join(DIST, rel);
 	if (existsSync(target) && statSync(target).isFile()) return true;
 	return existsSync(path.join(target, "index.html"));
@@ -60,7 +62,7 @@ const failures = [];
 
 for (const page of pages) {
 	// The page's own route directory, which relative hrefs resolve against.
-	const routeDir = "/" + path.relative(DIST, path.dirname(page)).split(path.sep).join("/");
+	const routeDir = BASE + "/" + path.relative(DIST, path.dirname(page)).split(path.sep).join("/");
 	const html = readFileSync(page, "utf8");
 
 	for (const m of html.matchAll(/\shref="([^"]*)"/g)) {

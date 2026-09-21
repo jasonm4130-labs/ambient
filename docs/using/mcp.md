@@ -18,10 +18,18 @@ recording, name a speaker or delete a session; a reader can read, and that is
 the whole surface. Ambient supplies the ears and nothing else: no lookups, no
 summaries, no prompting built in. The assistant on the other end brings its own.
 
-Consent is the armed state: a session that exists was consented to when it was
-recorded, and reading it back needs nothing more. That is the reasoning in
-[ADR 0016](../adr/0016-mcp-verb-for-live-reading.md), which is also where the
-alternatives — a local HTTP API, a file-watching convention — are weighed.
+## Access and privacy
+
+The MCP server can read sessions available to the Ambient process. It does not
+prompt before each read, and read-only access still exposes conversation text.
+Only register it with a client you trust. An assistant may send tool results to
+its cloud provider under that client's settings; local transcription does not
+make that later sharing local.
+
+To limit access, start the server with `AMBIENT_HOME` pointing at a separate
+folder containing only sessions you intend to share. This is a directory scope,
+not per-session authorization. The server does not authenticate a client over
+stdio; the process that launches it controls its access.
 
 ## Registering it
 
@@ -42,7 +50,9 @@ Either path works: the MCP verb reads files and needs no microphone, so it
 does not care which of the two started it. Only `tap` and `record` do — see
 [launching the verbs that need system audio](commands.md#launching-the-verbs-that-need-system-audio).
 
-Any other client wants a `.mcp.json`. Give it an absolute path: a stdio server
+Other clients have their own configuration location and schema. For clients
+that accept an `mcpServers` object, the example below shows the command and
+arguments. Give the command an absolute path: a stdio server
 is spawned directly rather than through a shell, so `~` and `$(which …)` arrive
 as literal characters.
 

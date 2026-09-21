@@ -226,7 +226,7 @@ Reply:
   "threshold": 0.55,
   "sessions_dir": null,
   "devices": ["MacBook Pro Microphone"],
-  "default_dir": "/Users/ana/Documents/Ambient",
+  "default_dir": "/Users/you/Documents/Ambient",
   "ask_before_recording": true,
   "audio_retention": "7",
   "roster": ["Ana"],

@@ -6,3 +6,11 @@
 
 .github/scripts/node_modules/
 
+# Local credentials and capture data. .env.op contains references only.
+.env
+.env.*
+!.env.op
+*.p8
+*.p12
+/recordings/
+/sessions/
