@@ -24,11 +24,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ambient"
 
 # Do not silently ship an owner path from a dependency or a stale Cargo cache.
-if [ -n "${HOME:-}" ] && [ "$HOME" != / ] && \
-   LC_ALL=C grep -aF -- "$HOME/" "$APP/Contents/MacOS/ambient" >/dev/null; then
-  echo "release binary contains the build user's home path; refusing to package" >&2
-  exit 1
-fi
+./scripts/check-build-paths "$APP/Contents/MacOS/ambient"
 
 # Licenses are part of the signed payload, even for a model-free dev bundle.
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"

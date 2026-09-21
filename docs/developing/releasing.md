@@ -24,7 +24,9 @@ plutil -lint build/preview/Ambient.app/Contents/Info.plist
 
 `make-app.sh` invokes `scripts/build-release`, which remaps the repository and
 builder's home paths in Rust compiler output. It checks the executable for the
-builder's home path before packaging. This applies to newly built executables;
+builder's home path before packaging. The exact generic ONNX Runtime upstream
+CI prefix `/Users/runner/work/ort-artifacts/ort-artifacts/` is exempt: it is
+already embedded in the downloaded native archive, not an Ambient owner path. This applies to newly built executables;
 it cannot remove paths from an already-published ZIP.
 
 The committed icon is reused by default. Set `AMBIENT_REBUILD_ICON=1` only when

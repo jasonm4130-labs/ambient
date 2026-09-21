@@ -168,3 +168,20 @@ test("check-bundle --models rejects a payload with no models", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+test("build path check allows only the exact precompiled ONNX runner prefix", () => {
+  const dir = tempDir("upstream-paths");
+  try {
+    const binary = join(dir, "binary");
+    const upstream = "/Users/runner/work/ort-artifacts/ort-artifacts/onnxruntime/core.cc";
+    writeFileSync(binary, `${upstream}\0`);
+    assert.equal(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
+    for (const leaked of ["/Users/runner/_work/ambient/src/main.rs", "/Users/runner/.cargo/registry/crate.rs"]) {
+      writeFileSync(binary, `${upstream} ${leaked}\0`);
+      assert.notEqual(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

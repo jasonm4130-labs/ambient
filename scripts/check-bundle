@@ -13,11 +13,7 @@ for notice in LICENSE THIRD_PARTY_NOTICES.md; do
   }
 done
 diff -rq "$repo_root/licenses" "$resources/licenses"
-if [ -n "${HOME:-}" ] && [ "$HOME" != / ] && \
-   LC_ALL=C grep -aF -- "$HOME/" "$app/Contents/MacOS/ambient" >/dev/null; then
-  echo "bundle executable contains the build user's home path" >&2
-  exit 1
-fi
+"$repo_root/scripts/check-build-paths" "$app/Contents/MacOS/ambient"
 if [ "${2:-}" = --models ]; then
   (cd "$resources" && shasum -a 256 -c licenses/model-sha256.txt)
   # Exact inventory also excludes upstream samples and stray model downloads.
