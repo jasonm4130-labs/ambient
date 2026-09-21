@@ -5,17 +5,23 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Fork PRs use standard GitHub-hosted runners; maintainer branches retain
+# Blacksmith. Also require outside-contributor approval in repository settings.
 jobs:
   # Which jobs a change needs. `hygiene` always runs (it is cheap and reads the
   # whole tree); the others are skipped when nothing they check has moved, and
   # `gate` treats skipped as passed. On a push to main the comparison is against
   # the commit before the push.
   changes:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     permissions:
       contents: read
       pull-requests: read
@@ -24,7 +30,11 @@ jobs:
       ui: ${{ steps.filter.outputs.ui }}
       docs: ${{ steps.filter.outputs.docs }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Push path filters need history after checkout removes credentials.
+          fetch-depth: 0
       - id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
@@ -36,6 +46,12 @@ jobs:
               - 'rust-toolchain.toml'
               - 'deny.toml'
               - 'make-app.sh'
+              - 'release.sh'
+              - 'fetch-models.sh'
+              - 'scripts/**'
+              - 'LICENSE'
+              - 'THIRD_PARTY_NOTICES.md'
+              - 'licenses/**'
               - 'setup-signing.sh'
               - 'Ambient.entitlements'
               - 'assets/**'
@@ -49,38 +65,50 @@ jobs:
               - 'docs/**'
               - 'docs-site/**'
               - 'README.md'
+              - 'CONTRIBUTING.md'
+              - 'SECURITY.md'
+              - 'THIRD_PARTY_NOTICES.md'
+              - 'LICENSE'
+              - 'licenses/**'
               - '.github/scripts/**'
               - '.github/workflows/ci.yml'
 
-  # Neither of these compiles the crate, so they run on Linux at $0.004/min.
+  # Hygiene checks run on Linux without compiling the macOS crate.
   # cargo-deny resolves the dependency graph from Cargo.lock without invoking
   # rustc, so the macOS-only dependencies are read rather than built.
   hygiene:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
       # The PreToolUse guards the landing loop runs under; see docs/developing/landing.md.
       - run: node --test ".claude/hooks/*.test.mjs"
-      - uses: crate-ci/typos@v1.50.0
-      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+      - run: node --test scripts/packaging.test.mjs
+      - uses: crate-ci/typos@4d9c206a77c041268485162b8e2579ad7a5cb9a3 # v1.50.0
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
 
   ui:
+    timeout-minutes: 10
     needs: changes
     if: needs.changes.outputs.ui == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # `version` is not optional here: it may only be omitted when a
       # `packageManager` field is present, and the repo root has no package.json.
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
@@ -90,6 +118,8 @@ jobs:
       - run: pnpm run check
         working-directory: ui
       - run: pnpm run lint
+        working-directory: ui
+      - run: pnpm run test
         working-directory: ui
       - run: pnpm run build
         working-directory: ui
@@ -102,24 +132,26 @@ jobs:
   rust:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: blacksmith-6vcpu-macos-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || 'blacksmith-6vcpu-macos-latest' }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # The pin lives in rust-toolchain.toml so local builds and the work-M5
       # port use it too; the action requires the version as an input, so read it
       # from the file rather than repeating it here.
       - id: pin
         run: |
           echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ steps.pin.outputs.channel }}
           components: rustfmt, clippy
       # ort-sys downloads ONNX Runtime to its own cache directory, NOT to
       # $OUT_DIR under target/. Without this line every run re-downloads 80 MB
       # from cdn.pyke.io, warm cache included.
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-directories: ~/Library/Caches/ort.pyke.io
       - run: cargo fmt --check
@@ -137,19 +169,26 @@ jobs:
           codesign -v --verbose=2 build/Ambient.app
           plutil -lint build/Ambient.app/Contents/Info.plist
           test -x build/Ambient.app/Contents/MacOS/ambient
+          test -s build/Ambient.app/Contents/Resources/LICENSE
+          test -s build/Ambient.app/Contents/Resources/THIRD_PARTY_NOTICES.md
+          ./scripts/check-bundle build/Ambient.app
 
   # The docs site. Its own workflow until 2026-09-04; folded in so that one
   # workflow's conclusion covers every check, which is what the landing loop's
   # merge gate (land.yml) and merge-pr.sh wait on. The paths: filter that kept
   # docs commits off the macOS runner is now the `changes` job below.
   docs:
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.docs == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
-      - uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -258,7 +297,7 @@ jobs:
       # Nothing is deployed yet: workers.dev URLs are public by default and this
       # repo is private, so Cloudflare Access has to be attached first.
       # See docs/developing/docs.md.
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: site
           path: docs-site/dist/
@@ -269,9 +308,10 @@ jobs:
   # instead of a per-job list, which is what removes the "a check never
   # registered" failure: a job that does not run is a skip, and a skip passes.
   gate:
+    timeout-minutes: 5
     needs: [changes, hygiene, ui, rust, docs]
     if: always()
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     steps:
       - run: |
           set -euo pipefail

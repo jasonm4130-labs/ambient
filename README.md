@@ -1,113 +1,101 @@
-# ambient
+# Ambient
 
-Local-first ambient capture for macOS: record conversations in the room and on
-Teams calls, transcribe and attribute them on-device, and hand the result to
-Claude as clean speaker-labelled text.
+**Record on your Mac. Transcribe on your Mac. Keep the conversation yours.**
 
-**Status: capture and transcription both work on the home machine.** A Core
-Audio process tap records system audio with nothing joining the call, and that
-audio transcribes correctly.
+Ambient is a macOS menu bar app for recording room audio and calls, transcribing
+speech locally, and separating speakers. Browse, search and correct transcripts
+in one window, then export them as Markdown, text, JSON or subtitles. No meeting
+bot, transcription account or cloud inference service is required.
 
-## Quick start
+[Get started](docs/using/getting-started.md) · [Releases](https://github.com/jasonm4130-labs/ambient/releases) · [Documentation](docs/index.md) · [Contribute](CONTRIBUTING.md)
 
-You need macOS 14.4 or later, `rustup` (`rust-toolchain.toml` pins the compiler
-to 1.95.0), the macOS SDK from Xcode or the Command Line Tools, and about 670 MB
-of disk for the models. [Getting started](docs/using/getting-started.md) says
-why each.
+![Ambient session browser showing a sample transcript in dark mode](docs/developing/img/ui-dark.png)
+
+*Example data from the UI test harness.*
+
+## What it does
+
+- Captures microphone and system audio as separate tracks, without joining the call.
+- Transcribes speech and groups speakers using models running on the CPU.
+- Lets you name speakers, edit session details, pin sessions and search transcripts.
+- Exports Markdown, text, JSON, SRT and WebVTT; a read-only MCP server lets an
+  assistant read the session library made available to it.
+- Asks before recording a watched app by default. Audio retention defaults to
+  seven days; transcripts remain until you delete the session.
+
+**Early software:** capture and transcription have been exercised on an Apple
+Silicon Mac. Accuracy, speaker labels and permissions need checking on your own
+setup. Intel Macs and lower-memory machines are not validated release targets.
+See [measurements](docs/developing/measurements.md) for the conditions behind the
+published results.
+
+## Install and make your first recording
+
+You need an **Apple Silicon Mac running macOS 14.4 or later** for the release
+builds. Allow roughly 1 GB for the app and bundled models, plus space for your
+recordings.
+
+1. Download the ZIP from [Releases](https://github.com/jasonm4130-labs/ambient/releases).
+2. Unzip it, move `Ambient.app` into Applications, and open it.
+3. Allow Microphone and System Audio Recording when macOS requests them.
+4. Choose **Start Recording** in Ambient's menu, record a short test, then **Stop**.
+5. Open Ambient's window and check both the transcript and the recorded tracks.
+
+Release bundles include the models. Source builds have a separate model-download
+step. If you get silence or a permission error, follow
+[troubleshooting](docs/using/troubleshooting.md); do not disable Gatekeeper or
+remove quarantine as a first step.
+
+## Privacy and control
+
+Ambient performs capture, transcription and speaker separation locally. Model
+downloads require a network connection; recording and inference do not require a
+cloud service. Sessions live in `~/Documents/Ambient` by default.
+
+Local files are not an encrypted vault. A synced sessions folder, a backup, an
+export or an assistant connected through MCP can move data beyond this Mac.
+Only connect clients you trust, and obtain permission from the people you record.
+Ambient's recording prompt is your control; it does not notify other participants.
+
+Retention removes eligible audio during a later sweep, not at an exact deadline.
+Failed transcription can retain audio indefinitely. Read
+[what is kept](docs/using/what-is-kept.md) before relying on automatic deletion.
+
+## Build from source
+
+Install the Xcode Command Line Tools and Rust through `rustup`. The repository
+pins its Rust toolchain. Node is only needed when changing the UI or docs.
 
 ```sh
-./fetch-models.sh                 # ~670 MB: recogniser, diarization, VAD
-cargo build --release
-cargo run --release -- probe      # is this machine viable?
-cargo run --release -- transcribe models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 audio.wav
+git clone https://github.com/jasonm4130-labs/ambient.git
+cd ambient
+./fetch-models.sh
+cargo run --release --bin ambient -- probe
+./setup-signing.sh
+./make-app.sh
+open -a "$PWD/build/Ambient.app"
 ```
 
-`transcribe` accepts any sample rate and resamples. To convert anything else
-first: `ffmpeg -i in.m4a -ac 1 -ar 16000 out.wav`
+`setup-signing.sh` creates a local signing identity. System-audio capture needs a
+signed bundle opened through macOS LaunchServices; running the capture binary
+straight from a terminal can produce silence. See the full
+[source-build guide](docs/using/getting-started.md#build-from-source) for signing,
+model storage and CLI use.
 
-To record anything you must build and launch the signed bundle — a bare binary
-run from a terminal creates a working tap that delivers nothing but zeros, with
-no error and no permission prompt:
+## Find your next step
 
-```sh
-./setup-signing.sh                # once — stable signing identity
-./make-app.sh                     # bundle + sign
-open -a "$PWD/build/Ambient.app"  # menu bar item, and the window behind it
-```
-
-That failure is the single most confusing thing in this project and
-[docs/using/troubleshooting.md](docs/using/troubleshooting.md) is the page that
-explains it.
-
-The app is a menu bar item and a window. The menu bar item is the consent
-surface — it arms when a watched app starts audio and is answerable without
-raising anything. *Open Ambient*, ⌘0, opens the window: a sidebar of sessions
-over the transcript, the recording in flight pinned at the top of the list, and
-the warnings a capture stored about itself. The CLI verbs below all still work
-and are what scripting and debugging use.
-
-`ambient mcp` serves the same sessions to Claude Code and other MCP clients as
-data rather than Markdown — three read-only tools over stdio, registered once:
-[docs/using/mcp.md](docs/using/mcp.md).
-
-## End-to-end result
-
-M5 Max / 128 GB / macOS 26.6.2, v3-int8, synthesised speech via `say`:
-
-| Audio | Decode | Realtime | Peak RSS |
-| ---: | ---: | ---: | ---: |
-| 5 s | 0.12 s | 42× | — |
-| 16.5 s | 0.32 s | 52× | — |
-| 127.5 s (chunked) | 2.38 s | 54× | **2317 MB** |
-
-Peak memory on the 127 s file is *flat* at the 30 s-chunk level rather than the
-~3.7 GB an unchunked 120 s run needed, which is the chunking working.
-
-Accuracy is good on ordinary speech and technical vocabulary — GDPR, DPO, ONNX,
-"Q3", "the 14th of October" all correct. It fails on **proper nouns**: "Priya"
-became "Crea", "Cloudflare" became "Cloudflow". That is the expected failure
-class. Inside ambient the mitigation is the roster: `ambient roster add Priya`
-then either the window's naming strip or `ambient name`, both of which rewrite
-every line of a label. Repair and
-summarisation happen outside ambient, on the exported `transcript.md` — no part
-of that is in this repo.
-
-## Where the docs are
-
-Everything that used to be in this file now lives in `docs/`. The markdown is
-the source of truth and reads correctly on GitHub, diagrams included;
-`docs-site/` builds it into a Nimbus site themed with Cirrus —
-`cd docs-site && npm ci && npm run dev`.
-
-The split is by what you are doing, not by what the pages are about.
-
-| | |
+| I want to… | Read |
 | --- | --- |
-| [docs/using/](docs/using/index.md) | Build it, run it, read the transcript, know what is kept on disk. Start here. |
-| [docs/developing/](docs/developing/index.md) | What the pieces are and why each is shaped that way, plus porting, CI and the docs build. |
-| [docs/adr/](docs/adr/README.md) | Fifteen decision records — the alternatives that were live, and the check that fails if the decision drifts. |
+| Install, record and read a transcript | [Getting started](docs/using/getting-started.md) |
+| Change devices, watched apps or retention | [Settings](docs/using/settings.md) |
+| Script Ambient or export a session | [Command reference](docs/using/commands.md) |
+| Connect an assistant to existing sessions | [MCP setup and access](docs/using/mcp.md) |
+| Understand storage and deletion | [What is kept](docs/using/what-is-kept.md) |
+| Fix silence or signing problems | [Troubleshooting](docs/using/troubleshooting.md) |
+| Build, test or contribute | [Contributing](CONTRIBUTING.md) |
+| Understand the architecture | [Developer guide](docs/developing/index.md) and [decisions](docs/adr/README.md) |
 
-## Still open
+## License
 
-1. **The base M5 (16 GB).** Every number above is from the 128 GB machine.
-   Chunked at 30 s this should fit, but should is not measured.
-2. **Tap creation under the work machine's TCC policy.** Enumeration needs no
-   permission; creating a tap needs System Audio Recording.
-
-## Dependency notes
-
-- The `coreml` feature is enabled in `Cargo.toml` for the diagnostic binaries
-  `probe` and `bench`, which do not compile without it. The recognizer itself
-  registers no execution provider. Per
-  [ADR-0005](docs/adr/0005-cpu-not-coreml.md) the feature should be removed once
-  both are retired.
-- `ort` has **no stable release** — pinned to `=2.0.0-rc.13`. It has been in
-  release-candidate for a long time; treat API churn as a live risk and do not
-  let it leak past the ASR module.
-- `objc2-core-audio` 0.3.2 was last published 2025-10-04. It is generated
-  bindings over a stable C API, so staleness matters less than it would
-  elsewhere, but it is worth knowing.
-
-## Licence
-
-MIT.
+Ambient's code is [MIT licensed](LICENSE). Bundled models and third-party
+components retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md).

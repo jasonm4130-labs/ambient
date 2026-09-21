@@ -1,53 +1,62 @@
 ---
+import { Image } from "astro:assets";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import Header from "../components/Header.astro";
-import { config } from "virtual:nimbus/config";
+import screenshot from "../../../docs/developing/img/ui-dark.png";
+
+const guides = [
+  { href: "/using/getting-started/", title: "Install and record", detail: "From download to a checked first transcript." },
+  { href: "/using/what-is-kept/", title: "Privacy and retention", detail: "Know what stays on disk and what sharing exposes." },
+  { href: "/using/troubleshooting/", title: "Fix a recording", detail: "Diagnose silence, permissions and signing." },
+  { href: "/using/commands/", title: "Command reference", detail: "Script sessions, speaker names and exports." },
+  { href: "/using/mcp/", title: "Connect an assistant", detail: "Grant read access to sessions through MCP." },
+  { href: "/developing/", title: "Build and contribute", detail: "Architecture, decisions and verification." },
+];
 ---
 
-<BaseLayout title={config.title} description={config.description}>
-  <div class="flex flex-col min-h-screen">
-    <Header />
-    <main id="main-content" tabindex="-1" class="flex-1 mx-auto max-w-2xl w-full px-6 py-24">
-      <h1
-        class="text-foreground leading-tight"
-        style="font-size: var(--nb-h1-size); font-weight: var(--nb-h1-weight); letter-spacing: var(--nb-h1-tracking);"
-      >
-        {config.title}
+<BaseLayout title="Ambient" description="Record conversations on your Mac, transcribe locally, and keep control of your transcripts.">
+  <div class="flex min-h-screen flex-col">
+    <Header showSidebar={false} />
+    <main id="main-content" tabindex="-1" class="mx-auto w-full max-w-5xl flex-1 px-6 py-12 sm:py-20">
+      <p class="mb-4 text-sm text-muted-foreground">macOS 14.4+ · Apple Silicon · Early preview</p>
+      <h1 class="max-w-3xl text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+        Your conversations.<br />On your Mac.
       </h1>
-      <p class="mt-2 text-[1.0625rem] text-muted-foreground leading-relaxed">
-        {config.description}
+      <p class="mt-5 max-w-2xl text-lg leading-relaxed text-muted-foreground">
+        Record room audio and calls, transcribe speech locally, and separate
+        speakers. Search, correct and export your transcripts without a meeting
+        bot or cloud transcription account.
       </p>
-
-      <div class="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <a
-          href="/using/getting-started/"
-          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
-        >
-          <div class="font-medium text-foreground">Install and record</div>
-          <div class="mt-0.5 text-sm text-muted-foreground">Build it, sign it, capture your first meeting</div>
-        </a>
-        <a
-          href="/using/commands/"
-          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
-        >
-          <div class="font-medium text-foreground">Commands</div>
-          <div class="mt-0.5 text-sm text-muted-foreground">Every verb, and which need system audio</div>
-        </a>
-        <a
-          href="/using/what-is-kept/"
-          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
-        >
-          <div class="font-medium text-foreground">What gets recorded</div>
-          <div class="mt-0.5 text-sm text-muted-foreground">Consent, retention, and putting names to voices</div>
-        </a>
-        <a
-          href="/developing/"
-          class="block border border-border p-4 transition-colors hover:border-border-strong no-underline"
-        >
-          <div class="font-medium text-foreground">How it works</div>
-          <div class="mt-0.5 text-sm text-muted-foreground">Architecture, decisions and measurements</div>
-        </a>
+      <div class="mt-7 flex flex-wrap gap-3">
+        <a href="/using/getting-started/" class="rounded-md bg-primary px-5 py-3 font-medium text-primary-foreground no-underline hover:opacity-90">Get started</a>
+        <a href="https://github.com/jasonm4130-labs/ambient/releases" class="rounded-md border border-border px-5 py-3 font-medium text-foreground no-underline hover:border-border-strong">View releases</a>
       </div>
+      <figure class="mt-10">
+        <Image src={screenshot} alt="Ambient's session browser with a sample transcript, speaker names and export controls" class="h-auto w-full rounded-lg border border-border" loading="eager" />
+        <figcaption class="mt-2 text-xs text-muted-foreground">Example data from the UI test harness.</figcaption>
+      </figure>
+      <section aria-labelledby="guides" class="mt-12">
+        <h2 id="guides" class="text-xl font-semibold text-foreground">Find your next step</h2>
+        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {guides.map((guide) => (
+            <a href={guide.href} class="block rounded-md border border-border p-5 no-underline transition-colors hover:border-border-strong">
+              <h3 class="font-medium text-foreground">{guide.title}</h3>
+              <p class="mt-1 text-sm leading-relaxed text-muted-foreground">{guide.detail}</p>
+            </a>
+          ))}
+        </div>
+      </section>
+      <p class="mt-10 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+        Recording and inference run locally. Syncing a folder, exporting a
+        transcript or connecting an assistant can share data beyond this Mac.
+        Obtain permission before recording and review transcripts before relying on them.
+      </p>
     </main>
+    <footer class="mx-auto flex w-full max-w-5xl flex-wrap gap-x-5 gap-y-2 px-6 pb-8 text-xs text-muted-foreground">
+      <a href="https://github.com/jasonm4130-labs/ambient">Source on GitHub</a>
+      <a href="/LICENSE">MIT license</a>
+      <a href="/THIRD_PARTY_NOTICES.md">Third-party licenses</a>
+      <a href="/index/">Documentation overview</a>
+    </footer>
   </div>
 </BaseLayout>

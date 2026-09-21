@@ -8,10 +8,10 @@ import {
   getPrevNext,
   getBreadcrumbs,
   getEditUrl,
-  getLastUpdated,
   getTOC,
 } from "@cloudflare/nimbus-docs";
 import { components } from "../components";
+import { getLastUpdated } from "../lib/last-updated";
 
 export const prerender = true;
 export const getStaticPaths = getDocsStaticPaths;
@@ -34,14 +34,15 @@ const prevNext = await getPrevNext(currentSlug, {
 const breadcrumbs = await getBreadcrumbs(currentSlug, { collection: entry.collection });
 const editUrl = await getEditUrl(entry);
 // Frontmatter wins; git is the fallback.
-const lastUpdated = entry.data.lastUpdated ?? await getLastUpdated(entry);
+const lastUpdated = entry.data.lastUpdated ?? await getLastUpdated(entry.filePath);
 // `tocOn` already implies `tableOfContents !== false`, but TS can't carry
 // that boolean narrowing to the value here — re-check it so `getTOC` only
 // ever sees its options object (or undefined), never `false`.
 const tocConfig = entry.data.tableOfContents;
 const toc = tocOn && tocConfig !== false ? getTOC(headings, tocConfig) : false;
-const markdownPath = `/${entry.id}/index.md`;
-const markdownUrl = Astro.site ? new URL(markdownPath, Astro.site).href : markdownPath;
+const markdownPath = entry.id === "index" ? "/index.md" : `/${entry.id}/index.md`;
+// Navigation stays on this deployment, including offline/local previews.
+const markdownUrl = markdownPath;
 const socialImage = entry.data.socialImage ?? `/og/${entry.id}.png`;
 ---
 

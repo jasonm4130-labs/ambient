@@ -37,9 +37,7 @@ const isHiddenVersion = versionStatus?.isHidden === true;
 const llmsIndexPath = collection
   ? await getCollectionLlmsUrl(collection)
   : "/llms.txt";
-const llmsUrl = Astro.site
-  ? new URL(llmsIndexPath, Astro.site).href
-  : llmsIndexPath;
+const llmsUrl = llmsIndexPath;
 ---
 
 <!doctype html>

@@ -6,199 +6,113 @@ sidebar:
 
 # Getting started
 
-## What you need first
+Make a short test recording before using Ambient for a conversation you need to
+keep. This checks your permissions, input device and system-audio capture together.
 
-macOS 14.4 or later: that is the `LSMinimumSystemVersion` `make-app.sh` writes
-into the bundle's Info.plist.
+## Install a release
 
-`rustup`, before anything else. `rust-toolchain.toml` pins the compiler to
-1.95.0, and rustup is what reads that file and fetches the pinned compiler. A
-cargo installed any other way — Homebrew, a distro package — ignores the pin
-silently and builds with whatever rustc it has, which is the worse failure of
-the two, so rustup comes first. `Cargo.toml` separately names 1.85 as the
-oldest release the crate claims to build on; the pin is what actually compiles
-it.
+Release builds target Apple Silicon Macs running macOS 14.4 or later. Allow
+roughly 1 GB for the extracted app and models, plus storage for recordings.
 
-The macOS SDK, from Xcode or the Command Line Tools. `objc2`,
-`objc2-core-audio` and `objc2-app-kit` are bindings over system frameworks, and
-the built binary links CoreAudio, AppKit, WebKit and CoreML out of
-`/System/Library/Frameworks`. What a machine with no SDK actually reports has
-not been tested here. The Command Line Tools alone are enough:
-the machine these numbers come from carries no full Xcode, and `xcode-select -p`
-answers `/Library/Developer/CommandLineTools`.
+1. Download a ZIP from [Releases](https://github.com/jasonm4130-labs/ambient/releases).
+2. Unzip it and move `Ambient.app` into `/Applications`.
+3. Open Ambient from Applications.
+4. Open its menu bar item, then choose **Open Ambient** to show the window.
 
-About 670 MB of disk for the models. `./fetch-models.sh` fetches four things —
-the Parakeet recogniser at 640 MB, WeSpeaker embeddings at 25 MB, pyannote
-segmentation at 5.7 MB, and Silero VAD under a megabyte. The recogniser arrives
-as a 465 MB archive that is unpacked and then deleted, so the download wants
-roughly 1.1 GB free while it runs.
+The models are bundled; you do not need Rust, Node or `fetch-models.sh` for a
+release build. macOS permissions are separate from the app's recording controls.
+Allow **Microphone** and **System Audio Recording** when requested. If a prompt
+is missing or a track is silent, use [troubleshooting](troubleshooting.md).
 
-## Build it
+## Make a test recording
 
-```sh
-./fetch-models.sh                 # ~670 MB: recogniser, diarization, VAD
-cargo build --release
-cargo run --release -- probe      # is this machine viable?
-```
+1. Choose **Start Recording** from the menu bar or welcome page.
+2. Speak a short sentence and play a short piece of audio on the Mac.
+3. Check that the microphone and system-audio levels respond.
+4. Choose **Stop** and wait for transcription to finish.
+5. Select the session in the window and check the transcript.
 
-`probe` enumerates the audio processes it can see and reports the execution
-provider state. It needs no permissions, so it works from a terminal, unlike
-`record` and `tap` below.
+Capture stops before transcription finishes. The menu shows queued work, so a
+new recording can start while the previous one is being transcribed.
 
-## Transcribe a file
+Use **Reveal in Finder** to inspect the session files. The `audio/` directory
+contains separate room and call tracks. Verify both if the transcript is missing
+speech. A successful build or a clean `probe` does not prove capture works.
 
-```sh
-cargo run --release -- transcribe models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 audio.wav
-```
+## Work with the transcript
 
-`transcribe` accepts any sample rate and resamples. To convert anything else
-first: `ffmpeg -i in.m4a -ac 1 -ar 16000 out.wav`
+The sidebar lists sessions. Search names and tags there, or use ⌘K to search
+transcript text. Rename a session, add notes, pin it or apply tags above the
+selected transcript.
 
-## Record something
+**Tidied** shows the recognition output with naming edits applied; **Verbatim**
+shows the original recognition output. Use **Separate voices** to group speakers
+when audio is still available, then assign names. **Copy Markdown** and **Export**
+let you take the transcript elsewhere.
 
-This is the part that will not work the way you expect.
+Speaker labels and words can be wrong. Review them before sharing the transcript.
+[Settings](settings.md) covers devices, watched apps and retention;
+[what is kept](what-is-kept.md) explains deletion and the limits of local storage.
 
-```sh
-./setup-signing.sh                # once — creates a stable signing identity
-./make-app.sh                     # bundle and sign
-open -a "$PWD/build/Ambient.app"  # menu bar item, and the window behind it
-```
+## Build from source
 
-**Run the bare binary from a terminal and every sample is zero.** The tap is
-created successfully, delivers buffers at the correct rate, and contains
-silence, with no error and no permission prompt — because macOS attributes the
-request to the terminal, which has no audio grant. `./setup-signing.sh` and
-`open -a` are both required, and [when it does not
-work](troubleshooting.md) explains why in detail. If you skip this section you will spend an afternoon debugging a
-working program.
-
-For the CLI verbs through the bundle, append `--args`:
+You need macOS 14.4 or later, the Xcode Command Line Tools and Rust installed
+through `rustup`. `rust-toolchain.toml` selects the compiler. The models occupy
+about 670 MB; allow additional space for the download archive and build artifacts.
 
 ```sh
-open -a "$PWD/build/Ambient.app" --args record --name standup
-cargo run --release -- stop       # or: Stop, from the menu bar or the window
+git clone https://github.com/jasonm4130-labs/ambient.git
+cd ambient
+./fetch-models.sh
+cargo run --release --bin ambient -- probe
+./setup-signing.sh
+./make-app.sh
+open -a "$PWD/build/Ambient.app"
 ```
 
-## It asks twice
+`setup-signing.sh` creates a stable local signing identity. It can ask for
+keychain access. `make-app.sh` assembles and signs the bundle; a local development
+signature is not a notarized distribution build.
 
-The bundle declares two usage descriptions, not one:
-`NSAudioCaptureUsageDescription` for the audio a call plays, and
-`NSMicrophoneUsageDescription` for the room. They are two TCC services and two
-grants, and the code holds them apart as well — `ProcessTap::start` opens the
-input device before the tap exists, on its own device and its own clock, and the
-microphone is deliberately kept out of the tap's aggregate.
+**Launch the bundle to record system audio.** A binary started directly in a
+terminal can receive silent buffers because macOS attributes the capture request
+to the wrong process. Repeated ad-hoc signing can also invalidate an earlier
+permission grant. Follow [troubleshooting](troubleshooting.md) if capture is silent.
 
-So the first recording asks for both, and allowing one is not allowing the
-other. Deny the microphone and the call track still records while the room track
-comes back flat, which `record` says out loud: `WARNING: the room track is
-silent — check the microphone grant.` Deny system audio and it is the call track
-that holds zeros: macOS returns no error and never prompts again, but `record`
-does notice — a flat call track while something was demonstrably playing prints
-a warning naming a denied tap and pointing at the cdhash check
-(`silent_tap_advice`, `src/capture.rs`). That warning goes to stderr, so a
-bundle launch has nowhere to show it; [when it does not
-work](troubleshooting.md) carries it. That both prompts arrive
-during the first recording rather than at launch is read off the code path here
-and has not been watched happening.
+The committed UI bundle means Node is not required for a Rust-only build. For UI
+and docs changes, see the
+[contributor guide](https://github.com/jasonm4130-labs/ambient/blob/main/CONTRIBUTING.md).
 
-Both prompts are macOS asking. What ambient itself asks — whether to record a
-call it noticed, and what it keeps once the transcript exists — is [what is
-kept](what-is-kept.md).
+## Use the CLI
 
-## The window
-
-The menu bar item is one of two surfaces and it is the smaller one. It carries
-the state — idle, armed, recording, stopping, failed — a line for the
-transcription queue when one is working, and the consent items, and it is
-answerable without raising anything: *Record this call* and *Not this one* are
-both a click away in the menu.
-
-*Open Ambient*, key equivalent `0`, opens the other one. A sidebar of sessions
-with pinned sessions first and the rest newest first, a transcript beside it, and a *Tidied*/*Verbatim* toggle that
-chooses between the edit layer folded over the recogniser's output and the
-output itself — the same pair `ambient show` and `ambient show --verbatim`
-print. *Reveal in Finder* opens the selected session in Finder, or the sessions
-folder when nothing is selected, which is why the status menu no longer carries
-an *Open Sessions Folder* item of its own. *Copy Markdown* puts the transcript
-on the clipboard.
-
-The sidebar filters session names and tags, groups dates by month, and keeps
-scrolling responsive in a large library. ⌘K searches transcript text. Rename,
-notes, pinning, tags and export actions live above the selected transcript.
-
-With no sessions, the Welcome page lists health checks and offers Start
-recording. A failed check shows its detail and an inline fix; Settings stays
-reachable while you repair it. Check again repeats the checks.
-
-While a recording is running its live card stays above the session list, with
-the elapsed time the capture worker itself counted and a level indicator per
-track. Those numbers come off memory shared with the worker rather than off any
-file, so they keep moving through transcription, and a capture that is hearing
-nothing says so in place rather than finishing quietly and leaving you to work
-it out afterwards.
-
-Below the transcript are the two things you do to a finished session. Naming
-works on **whichever session is selected**, not only the newest: each speaker
-diarization could not name gets a row with the first thing that voice said, a
-roster dropdown and a *Name* button, and pressing it appends exactly the edit
-`ambient name` appends. *Separate voices* runs diarization on a worker thread,
-so the window stays live while it works; it is disabled when there is no finished transcript or
-retention has swept the audio it needs. A second concurrent diarization job is
-refused with an inline error.
-
-Above the transcript is a banner, and it exists for one thing in particular. A
-denied system-audio tap does not fail: it returns correctly shaped zeros, and
-the advice about that used to reach `eprintln!` alone, which a bundle launch
-discards. Capture warnings are now written into the session's own
-`session.json` and shown here, so the failure is visible in the place you go to
-read the transcript.
-
-⌘R starts recording, ⌘S stops, ⌘0 opens Sessions and ⌘, opens Settings.
-Light and dark appearance follow macOS.
-
-Closing the window does not quit the app; the menu bar item stays and a
-recording in flight carries on. What changes is the Dock: the app has no Dock
-icon and no ⌘-Tab entry while the window is closed, acquires both while it is
-open, and gives them back when it closes.
-
-## Check the settings
+Commands that read files or inspect the machine can run in a terminal:
 
 ```sh
-cargo run --release -- config     # resolved settings, and the input devices it can see
+cargo run --release --bin ambient -- sessions
+cargo run --release --bin ambient -- transcribe \
+  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 audio.wav
 ```
 
-Every setting is readable and settable from the CLI, so nothing depends on the
-GUI being open. The same values are editable in the running app: *Settings…*,
-key equivalent `,`, opens the window on its Settings row — the settings page is
-a view inside the one window rather than a window of its own — and it writes
-that same `config.json` plus the roster. The full list is in
-[Settings](settings.md).
+For a release installed in Applications, use its executable directly for those
+commands:
 
-## Five things you will want to do
+```sh
+/Applications/Ambient.app/Contents/MacOS/ambient sessions
+```
 
-Recording a meeting is *Start Recording* in the menu bar, or `ambient record`
-launched the way the section above insists on; the flags are in
-[commands](commands.md). Renaming a speaker who came out wrong is the naming
-strip under the transcript, or `ambient name <dir> call-1 Priya`; either way
-every line carrying that label moves. It appends one edit per line rather than
-overwriting anything, so the raw transcript survives and re-running `diarize`
-will not turn the name back. Taking a name back is `ambient undo <dir>`, which
-reverts that whole batch of edits — see [commands](commands.md) for what
-surfaces underneath. Getting the markdown out needs
-nothing at all: `record` writes `transcript.md` into the session directory
-itself, *Copy Markdown* puts it on the clipboard, and
-[export](commands.md) exists to regenerate it or put a copy
-somewhere else. Declining a call the app noticed is the *Not this one* item
-that appears in the menu bar when a watched app starts audio — but only once
-you have named apps to watch, since the default list is empty and an empty list
-watches nothing. [What is kept](what-is-kept.md) describes both that and how
-long a refusal is remembered. A denied
-or missing permission is [when it does not work](troubleshooting.md), which
-sorts the ways a grant goes missing into two truth tables.
+Recording commands must go through the app bundle. Quit an already-running
+Ambient instance before launching it with CLI arguments: `open` otherwise
+activates the existing process without applying those arguments.
 
-## What to read next
+```sh
+open -a "$PWD/build/Ambient.app" --args record --name test
+```
 
-If it recorded and transcribed, [architecture](../developing/index.md) explains
-what just happened. If it recorded silence, [when it does not
-work](troubleshooting.md) has the three-row truth table that says which of the
-two independent failures you hit.
+Stop that recording from another terminal:
+
+```sh
+cargo run --release --bin ambient -- stop
+```
+
+The [command reference](commands.md) describes export formats, environment
+variables, naming, speaker separation and diagnostics.

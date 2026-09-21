@@ -6,13 +6,10 @@ sidebar:
 
 # Using ambient
 
-Six pages, in the order you will want them.
+Start with installation, then follow the guide for the task at hand.
 
-**[Getting started](getting-started.md)** — build the binary, fetch the models,
-launch it, and read what the app is once it is running. The launch method is
-not optional: run the bare binary and every sample comes back zero, because the
-microphone grant lands on the terminal rather than on ambient. The page explains
-the signed bundle before anything else.
+**[Getting started](getting-started.md)** — install a release or build from
+source, make a short test recording, and read your transcript.
 
 **[Commands](commands.md)** — every verb the binary takes, what each one writes,
 and what it prints.
@@ -24,8 +21,7 @@ which ones take effect on the next recording rather than immediately.
 names. Read this before recording anyone who is not you.
 
 **[When it does not work](troubleshooting.md)** — a recording that succeeds and
-contains silence is the failure you will hit, and it is a permissions problem
-every time. Two truth tables and the fix.
+contains silence is the failure you will hit, and it can be a permissions or launch problem. Diagnose both tracks before changing settings.
 
 **[Reading sessions from an assistant](mcp.md)** — `ambient mcp` hands the
 transcript to Claude Code or any other MCP client as data. Registration, the

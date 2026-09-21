@@ -11,6 +11,19 @@ tool is allowed to keep, and for how long. Consent decides whether a recording
 starts at all, retention decides how long the audio outlives the transcript,
 and the roster decides what is stored about the people in it.
 
+## Where the data goes
+
+Sessions are ordinary files in `~/Documents/Ambient` unless you choose another
+folder. Ambient does not encrypt them separately from your Mac's storage.
+Cloud folder sync and backups can copy them elsewhere. Exports and MCP clients
+can also share transcript text beyond this Mac; see [MCP access](mcp.md#access-and-privacy).
+
+The recording prompt asks you, not the other participants. Obtain appropriate
+permission before recording. Ambient does not join the call or announce the
+recording to the people in it.
+
+## Recording states
+
 The menu bar is the consent surface — the window can be closed, and answering
 about a call never needs it open — and it is a state machine:
 
@@ -73,8 +86,8 @@ The check runs on the existing refresh timer, every eighth tick — roughly ever
 four seconds. Enumerating audio processes twice a second would be waste for
 something that changes when a human joins a call.
 
-There is deliberately **no notification**. The bundle carries no entitlements,
-and the menu bar is already the consent surface: an unmistakable state you can
+There is no system notification for the armed state. The menu bar is the
+recording control: an unmistakable state you can
 see without clicking. A real `UNUserNotificationCenter` prompt is additive and
 should be scoped on its own rather than smuggled in here.
 
@@ -112,11 +125,9 @@ carrying the first thing that voice said, and a dropdown of roster names puts a
 name on every line of that speaker. It is any session and not only the most
 recent one: the naming strip follows the selection.
 
-It stores **no voiceprints**, so it never guesses. An embedding kept to
-recognise someone later is biometric data under Article 9, a different
-compliance regime from a text file of names — and a confidently misattributed
-turn is a lie in your notes, which is worse than an honest `call-2`. The roster
-removes the retyping, not the choosing.
+The roster stores names, not voiceprints. Ambient does not use it to recognize
+a person across sessions. You choose which name belongs to a speaker; check the
+result before sharing the transcript.
 
 Naming from the window writes the same edit `ambient name` does, so it is
 recorded as the user's and survives a re-diarize.

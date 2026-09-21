@@ -6,6 +6,9 @@ sidebar:
 
 # How it fits together
 
+Start with the [contributor guide](https://github.com/jasonm4130-labs/ambient/blob/main/CONTRIBUTING.md)
+for setup and checks. Use [release preparation](releasing.md) for a distributable build.
+
 Ambient is one signed macOS app bundle. It records two audio tracks, transcribes
 them on this machine, works out who spoke, and writes a markdown file. Nothing
 leaves the Mac until you hand the markdown to something else.

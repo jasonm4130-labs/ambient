@@ -1,5 +1,4 @@
-# The workflow pins every action to an exact tag, which only stays safe if
-# something proposes the bumps.
+# Actions are pinned to commit SHAs; Dependabot proposes reviewed updates.
 version: 2
 updates:
   - package-ecosystem: github-actions

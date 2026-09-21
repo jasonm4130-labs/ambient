@@ -12,21 +12,35 @@ if [ -d ui/node_modules ]; then
   (cd ui && pnpm run --silent build >/dev/null) && echo "rebuilt assets/settings.html"
 fi
 
-cargo build --release
+./scripts/build-release
 # Read from cargo rather than assuming ./target: a global cargo config may
 # redirect build.target-dir, and this must not depend on python3 being present.
 BIN=$(cargo metadata --format-version 1 --no-deps \
       | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/ambient
 
-APP=build/Ambient.app
+APP="${AMBIENT_BUILD_DIR:-build}/Ambient.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ambient"
 
-# Regenerate the icon from assets/icon.svg when Inkscape is around; otherwise
-# use the committed .icns, so a machine without it still builds a bundle that
-# has an icon.
-if command -v inkscape >/dev/null 2>&1; then
+# Do not silently ship an owner path from a dependency or a stale Cargo cache.
+if [ -n "${HOME:-}" ] && [ "$HOME" != / ] && \
+   LC_ALL=C grep -aF -- "$HOME/" "$APP/Contents/MacOS/ambient" >/dev/null; then
+  echo "release binary contains the build user's home path; refusing to package" >&2
+  exit 1
+fi
+
+# Licenses are part of the signed payload, even for a model-free dev bundle.
+cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
+ditto licenses "$APP/Contents/Resources/licenses"
+
+# Use the committed icon for reproducible builds. Regeneration is an explicit
+# authoring step, not a side effect of having Inkscape installed.
+if [ "${AMBIENT_REBUILD_ICON:-0}" = "1" ]; then
+  command -v inkscape >/dev/null 2>&1 || {
+    echo "AMBIENT_REBUILD_ICON=1 requires Inkscape" >&2
+    exit 1
+  }
   ICONSET=$(mktemp -d)/Ambient.iconset
   mkdir -p "$ICONSET"
   for pair in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x" \
@@ -91,13 +105,23 @@ if [ "${AMBIENT_BUNDLE_MODELS:-0}" = "1" ]; then
   ASR_MODEL="${AMBIENT_ASR_MODEL:-sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8}"
   echo "copying models into the bundle ..."
   mkdir -p "$APP/Contents/Resources/models"
-  for m in "$ASR_MODEL" pyannote-segmentation-3.0 \
+  case "$ASR_MODEL" in
+    sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8) ;;
+    *) echo "release notices cover only the default ASR model; update them before bundling $ASR_MODEL" >&2; exit 1 ;;
+  esac
+  # Copy only runtime files. Upstream test audio is neither needed by the app
+  # nor covered by our model attribution, and must not enter a release ZIP.
+  for m in "$ASR_MODEL/encoder.int8.onnx" "$ASR_MODEL/decoder.int8.onnx" \
+           "$ASR_MODEL/joiner.int8.onnx" "$ASR_MODEL/tokens.txt" \
+           pyannote-segmentation-3.0/model.onnx \
            wespeaker_en_voxceleb_resnet34_LM.onnx silero_vad.onnx; do
     [ -e "models/$m" ] || { echo "  missing models/$m — run ./fetch-models.sh" >&2; exit 1; }
+    mkdir -p "$APP/Contents/Resources/models/$(dirname "$m")"
     # ditto rather than cp -R: correct metadata for a bundle about to be signed.
     ditto "models/$m" "$APP/Contents/Resources/models/$m"
   done
   echo "  bundled $(du -sh "$APP/Contents/Resources/models" | cut -f1)"
+  (cd "$APP/Contents/Resources" && shasum -a 256 -c licenses/model-sha256.txt)
 fi
 
 # Signing identity is load-bearing, not cosmetic. An ad-hoc signature's
@@ -146,7 +170,6 @@ else
   echo "  once to fix that permanently."
 fi
 
-# `open -a` on an app that is ALREADY RUNNING just activates the running copy
-# and silently drops --args, so the old hint did nothing whenever the menu bar
-# app was up — no error, no new recording. -n forces a fresh instance.
-echo "run: open -n -a \"$PWD/$APP\"   (menu bar; add --args for the CLI)"
+# An existing app instance ignores new --args. Quit it first rather than
+# suggesting a second recorder instance with `open -n`.
+echo "run: open -a \"$APP\"   (quit an existing instance before passing --args)"
