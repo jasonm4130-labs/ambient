@@ -83,6 +83,13 @@ assembles and signs a bundle, includes license notices, and refuses a binary tha
 still contains the builder's home path. CI checks the signature and `Info.plist`.
 It does not download the model set or prove a recording will work.
 
+## Documentation deployment
+
+After `gate` and `docs` pass on public `main`, the `pages` job deploys that run's
+site artifact to [GitHub Pages](https://jasonm4130-labs.github.io/ambient/).
+Pull requests never receive Pages deployment permissions. Manual `ci` runs
+always build docs so maintainers can redeploy without a source change.
+
 ## Manual release acceptance
 
 A downloadable release still needs a fresh-machine check: download, open, grant

@@ -3,6 +3,7 @@ import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
 import { Badge } from "@/components/ui/badge";
 import type { SidebarBadge } from "@cloudflare/nimbus-docs/types";
+import { withBase } from "@/lib/urls";
 
 interface Props extends HTMLAttributes<"a"> {
   label: string;
@@ -15,7 +16,7 @@ const { label, href, isCurrent, badge, class: className, ...attrs } = Astro.prop
 ---
 
 <a
-  href={href}
+  href={withBase(href)}
   aria-current={isCurrent ? "page" : undefined}
   data-nb-sidebar-link
   class={cn(

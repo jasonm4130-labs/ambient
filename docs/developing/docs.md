@@ -87,16 +87,17 @@ has no inferred timestamp. CI fetches history for the docs build.
 
 ## Deployment
 
-The repository does not automatically deploy these docs. CI builds and checks
-them, then uploads a short-lived artifact. `docs-site/wrangler.jsonc` targets
-Cloudflare Workers Static Assets, but its account, access policy and public
-origin must be reviewed before deployment.
+The documentation publishes to [GitHub Pages](https://jasonm4130-labs.github.io/ambient/).
+The `ci` workflow deploys changes from `main` only after the docs job and aggregate
+`gate` pass. Pull requests build a review artifact but cannot deploy.
 
-For a private preview, configure access control before uploading content. For a
-public site, choose and verify the final origin, then replace the provisional
-`site` value in `astro.config.ts`. It controls canonical URLs, social images,
-`robots.txt`, the sitemap and `/llms.txt`; a successful local build does not
-verify that origin.
+Astro's site origin is `https://jasonm4130-labs.github.io` and its base path is
+`/ambient`. Keep navigation, search, images and Markdown alternates under that
+base path. The route check rejects links that escape it.
 
-Use scoped credentials through 1Password references. Keep deployment credentials
-out of pull-request jobs. Publishing is a separate authorized action.
+GitHub Pages must use **GitHub Actions** as its publishing source. The deployment
+job uses the `github-pages` environment and narrowly scoped `pages: write` and
+`id-token: write` permissions. It needs no stored deployment credential.
+
+To redeploy the current `main`, run the `ci` workflow manually. The manual run
+always builds docs and still requires the aggregate gate before deployment.

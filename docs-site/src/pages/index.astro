@@ -2,15 +2,16 @@
 import { Image } from "astro:assets";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import Header from "../components/Header.astro";
+import { withBase } from "../lib/urls";
 import screenshot from "../../../docs/developing/img/ui-dark.png";
 
 const guides = [
-  { href: "/using/getting-started/", title: "Install and record", detail: "From download to a checked first transcript." },
-  { href: "/using/what-is-kept/", title: "Privacy and retention", detail: "Know what stays on disk and what sharing exposes." },
-  { href: "/using/troubleshooting/", title: "Fix a recording", detail: "Diagnose silence, permissions and signing." },
-  { href: "/using/commands/", title: "Command reference", detail: "Script sessions, speaker names and exports." },
-  { href: "/using/mcp/", title: "Connect an assistant", detail: "Grant read access to sessions through MCP." },
-  { href: "/developing/", title: "Build and contribute", detail: "Architecture, decisions and verification." },
+  { href: withBase("/using/getting-started/"), title: "Install and record", detail: "From download to a checked first transcript." },
+  { href: withBase("/using/what-is-kept/"), title: "Privacy and retention", detail: "Know what stays on disk and what sharing exposes." },
+  { href: withBase("/using/troubleshooting/"), title: "Fix a recording", detail: "Diagnose silence, permissions and signing." },
+  { href: withBase("/using/commands/"), title: "Command reference", detail: "Script sessions, speaker names and exports." },
+  { href: withBase("/using/mcp/"), title: "Connect an assistant", detail: "Grant read access to sessions through MCP." },
+  { href: withBase("/developing/"), title: "Build and contribute", detail: "Architecture, decisions and verification." },
 ];
 ---
 
@@ -28,8 +29,8 @@ const guides = [
         bot or cloud transcription account.
       </p>
       <div class="mt-7 flex flex-wrap gap-3">
-        <a href="/using/getting-started/" class="rounded-md bg-primary px-5 py-3 font-medium text-primary-foreground no-underline hover:opacity-90">Get started</a>
-        <a href="https://github.com/jasonm4130-labs/ambient/releases" class="rounded-md border border-border px-5 py-3 font-medium text-foreground no-underline hover:border-border-strong">View releases</a>
+        <a href={withBase("/using/getting-started/")} class="rounded-md bg-primary px-5 py-3 font-medium text-primary-foreground no-underline hover:opacity-90">Get started</a>
+        <a href="https://github.com/jasonm4130-labs/ambient" class="rounded-md border border-border px-5 py-3 font-medium text-foreground no-underline hover:border-border-strong">View source</a>
       </div>
       <figure class="mt-10">
         <Image src={screenshot} alt="Ambient's session browser with a sample transcript, speaker names and export controls" class="h-auto w-full rounded-lg border border-border" loading="eager" />
@@ -54,9 +55,9 @@ const guides = [
     </main>
     <footer class="mx-auto flex w-full max-w-5xl flex-wrap gap-x-5 gap-y-2 px-6 pb-8 text-xs text-muted-foreground">
       <a href="https://github.com/jasonm4130-labs/ambient">Source on GitHub</a>
-      <a href="/LICENSE">MIT license</a>
-      <a href="/THIRD_PARTY_NOTICES.md">Third-party licenses</a>
-      <a href="/index/">Documentation overview</a>
+      <a href={withBase("/LICENSE")}>MIT license</a>
+      <a href={withBase("/THIRD_PARTY_NOTICES.md")}>Third-party licenses</a>
+      <a href={withBase("/index/")}>Documentation overview</a>
     </footer>
   </div>
 </BaseLayout>

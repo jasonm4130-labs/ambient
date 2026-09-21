@@ -11,6 +11,10 @@ keep. This checks your permissions, input device and system-audio capture togeth
 
 ## Install a release
 
+Prebuilt downloads are being refreshed for the public launch. Use
+[Build from source](#build-from-source) until a new signed release is available.
+The steps below apply to that release.
+
 Release builds target Apple Silicon Macs running macOS 14.4 or later. Allow
 roughly 1 GB for the extracted app and models, plus storage for recordings.
 

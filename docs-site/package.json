@@ -10,10 +10,7 @@
     "typecheck": "astro check",
     "lint:docs": "nimbus-docs lint",
     "lint:docs:fix": "nimbus-docs lint --fix",
-    "prepreview:cf": "npm run build",
-    "preview:cf": "wrangler dev",
-    "predeploy": "npm run typecheck && npm run build",
-    "deploy": "wrangler deploy",
+    "prepreview": "npm run build",
     "postbuild": "node scripts/copy-notices.mjs"
   },
   "dependencies": {
@@ -33,7 +30,6 @@
     "@tailwindcss/vite": "^4.1.4",
     "pagefind": "^1.5.2",
     "tailwindcss": "^4.1.4",
-    "typescript": "^5.8.3",
-    "wrangler": "^4.135.0"
+    "typescript": "^5.8.3"
   }
 }

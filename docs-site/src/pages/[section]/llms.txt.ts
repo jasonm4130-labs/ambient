@@ -18,6 +18,7 @@
 
 import { getIndexedTopLevel, type IndexedEntry } from "@cloudflare/nimbus-docs";
 import { config } from "virtual:nimbus/config";
+import { withBase } from "../../lib/urls";
 
 export const prerender = true;
 
@@ -52,7 +53,7 @@ export async function GET({ props }: { props: SectionProps }) {
   for (const item of members) {
     const description = item.description ? ` — ${item.description}` : "";
     lines.push(
-      `- [${item.title}](${new URL(item.markdownUrl, config.site).href})${description}`,
+      `- [${item.title}](${new URL(withBase(item.markdownUrl), config.site).href})${description}`,
     );
   }
 

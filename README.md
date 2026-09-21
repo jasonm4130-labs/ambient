@@ -7,7 +7,7 @@ speech locally, and separating speakers. Browse, search and correct transcripts
 in one window, then export them as Markdown, text, JSON or subtitles. No meeting
 bot, transcription account or cloud inference service is required.
 
-[Get started](docs/using/getting-started.md) · [Releases](https://github.com/jasonm4130-labs/ambient/releases) · [Documentation](docs/index.md) · [Contribute](CONTRIBUTING.md)
+[Get started](docs/using/getting-started.md) · [Releases](https://github.com/jasonm4130-labs/ambient/releases) · [Documentation](https://jasonm4130-labs.github.io/ambient/) · [Contribute](CONTRIBUTING.md)
 
 ![Ambient session browser showing a sample transcript in dark mode](docs/developing/img/ui-dark.png)
 
@@ -30,6 +30,10 @@ See [measurements](docs/developing/measurements.md) for the conditions behind th
 published results.
 
 ## Install and make your first recording
+
+Prebuilt downloads are being refreshed for the public launch. For now, use the
+[build-from-source steps](#build-from-source). The release instructions below
+apply once a new signed download is available.
 
 You need an **Apple Silicon Mac running macOS 14.4 or later** for the release
 builds. Allow roughly 1 GB for the app and bundled models, plus space for your

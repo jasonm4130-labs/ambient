@@ -12,13 +12,14 @@ import {
 } from "@cloudflare/nimbus-docs";
 import { components } from "../components";
 import { getLastUpdated } from "../lib/last-updated";
+import { withBase, withoutBase } from "../lib/urls";
 
 export const prerender = true;
 export const getStaticPaths = getDocsStaticPaths;
 
 const { entry, Content, headings } = await getDocsPageProps(Astro);
 
-const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
+const currentSlug = withoutBase(Astro.url.pathname).replace(/\/$/, "") || "/";
 
 const { sidebar: sidebarOn, tableOfContents: tocOn } = await getRouteFlags(entry);
 
@@ -42,8 +43,8 @@ const tocConfig = entry.data.tableOfContents;
 const toc = tocOn && tocConfig !== false ? getTOC(headings, tocConfig) : false;
 const markdownPath = entry.id === "index" ? "/index.md" : `/${entry.id}/index.md`;
 // Navigation stays on this deployment, including offline/local previews.
-const markdownUrl = markdownPath;
-const socialImage = entry.data.socialImage ?? `/og/${entry.id}.png`;
+const markdownUrl = withBase(markdownPath);
+const socialImage = withBase(entry.data.socialImage ?? `/og/${entry.id}.png`);
 ---
 
 <DocsLayout

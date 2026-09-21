@@ -1,4 +1,7 @@
 import { defineConfig } from "astro/config";
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import nimbus, { defineConfig as defineNimbusConfig } from "@cloudflare/nimbus-docs";
 import { tableScroll } from "@cloudflare/nimbus-docs/markdown";
@@ -7,12 +10,7 @@ import { mermaidPassthrough } from "./src/plugins/mermaid-passthrough";
 import { rewriteMdLinks } from "./src/plugins/rewrite-md-links";
 
 const nimbusConfig = defineNimbusConfig({
-  // Nothing is deployed yet, so this origin is provisional — it drives
-  // canonical URLs, absolute OG image URLs, robots.txt, the sitemap and the
-  // links in /llms.txt, and every one of them is wrong until the Worker exists.
-  // GitHub Pages is not an option: ambient is private in a free-plan org.
-  // See docs/developing/docs.md for what has to be settled first.
-  site: "https://ambient-docs.jasonm4130.workers.dev",
+  site: "https://jasonm4130-labs.github.io",
   title: "Ambient",
   description: "Local-first ambient capture for macOS: records, transcribes and attributes office conversations and calls entirely on-device.",
   locale: "en",
@@ -20,8 +18,30 @@ const nimbusConfig = defineNimbusConfig({
   socialImageAlt: "Ambient documentation",
 });
 
+// Nimbus rewrites some rendered content links after the Markdown plugins.
+// Normalize those emitted attributes before indexing the static artifact.
+async function prefixBuiltHtml(dir: URL): Promise<void> {
+  const root = fileURLToPath(dir);
+  const walk = async (current: string): Promise<void> => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.name.endsWith(".html")) {
+        const html = await readFile(path, "utf8");
+        const prefixed = html.replace(
+          /((?:href|src)=["'])\/(?!\/|ambient(?:\/|["']))/g,
+          "$1/ambient/",
+        );
+        if (prefixed !== html) await writeFile(path, prefixed);
+      }
+    }
+  };
+  await walk(root);
+}
+
 export default defineConfig({
   output: "static",
+  base: "/ambient/",
   // Tailwind v4 via its Vite plugin (the integration Astro recommends for
   // Tailwind v4 — replaces the PostCSS plugin, which doesn't build under
   // Astro 7's Vite 8 bundler).
@@ -35,6 +55,12 @@ export default defineConfig({
     defaultStrategy: "hover",
   },
   integrations: [
+    {
+      name: "ambient:github-pages-base",
+      hooks: {
+        "astro:build:done": async ({ dir }) => prefixBuiltHtml(dir),
+      },
+    },
     nimbus(nimbusConfig, {
       // Authoring rules are opt-in by design — your repo, your taste. The
       // two below are the load-bearing pair: frontmatter has to validate
@@ -49,7 +75,7 @@ export default defineConfig({
       // Wrap wide tables so they scroll instead of overflowing the page
       // (styled by `.nb-table-scroll` in src/styles/prose.css).
       markdown: {
-        hastPlugins: [tableScroll(), stripTitleH1, rewriteMdLinks],
+        hastPlugins: [tableScroll(), stripTitleH1, rewriteMdLinks("/ambient/")],
         // mermaid has to act at mdast, before Shiki turns the fence into
         // highlighted markup. The H1 strip acts at hast — not because `heading`
         // is unreachable at mdast (it is dispatched; that earlier claim was
