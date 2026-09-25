@@ -1,9 +1,5 @@
-<!-- codex-baseline:1 -->
 # Ambient
 
-Use native Codex instructions and tools for this repository. These instructions
-supersede inherited legacy agent-routing and cross-provider-review guidance.
-Preserve Claude-owned files; do not load their instructions, hooks or memory.
 Preserve the pre-existing untracked `.codex/` files; they are not part of a PR.
 
 - macOS is required for the Rust targets. `scripts/check` runs format, Clippy,
