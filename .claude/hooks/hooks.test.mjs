@@ -155,6 +155,28 @@ test("as a process: a commit that deletes a test is denied", () => {
   }
 });
 
+test("as a process: git global options before commit do not route around tests-are-readonly", () => {
+  const { dir, git } = repo();
+  const elsewhere = mkdtempSync(join(tmpdir(), "hooks-cwd-"));
+  try {
+    writeFileSync(join(dir, "src", "a.rs"), "fn a() {}\n");
+    git("add", "src/a.rs");
+    for (const command of [
+      `git -C ${dir} commit -m x`,
+      `git --git-dir=${join(dir, ".git")} --work-tree=${dir} commit -m x`,
+      `git -c user.name=x -C ${dir} commit -m x`,
+      `command git -C ${dir} commit -m x`,
+    ]) {
+      const out = run("tests-are-readonly.mjs", { tool_name: "Bash", cwd: elsewhere, tool_input: { command } });
+      assert.equal(out && out.hookSpecificOutput.permissionDecision, "deny", command);
+    }
+    assert.equal(run("tests-are-readonly.mjs", { tool_name: "Bash", cwd: elsewhere, tool_input: { command: `git -C ${dir} status` } }), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
 test("as a process: non-Bash tools and non-commit commands are ignored", () => {
   assert.equal(run("tests-are-readonly.mjs", { tool_name: "Edit", tool_input: {} }), null);
   assert.equal(run("no-route-around-ci.mjs", { tool_name: "Bash", tool_input: { command: "ls" } }), null);
