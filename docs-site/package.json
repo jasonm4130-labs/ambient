@@ -14,7 +14,7 @@
     "postbuild": "node scripts/copy-notices.mjs"
   },
   "dependencies": {
-    "@cloudflare/nimbus-docs": "^0.11.0",
+    "@cloudflare/nimbus-docs": "^0.14.1",
     "@fontsource-variable/inter": "^5.2.8",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@iconify-json/ph": "^1.2.0",
