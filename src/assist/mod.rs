@@ -146,6 +146,8 @@ struct Meeting {
     gate: Gate,
     /// What it said and when, for echo detection.
     said: Vec<(Instant, String)>,
+    /// The consent notice and when it was said, for echo detection.
+    notice: (Instant, String),
 }
 
 /// The state behind the watching tools, one per `ambient mcp` process.
@@ -332,9 +334,11 @@ impl Watch {
                         last,
                     )
                 },
-                // The notice is not remembered for echo detection: it
-                // invites questions by name that share most of its words.
                 said: Vec::new(),
+                // Kept apart from `said`: the notice invites short questions
+                // by name made mostly of its words, so only a line holding
+                // most of the notice counts as its echo.
+                notice: (Instant::now(), notice.clone()),
             });
             self.attend("listening");
             log(&dir, json!({"event": "joined", "notice": notice}));
@@ -412,12 +416,14 @@ impl Watch {
             m.said
                 .retain(|(t, _)| now.saturating_duration_since(*t) < ECHO_WINDOW);
             let recent: Vec<&str> = m.said.iter().map(|(_, s)| s.as_str()).collect();
+            let notice = (now.saturating_duration_since(m.notice.0) < ECHO_WINDOW)
+                .then_some(m.notice.1.as_str());
             for line in &lines {
                 let text = line["text"].as_str().unwrap_or("").trim();
                 if text.is_empty() {
                     continue;
                 }
-                if is_echo(text, &recent) {
+                if is_echo(text, &recent) || notice.is_some_and(|n| is_echo(n, &[text])) {
                     heard_back += 1;
                     continue;
                 }

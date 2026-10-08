@@ -270,6 +270,19 @@ fn a_question_by_name_right_after_the_notice_is_not_taken_for_its_echo() {
 }
 
 #[test]
+fn the_notice_heard_back_is_left_out() {
+    let room = Room::new("notice-echo", true);
+    room.live("m1");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    let notice = room.said().last().unwrap().clone();
+    room.say("m1", 2_000, &notice);
+    let v = w.wait(SHORT).unwrap();
+    assert!(lines(&v).is_empty(), "{v}");
+    assert_eq!(v["left_out_as_your_own_voice"], 1);
+}
+
+#[test]
 fn speaking_is_said_logged_and_then_held_by_the_cooldown() {
     let room = Room::new("speak", true);
     room.live("m1");
