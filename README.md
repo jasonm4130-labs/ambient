@@ -21,6 +21,9 @@ bot, transcription account or cloud inference service is required.
 - Lets you name speakers, edit session details, pin sessions and search transcripts.
 - Exports Markdown, text, JSON, SRT and WebVTT; a read-only MCP server lets an
   assistant read the session library made available to it.
+- Optionally lets an AI assistant join the meeting by voice: it follows the live
+  transcript, speaks up when asked or when it has a useful answer, and uses a
+  local voice. Off until you turn it on.
 - Asks before recording a watched app by default. Audio retention defaults to
   seven days; transcripts remain until you delete the session.
 
@@ -55,7 +58,10 @@ remove quarantine as a first step.
 
 Ambient performs capture, transcription and speaker separation locally. Model
 downloads require a network connection; recording and inference do not require a
-cloud service. Sessions live in `~/Documents/Ambient` by default.
+cloud service. Sessions live in `~/Documents/Ambient` by default. The optional
+[live assistant](docs/using/assistant.md), off by default, sends recent
+transcript text to the cloud models you configure while it is on; audio stays
+on the Mac.
 
 Local files are not an encrypted vault. A synced sessions folder, a backup, an
 export or an assistant connected through MCP can move data beyond this Mac.
@@ -95,6 +101,7 @@ model storage and CLI use.
 | Change devices, watched apps or retention | [Settings](docs/using/settings.md) |
 | Script Ambient or export a session | [Command reference](docs/using/commands.md) |
 | Connect an assistant to existing sessions | [MCP setup and access](docs/using/mcp.md) |
+| Let an assistant speak in a meeting | [The live assistant](docs/using/assistant.md) |
 | Understand storage and deletion | [What is kept](docs/using/what-is-kept.md) |
 | Fix silence or signing problems | [Troubleshooting](docs/using/troubleshooting.md) |
 | Build, test or contribute | [Contributing](CONTRIBUTING.md) |

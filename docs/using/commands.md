@@ -365,6 +365,19 @@ arguments and the cursor for following a session as it records are in
 [reading sessions from an assistant](mcp.md), and the reasoning is
 [ADR 0016](../adr/0016-mcp-verb-for-live-reading.md).
 
+## assist
+
+```sh
+op run --env-file .env.assistant.op -- ambient assist [--session <id>] [--silent] [--no-play] [--save-audio <dir>]
+```
+
+The live assistant. It waits for a recording, announces itself, and speaks
+when the jump-in model and the gate allow it. It does nothing while the
+`assistant` setting is off and leaves a meeting as soon as it is turned off.
+`OPENROUTER_API_KEY` must be in its environment, which is what `op run` does.
+`--silent` prints replies instead of starting the voice helper. Each decision
+is appended to the session's `assistant.jsonl`. See [the live assistant](assistant.md).
+
 ## Environment
 
 | Variable | Read by | Effect |
@@ -373,6 +386,9 @@ arguments and the cursor for following a session as it records are in
 | `AMBIENT_CONFIG` | `config::path` | Path to the config file, so a test can point somewhere harmless. |
 | `AMBIENT_ROSTER` | `roster::path` | Path to `roster.json`, which otherwise sits beside the config. |
 | `AMBIENT_MODELS` | `session::models_root` | Models directory. Otherwise `models/` relative to the working directory, then searched upward from the executable. |
+| `OPENROUTER_API_KEY` | `assist` | The key for the assistant's model calls. Supply it with `op run --env-file .env.assistant.op`. |
+| `CF_AIG_TOKEN` | `assist` | Sent as `cf-aig-authorization` when `assistant.base_url` is an authenticated Cloudflare AI Gateway. |
+| `AMBIENT_VOICE_CACHE` | voice helper | Where the helper downloads Kokoro and caches designed voices. Default `~/Library/Caches/Ambient/voice`. |
 | `AMBIENT_DEBUG_DIAR` | `diarize` | Set to anything: adds the per-window powerset class histogram. |
 | `AMBIENT_DEBUG_TAP` | `capture` | Set to anything: extra tap-level diagnostics during capture. |
 | `HOME` | `config::path`, `session::home`, `settings` | Falls back to `.` if unset, so both paths become relative. |

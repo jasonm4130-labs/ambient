@@ -33,6 +33,81 @@ pub struct Config {
     /// transcript exists; `None` keeps it forever. The audio is the most
     /// sensitive artefact here and the least useful once the text exists.
     pub audio_retention_days: Option<u32>,
+    /// The live assistant (`ambient assist`). Off unless turned on.
+    pub assistant: AssistantConfig,
+    /// The assistant's voice. Per machine, because the right engine depends on
+    /// how much memory this Mac has.
+    pub voice: VoiceConfig,
+}
+
+/// What the live assistant listens with and how readily it speaks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AssistantConfig {
+    /// Off by default: an assistant that may speak in a meeting is something
+    /// a person turns on, never something they discover.
+    pub enabled: bool,
+    /// The name people address it by, and the name it answers to.
+    pub name: String,
+    /// The cheap, fast model that decides whether to speak at all. It runs on
+    /// every new stretch of transcript, so cost and latency matter most here.
+    pub jump_in_model: String,
+    /// The stronger model that writes what is said, called only on a yes.
+    pub reply_model: String,
+    /// How sure the jump-in model must be, from 0 to 1, before a reply is
+    /// written.
+    pub threshold: f32,
+    /// Seconds of silence from the assistant after it speaks.
+    pub cooldown_s: u32,
+    /// The most times it speaks in one meeting.
+    pub max_per_meeting: u32,
+    /// The OpenAI-compatible endpoint. OpenRouter directly, or a Cloudflare AI
+    /// Gateway URL that forwards to it.
+    pub base_url: String,
+    /// Ask OpenRouter for zero-data-retention providers only.
+    pub zdr: bool,
+}
+
+impl Default for AssistantConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            name: "Claude".into(),
+            jump_in_model: "anthropic/claude-haiku-5.5".into(),
+            reply_model: "anthropic/claude-sonnet-5.5".into(),
+            threshold: 0.75,
+            cooldown_s: 60,
+            max_per_meeting: 10,
+            base_url: "https://openrouter.ai/api/v1".into(),
+            zdr: true,
+        }
+    }
+}
+
+/// The voice helper: which local engine speaks, and how.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct VoiceConfig {
+    /// `None` picks by this Mac's memory (see `assist::voice::auto_engine`).
+    pub engine: Option<crate::assist::voice::Engine>,
+    /// The engine's speaker. `None` is the engine's own default voice.
+    pub speaker: Option<String>,
+    /// A standing delivery instruction, which only the Qwen3-TTS preset
+    /// speakers follow.
+    pub style: Option<String>,
+    /// A plain-English description of the voice to design, for Qwen3-TTS.
+    /// It is rendered once into a reference clip by the 1.7B VoiceDesign
+    /// model, and the 0.6B model clones that clip for every reply.
+    pub description: Option<String>,
+    /// A delivery cue appended to `description` when the reference is
+    /// designed, such as "He delivers this deadpan, with dry wit."
+    pub cue: Option<String>,
+    /// A designed voice folder (`reference.wav` + `voice.json`) to clone
+    /// instead of designing one. Wins over `description`.
+    pub reference: Option<PathBuf>,
+    /// The helper project to run. `None` is the `voice/` folder of the source
+    /// tree this binary was built from.
+    pub helper_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -45,6 +120,8 @@ impl Default for Config {
             sessions_dir: None,
             ask_before_recording: true,
             audio_retention_days: Some(7),
+            assistant: AssistantConfig::default(),
+            voice: VoiceConfig::default(),
         }
     }
 }
@@ -140,9 +217,41 @@ impl Config {
                     v => Some(v.parse()?),
                 }
             }
+            "assistant" => self.assistant.enabled = flag(value)?,
+            "assistant.name" => self.assistant.name = nonempty(key, value)?,
+            "assistant.jump_in_model" => self.assistant.jump_in_model = nonempty(key, value)?,
+            "assistant.reply_model" => self.assistant.reply_model = nonempty(key, value)?,
+            "assistant.threshold" => {
+                let t: f32 = value.parse()?;
+                if !(0.0..=1.0).contains(&t) {
+                    anyhow::bail!("assistant.threshold is a confidence from 0 to 1, not {t}");
+                }
+                self.assistant.threshold = t
+            }
+            "assistant.cooldown_s" => self.assistant.cooldown_s = value.parse()?,
+            "assistant.max_per_meeting" => self.assistant.max_per_meeting = value.parse()?,
+            "assistant.base_url" => self.assistant.base_url = nonempty(key, value)?,
+            "assistant.zdr" => self.assistant.zdr = flag(value)?,
+            "voice.engine" => {
+                self.voice.engine = match value {
+                    "auto" | "default" => None,
+                    v => Some(v.parse()?),
+                }
+            }
+            "voice.speaker" => self.voice.speaker = optional(value),
+            "voice.style" => self.voice.style = optional(value),
+            "voice.helper_dir" => self.voice.helper_dir = optional(value).map(PathBuf::from),
+            "voice.description" => self.voice.description = optional(value),
+            "voice.cue" => self.voice.cue = optional(value),
+            "voice.reference" => self.voice.reference = optional(value).map(PathBuf::from),
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
-                 threshold, sessions_dir, ask_before_recording, audio_retention_days"
+                 threshold, sessions_dir, ask_before_recording, audio_retention_days, \
+                 assistant, assistant.name, assistant.jump_in_model, \
+                 assistant.reply_model, assistant.threshold, assistant.cooldown_s, \
+                 assistant.max_per_meeting, assistant.base_url, assistant.zdr, \
+                 voice.engine, voice.speaker, voice.style, voice.helper_dir, \
+                 voice.description, voice.cue, voice.reference"
             ),
         }
         Ok(())
@@ -167,6 +276,21 @@ pub fn refuse_while_live(key: &str, live: Option<&Path>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A text setting that has no sensible empty value, such as a model id.
+fn nonempty(key: &str, value: &str) -> Result<String> {
+    let v = value.trim();
+    if v.is_empty() {
+        anyhow::bail!("{key} cannot be empty");
+    }
+    Ok(v.to_string())
+}
+
+/// A text setting whose absence means "the default", spelled `default`.
+fn optional(value: &str) -> Option<String> {
+    let v = value.trim();
+    (!v.is_empty() && v != "default").then(|| v.to_string())
 }
 
 /// Parse a boolean setting, refusing anything it does not recognise.
@@ -278,6 +402,56 @@ mod tests {
         // either way: only the folder the capture is writing into is at stake.
         assert!(refuse_while_live("sessions_dir", None).is_ok());
         assert!(refuse_while_live("diarize", Some(Path::new("/x"))).is_ok());
+    }
+
+    #[test]
+    fn the_assistant_is_off_until_turned_on() {
+        let mut c = Config::default();
+        assert!(!c.assistant.enabled);
+        c.set("assistant", "on").unwrap();
+        assert!(c.assistant.enabled);
+        assert!(c.set("assistant", "maybe").is_err());
+    }
+
+    #[test]
+    fn assistant_settings_are_validated_and_round_trip() {
+        let p = temp("assistant");
+        let mut c = Config::default();
+        c.set("assistant.threshold", "0.6").unwrap();
+        assert!(c.set("assistant.threshold", "1.5").is_err());
+        assert_eq!(
+            c.assistant.threshold, 0.6,
+            "a refused value leaves it alone"
+        );
+        assert!(c.set("assistant.reply_model", " ").is_err());
+        c.set("assistant.reply_model", "anthropic/claude-opus-5.5")
+            .unwrap();
+        c.set("voice.engine", "qwen3-tts").unwrap();
+        c.set("voice.style", "Dry and understated.").unwrap();
+        c.set("voice.description", "An older Scottish man.")
+            .unwrap();
+        c.set("voice.cue", "Deadpan.").unwrap();
+        c.set("voice.reference", "/voices/gravel").unwrap();
+        assert!(c.set("voice.engine", "espeak").is_err());
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p), c);
+        c.set("voice.engine", "auto").unwrap();
+        c.set("voice.style", "default").unwrap();
+        assert_eq!(c.voice.engine, None);
+        assert_eq!(c.voice.style, None);
+        c.set("voice.reference", "default").unwrap();
+        assert_eq!(c.voice.reference, None);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn an_older_config_file_gets_the_assistant_defaults() {
+        let p = temp("older");
+        std::fs::write(&p, r#"{"diarize": false}"#).unwrap();
+        let c = Config::load_from(&p);
+        assert_eq!(c.assistant, AssistantConfig::default());
+        assert_eq!(c.voice, VoiceConfig::default());
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]

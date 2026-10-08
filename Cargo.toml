@@ -20,6 +20,9 @@ rubato = "5"
 rustfft = "6.4.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The live assistant's model calls. native-tls is macOS's own TLS and keychain
+# roots, so no second TLS stack joins the binary.
+ureq = { version = "3.4", default-features = false, features = ["native-tls-no-default"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
