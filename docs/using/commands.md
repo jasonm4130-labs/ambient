@@ -42,7 +42,9 @@ ambient doctor [--json]
 Runs ten checks, always in the same order: the four model files under the
 models root, the config file, and four checks against the sessions
 directory (writable, sessions awaiting transcription, a live session, a
-stale lock). Prints `ok` or `FAIL` with a detail for each, exits non-zero
+stale lock). A sessions directory that does not exist yet passes the
+writable check when its nearest existing parent is writable, since the
+first recording creates it. Prints `ok` or `FAIL` with a detail for each, exits non-zero
 when any check failed so a script can branch on it, and `--json` prints the
 same ten checks as one array of `{name, ok, detail}` objects.
 
