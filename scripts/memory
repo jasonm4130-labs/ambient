@@ -27,9 +27,10 @@
 # docs/developing/measurements.md#memory-gate. Lower the default to a fresh
 # measurement on current main; do not raise it to make a change pass.
 #
-# /usr/bin/time -l reports the peak of the process it runs. When finalize
-# moves to a child process, the child's peak has to be gated as well, or this
-# gate measures only the recording half.
+# /usr/bin/time -l reports the peak of the process it runs. The menu bar app
+# finalizes in a child process (`ambient finalize`, #107), but memrun still
+# calls session::transcribe_session in process, so this one peak covers both
+# the recording half and finalize, an upper bound on either app process.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 
