@@ -345,12 +345,15 @@ holds names and nothing else; see [what is kept](what-is-kept.md).
 ## mcp
 
 ```sh
-ambient mcp
+ambient mcp [--no-play] [--save-audio <dir>]
 ```
 
 Serves the Model Context Protocol on stdin and stdout so another program can
 read sessions as data: three read-only tools, `sessions`, `transcript` and
-`status`, and newline-delimited JSON-RPC 2.0 with one reply per request. It is
+`status`, and newline-delimited JSON-RPC 2.0 with one reply per request. It
+also serves [the live assistant](assistant.md)'s tools and its `watch` prompt.
+`--no-play` runs the assistant's voice without playing it, and
+`--save-audio <dir>` writes each utterance to `<dir>/reply-<n>.wav`. It is
 not meant to be typed at — a client starts it, and it exits when that client
 closes its stdin — but a piped request answers on stdout, which is how you
 check a registration:
@@ -359,8 +362,9 @@ check a registration:
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"ping"}' | ambient mcp
 ```
 
-Nothing but protocol goes to stdout; diagnostics go to stderr. Nothing writes:
-there is no tool here to record, name or delete. Registration, the tool
+Nothing but protocol goes to stdout; diagnostics go to stderr. The session
+tools never write: there is no tool here to record, name or delete. The
+assistant's tools write only its heartbeat and the session's `assistant.jsonl`. Registration, the tool
 arguments and the cursor for following a session as it records are in
 [reading sessions from an assistant](mcp.md), and the reasoning is
 [ADR 0016](../adr/0016-mcp-verb-for-live-reading.md).
@@ -373,6 +377,7 @@ arguments and the cursor for following a session as it records are in
 | `AMBIENT_CONFIG` | `config::path` | Path to the config file, so a test can point somewhere harmless. |
 | `AMBIENT_ROSTER` | `roster::path` | Path to `roster.json`, which otherwise sits beside the config. |
 | `AMBIENT_MODELS` | `session::models_root` | Models directory. Otherwise `models/` relative to the working directory, then searched upward from the executable. |
+| `AMBIENT_VOICE_CACHE` | voice helper | Where the helper downloads Kokoro and caches designed voices. Default `~/Library/Caches/Ambient/voice`. |
 | `AMBIENT_DEBUG_DIAR` | `diarize` | Set to anything: adds the per-window powerset class histogram. |
 | `AMBIENT_DEBUG_TAP` | `capture` | Set to anything: extra tap-level diagnostics during capture. |
 | `HOME` | `config::path`, `session::home`, `settings` | Falls back to `.` if unset, so both paths become relative. |

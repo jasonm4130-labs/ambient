@@ -25,7 +25,9 @@ USAGE
   ambient export <session-dir> [--format <f>] [--out <path>]
                                        write markdown, text, json, srt, vtt or assistant
   ambient config [<key> <value>]       show or change settings
-  ambient mcp                          serve sessions over MCP on stdio
+  ambient mcp [--no-play] [--save-audio <dir>]
+                                       serve sessions, and the live assistant's
+                                       tools, over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
   ambient doctor [--json]              say which of ten things is missing
   ambient probe                        check this machine is viable
@@ -375,14 +377,32 @@ fn main() -> Result<()> {
             eprintln!("  {n} edit(s) appended");
             ambient::session::show(path, false, false)
         }
-        // Read-only, and the whole of it is on stdin and stdout: nothing
-        // else may print to stdout while this runs or the client sees a
-        // protocol error instead of an answer.
-        Some("mcp") => ambient::mcp::serve(
-            std::io::stdin().lock(),
-            std::io::stdout().lock(),
-            &ambient::session::home(),
-        ),
+        // The whole of it is on stdin and stdout: nothing else may print to
+        // stdout while this runs or the client sees a protocol error instead
+        // of an answer. Sessions are read-only here; the assistant's tools
+        // write only its heartbeat and `assistant.jsonl`.
+        Some("mcp") => {
+            let mut voice_args: Vec<String> = Vec::new();
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    // For a demo or a test: the voice runs, nobody hears it.
+                    "--no-play" => voice_args.push("--no-play".into()),
+                    "--save-audio" => {
+                        let dir = args
+                            .next()
+                            .ok_or_else(|| anyhow::anyhow!("--save-audio needs a folder"))?;
+                        voice_args.extend(["--save-dir".into(), dir]);
+                    }
+                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+                }
+            }
+            ambient::mcp::serve_with(
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+                &ambient::session::home(),
+                ambient::assist::real_voice(voice_args),
+            )
+        }
         Some("doctor") => {
             let flags: Vec<String> = args.collect();
             let json = flags.iter().any(|a| a == "--json");
@@ -699,6 +719,64 @@ fn main() -> Result<()> {
                             .clone()
                             .map(|p| p.display().to_string())
                             .unwrap_or_else(|| "(~/Documents/Ambient)".into())
+                    );
+                    let a = &cfg.assistant;
+                    println!(
+                        "{:<14} {}",
+                        "assistant",
+                        if a.enabled { "on" } else { "off" }
+                    );
+                    println!("  {:<24} {}", "assistant.name", a.name);
+                    println!("  {:<24} {}", "assistant.cooldown_s", a.cooldown_s);
+                    println!(
+                        "  {:<24} {}",
+                        "assistant.max_per_meeting", a.max_per_meeting
+                    );
+                    let ram = ambient::assist::voice::total_ram();
+                    println!(
+                        "  {:<24} {}",
+                        "voice.engine",
+                        match cfg.voice.engine {
+                            Some(e) => e.to_string(),
+                            None => format!(
+                                "auto ({} for {} GB)",
+                                ambient::assist::voice::auto_engine(ram),
+                                ram >> 30
+                            ),
+                        }
+                    );
+                    println!(
+                        "  {:<24} {}",
+                        "voice.speaker",
+                        cfg.voice.speaker.as_deref().unwrap_or("(engine default)")
+                    );
+                    println!(
+                        "  {:<24} {}",
+                        "voice.style",
+                        cfg.voice.style.as_deref().unwrap_or("(none)")
+                    );
+                    for (key, value) in [
+                        ("voice.description", &cfg.voice.description),
+                        ("voice.cue", &cfg.voice.cue),
+                    ] {
+                        println!("  {:<24} {}", key, value.as_deref().unwrap_or("(none)"));
+                    }
+                    println!(
+                        "  {:<24} {}",
+                        "voice.reference",
+                        cfg.voice
+                            .reference
+                            .as_ref()
+                            .map_or_else(|| "(none)".into(), |p| p.display().to_string())
+                    );
+                    println!(
+                        "  {:<24} {}",
+                        "voice.helper_dir",
+                        cfg.voice
+                            .helper_dir
+                            .clone()
+                            .unwrap_or_else(ambient::assist::voice::default_helper_dir)
+                            .display()
                     );
                     println!();
                     println!(

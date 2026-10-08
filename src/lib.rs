@@ -1,5 +1,6 @@
 pub mod api;
 pub mod asr;
+pub mod assist;
 pub mod bench;
 pub mod capture;
 pub mod config;

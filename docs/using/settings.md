@@ -19,6 +19,8 @@ the app does not keep, so the struct in `src/config.rs` and the key list in
 | `sessions_dir` | Where sessions are written. | Path; `default` or the empty string clears it | `~/Documents/Ambient` |
 | `ask_before_recording` | Wait to be told before recording a call the app noticed. | `true`/`yes`/`on`/`1`, or `false`/`no`/`off`/`0` | `true` |
 | `audio_retention_days` | How long the track wavs are kept. `0` deletes them as soon as the transcript exists. | Unsigned integer, or `forever` / `never` to keep them indefinitely | `7` |
+| `assistant` | The live assistant's on/off switch, also in the status menu as **Live Assistant**. | Boolean, as above | `false` |
+| `assistant.*`, `voice.*` | The assistant's name, limits on speaking, and voice. | See [the live assistant](assistant.md#settings) | |
 
 Booleans accept nothing outside those eight words: `ambient config diarize maybe`
 is refused and leaves the setting as it was, rather than reading an unrecognised
