@@ -159,7 +159,7 @@ fn a_child_finalizes_the_session_and_reports_its_progress() {
 }
 
 #[test]
-fn a_childs_own_failure_is_surfaced_and_leaves_the_session_requeueable() {
+fn a_failure_in_the_child_is_surfaced_and_leaves_the_session_requeueable() {
     let fx = Fixture::new("fail");
     // No live pass, so the child loads the VAD model — an empty file.
     let meter = Arc::new(Meter::default());
