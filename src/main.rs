@@ -25,9 +25,9 @@ USAGE
   ambient export <session-dir> [--format <f>] [--out <path>]
                                        write markdown, text, json, srt, vtt or assistant
   ambient config [<key> <value>]       show or change settings
-  ambient mcp                          serve sessions over MCP on stdio
-  ambient assist [--session <id>] [--silent] [--no-play] [--save-audio <dir>]
-                                       the live assistant (off until turned on)
+  ambient mcp [--no-play] [--save-audio <dir>]
+                                       serve sessions, and the live assistant's
+                                       tools, over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
   ambient doctor [--json]              say which of ten things is missing
   ambient probe                        check this machine is viable
@@ -377,37 +377,32 @@ fn main() -> Result<()> {
             eprintln!("  {n} edit(s) appended");
             ambient::session::show(path, false, false)
         }
-        // Read-only, and the whole of it is on stdin and stdout: nothing
-        // else may print to stdout while this runs or the client sees a
-        // protocol error instead of an answer.
-        Some("assist") => {
-            let mut opts = ambient::assist::Options::default();
+        // The whole of it is on stdin and stdout: nothing else may print to
+        // stdout while this runs or the client sees a protocol error instead
+        // of an answer. Sessions are read-only here; the assistant's tools
+        // write only its heartbeat and `assistant.jsonl`.
+        Some("mcp") => {
+            let mut voice_args: Vec<String> = Vec::new();
             while let Some(a) = args.next() {
                 match a.as_str() {
-                    "--session" => {
-                        opts.session = Some(
-                            args.next()
-                                .ok_or_else(|| anyhow::anyhow!("--session needs an id"))?,
-                        )
-                    }
-                    "--silent" => opts.silent = true,
-                    "--no-play" => opts.voice_args.push("--no-play".into()),
+                    // For a demo or a test: the voice runs, nobody hears it.
+                    "--no-play" => voice_args.push("--no-play".into()),
                     "--save-audio" => {
                         let dir = args
                             .next()
                             .ok_or_else(|| anyhow::anyhow!("--save-audio needs a folder"))?;
-                        opts.voice_args.extend(["--save-dir".into(), dir]);
+                        voice_args.extend(["--save-dir".into(), dir]);
                     }
                     other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
                 }
             }
-            ambient::assist::run(opts)
+            ambient::mcp::serve_with(
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+                &ambient::session::home(),
+                ambient::assist::real_voice(voice_args),
+            )
         }
-        Some("mcp") => ambient::mcp::serve(
-            std::io::stdin().lock(),
-            std::io::stdout().lock(),
-            &ambient::session::home(),
-        ),
         Some("doctor") => {
             let flags: Vec<String> = args.collect();
             let json = flags.iter().any(|a| a == "--json");
@@ -732,16 +727,11 @@ fn main() -> Result<()> {
                         if a.enabled { "on" } else { "off" }
                     );
                     println!("  {:<24} {}", "assistant.name", a.name);
-                    println!("  {:<24} {}", "assistant.jump_in_model", a.jump_in_model);
-                    println!("  {:<24} {}", "assistant.reply_model", a.reply_model);
-                    println!("  {:<24} {}", "assistant.threshold", a.threshold);
                     println!("  {:<24} {}", "assistant.cooldown_s", a.cooldown_s);
                     println!(
                         "  {:<24} {}",
                         "assistant.max_per_meeting", a.max_per_meeting
                     );
-                    println!("  {:<24} {}", "assistant.base_url", a.base_url);
-                    println!("  {:<24} {}", "assistant.zdr", a.zdr);
                     let ram = ambient::assist::voice::total_ram();
                     println!(
                         "  {:<24} {}",

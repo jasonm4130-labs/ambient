@@ -19,11 +19,12 @@ bot, transcription account or cloud inference service is required.
 - Transcribes completed speech turns during recording using local CPU models,
   then groups speakers after Stop.
 - Lets you name speakers, edit session details, pin sessions and search transcripts.
-- Exports Markdown, text, JSON, SRT and WebVTT; a read-only MCP server lets an
+- Exports Markdown, text, JSON, SRT and WebVTT; an MCP server lets an
   assistant read the session library made available to it.
-- Optionally lets an AI assistant join the meeting by voice: it follows the live
-  transcript, speaks up when asked or when it has a useful answer, and uses a
-  local voice. Off until you turn it on.
+- Optionally lets an AI assistant join the meeting by voice: an agent in your
+  own Claude Code session follows the live transcript through MCP, speaks up
+  when asked or when it has a useful answer, and uses a local voice. Off until
+  you turn it on.
 - Asks before recording a watched app by default. Audio retention defaults to
   seven days; transcripts remain until you delete the session.
 
@@ -59,9 +60,9 @@ remove quarantine as a first step.
 Ambient performs capture, transcription and speaker separation locally. Model
 downloads require a network connection; recording and inference do not require a
 cloud service. Sessions live in `~/Documents/Ambient` by default. The optional
-[live assistant](docs/using/assistant.md), off by default, sends recent
-transcript text to the cloud models you configure while it is on; audio stays
-on the Mac.
+[live assistant](docs/using/assistant.md), off by default, hands transcript
+text to the agent you run in Claude Code while it is on; audio stays on the
+Mac.
 
 Local files are not an encrypted vault. A synced sessions folder, a backup, an
 export or an assistant connected through MCP can move data beyond this Mac.

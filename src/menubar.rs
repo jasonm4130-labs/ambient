@@ -133,8 +133,8 @@ struct Ivars {
     decline_item: RefCell<Option<Retained<NSMenuItem>>>,
     /// The live assistant's on/off switch, ticked when it is on.
     assistant_item: RefCell<Option<Retained<NSMenuItem>>>,
-    /// "AI assistant listening", shown while an `ambient assist` process is
-    /// in a meeting: the on-screen half of its consent notice.
+    /// "AI assistant listening", shown while an agent is watching a meeting
+    /// through `ambient mcp`: the on-screen half of its consent notice.
     assistant_line: RefCell<Option<Retained<NSMenuItem>>>,
     /// The assistant setting and heartbeat as last read. Both are files, so
     /// they are read every fourth tick rather than on every repaint.
@@ -305,8 +305,8 @@ define_class!(
         }
 
         /// Turn the live assistant on or off. The switch is the setting
-        /// itself: a running `ambient assist` reads it on every poll, so
-        /// turning it off here silences an assistant mid-meeting.
+        /// itself: `ambient mcp` reads it on every watching call, so turning
+        /// it off here silences an assistant mid-meeting.
         #[unsafe(method(toggleAssistant:))]
         fn toggle_assistant(&self, _sender: Option<&AnyObject>) {
             let mut cfg = crate::config::Config::load();

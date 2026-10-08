@@ -6,62 +6,68 @@ sidebar:
 
 # The live assistant
 
-`ambient assist` lets an AI assistant take part in a meeting by voice. It
-follows the transcript of the recording in progress, decides when it has
-something worth adding, and speaks a short reply through a local voice. It is
-**off until you turn it on**, and when it joins a meeting it first says out
-loud that an AI is listening and may speak.
+The live assistant lets an AI take part in a meeting by voice. An agent in your
+own Claude Code session follows the transcript of the recording in progress,
+decides when it has something worth adding, and speaks a short reply through a
+local voice on this Mac. The model is whichever one you run in Claude Code, on
+your own subscription; Ambient needs no API key for it.
 
-It is early software. It sends recent transcript text to cloud models; read
-[what leaves this Mac](#what-leaves-this-mac) before using it with anyone who
-has not agreed to that.
+It is **off until you turn it on**, and when it starts watching a meeting it
+first says out loud that an AI is listening and may speak.
 
-## What it does
+It is early software. The transcript goes to the model you run in Claude
+Code; read [what leaves this Mac](#what-leaves-this-mac) before using it with
+anyone who has not agreed to that.
 
-1. Waits for a recording to start, then reads its transcript as it grows,
-   through the same API that [`ambient mcp`](mcp.md) serves.
-2. Announces itself: "Just so you know, an AI assistant called Claude is
-   listening to this meeting and may speak up." While it is in a meeting, the
-   status menu shows **AI assistant listening — it may speak**.
-3. After each new stretch of transcript, asks a cheap, fast model (default
-   Claude Haiku 5.5) whether to speak. The answer is a yes or no and a
-   confidence. It says yes when someone addresses the assistant by name, when
-   a factual question goes unanswered, or when something clearly wrong is
-   about to be acted on.
-4. On a confident yes, a stronger model (default Claude Sonnet 5.5) writes one
-   to three spoken sentences, and the voice says them.
+## Setting it up
 
-A **threshold** (how confident the yes must be), a **cooldown** after each
-reply and a **cap** per meeting keep it from talking too much. Its own voice,
-picked up again by the microphone, is recognised and never treated as a cue.
+1. Connect Ambient to Claude Code once, as in [MCP setup](mcp.md):
 
-## Turning it on and running it
+   ```sh
+   claude mcp add ambient -- "$(which ambient)" mcp
+   ```
 
-Turn it on from the status menu (**Live Assistant**, which shows a tick when it
-is on) or with:
+2. Turn the assistant on, from the status menu (**Live Assistant**, which
+   shows a tick when it is on) or with:
 
-```sh
-ambient config assistant on
+   ```sh
+   ambient config assistant on
+   ```
+
+## Using it in a meeting
+
+Start recording, then in Claude Code pick a fast model and run the `watch`
+prompt:
+
+```text
+claude --model haiku
+> /mcp__ambient__watch
 ```
 
-Then run it in a terminal, under 1Password so the OpenRouter key never touches
-a file:
+Anything you type after the command is passed on, for example
+`/mcp__ambient__watch Listen out for budget numbers and correct any that are wrong.`
 
-```sh
-op run --env-file .env.assistant.op -- ambient assist
-```
+The agent then:
 
-`.env.assistant.op` holds only an `op://` reference; its comments give the
-`op item create` command for the key. Leave the process running: it joins each
-recording when it starts and leaves when it stops. Turning **Live Assistant**
-off in the menu silences it immediately, even mid-meeting, and Ctrl-C ends it.
+1. Starts watching. Ambient says out loud: "Just so you know, an AI assistant
+   called Claude is listening to this meeting and may speak up." While it
+   watches, the status menu shows **AI assistant listening — it may speak**.
+2. Waits for each burst of speech, reads it, and decides. It speaks when
+   someone addresses it by name, when a factual question put to the room goes
+   unanswered, or when something clearly wrong is about to be acted on.
+   Otherwise it stays quiet.
+3. Speaks one to three short sentences through the local voice.
+4. Stops when the recording stops, when the assistant is turned off, or when
+   you tell it to.
 
-| Flag | Effect |
-| --- | --- |
-| `--session <id>` | Follow only this session, not whichever one is live. |
-| `--silent` | Print replies instead of speaking them. No voice helper starts. |
-| `--no-play` | Generate the voice but do not play it. |
-| `--save-audio <dir>` | Also write each spoken reply to `<dir>/reply-<n>.wav`. |
+Ambient, not the agent, enforces a **cooldown** after each utterance and a
+**cap** per meeting, so a model that loses the thread cannot talk over a
+meeting. Its own voice, picked up again by the microphone, is left out of what
+the agent reads. Turning **Live Assistant** off in the menu silences it
+immediately, even mid-meeting.
+
+Haiku is fast enough to answer about three seconds after its name is said. A
+larger model answers more slowly but may judge better when to speak.
 
 ## The voice
 
@@ -79,8 +85,8 @@ engine's runtime and downloads its model.
 | `kokoro` (Kokoro-82M int8, ONNX) | under 16 GB | ~0.7 s (first sentence) | ~0.4 GB | None |
 
 The figures were measured on an M5 Max; see the
-[design note](../developing/live-assistant.md#measurements). The reply model
-picks a mood for each reply (neutral, warm, amused, excited, apologetic or
+[design note](../developing/live-assistant.md#measurements). The agent
+picks a tone for each utterance (neutral, warm, amused, excited, apologetic or
 concerned). With a preset Qwen3-TTS speaker it becomes tone of voice, and
 `voice.style` adds a standing instruction to every reply, for example
 `ambient config voice.style "Dry and understated."`.
@@ -128,13 +134,8 @@ All are set with `ambient config <key> <value>`; see [settings](settings.md).
 | --- | --- | --- |
 | `assistant` | `off` | The on/off switch. |
 | `assistant.name` | `Claude` | What people call it, and what it answers to. |
-| `assistant.jump_in_model` | `anthropic/claude-haiku-5.5` | Decides whether to speak. Runs often, so keep it cheap and fast. |
-| `assistant.reply_model` | `anthropic/claude-sonnet-5.5` | Writes what is said. |
-| `assistant.threshold` | `0.75` | Confidence (0–1) the jump-in model needs. |
-| `assistant.cooldown_s` | `60` | Seconds of silence after each reply. |
-| `assistant.max_per_meeting` | `10` | Most replies in one meeting. |
-| `assistant.base_url` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint; a Cloudflare AI Gateway URL works. |
-| `assistant.zdr` | `true` | Use only zero-data-retention providers. |
+| `assistant.cooldown_s` | `60` | Seconds of silence after each utterance. |
+| `assistant.max_per_meeting` | `10` | Most utterances in one meeting. |
 | `voice.engine` | `auto` | `auto`, `qwen3-tts`, `supertonic3` or `kokoro`. |
 | `voice.speaker` | engine default | `Vivian` (Qwen3-TTS), `F1` (Supertonic), `af_heart` (Kokoro). |
 | `voice.style` | none | Standing delivery instruction for preset Qwen3-TTS speakers. |
@@ -143,27 +144,25 @@ All are set with `ambient config <key> <value>`; see [settings](settings.md).
 | `voice.cue` | none | A delivery cue appended to the description when designing. |
 | `voice.helper_dir` | `voice/` in the source tree | Where the helper project is. |
 
+To hear the voice without playing it, for a test, start the server as
+`ambient mcp --no-play --save-audio <dir>`; each utterance is written to
+`<dir>/reply-<n>.wav`.
+
 ## What leaves this Mac
 
-Audio never does. When the assistant is on and in a meeting, the most recent 40
-transcript lines (who spoke, when, and what they said) go to the jump-in model
-each time new lines arrive, at most every four seconds; on a yes, the same lines
-go to the reply model. Both calls go through OpenRouter, or through the gateway
-in `assistant.base_url`.
+Audio never does. While the agent watches, each new stretch of transcript (who
+spoke, when, and what they said) goes to the agent, and from there to the model
+it runs. With Claude Code that is Anthropic, under the terms of your Claude
+plan. Ambient itself sends nothing anywhere: it makes no model call and holds
+no key.
 
-With `assistant.zdr` on, OpenRouter routes only to providers with a
-zero-data-retention policy and refuses providers that train on prompts. If no
-such provider serves the model, the call fails and the assistant stays quiet
-rather than falling back.
-
-Each decision and reply is appended to `assistant.jsonl` in the session folder,
-so what the assistant heard, decided and said is kept with the meeting and
-deleted with it.
+Each utterance is appended to `assistant.jsonl` in the session folder, so what
+the assistant said is kept with the meeting and deleted with it.
 
 ## Cost
 
-The jump-in model runs on most new stretches of transcript; the reply model
-runs only when the assistant speaks. With the defaults (Haiku 5.5 at $0.10 and
-$0.50 per million input and output tokens, on OpenRouter's catalogue on
-2026-10-08), each jump-in question costs a fraction of a cent. `assistant.jsonl`
-records each call's cost as OpenRouter reports it.
+The agent runs on your Claude Code plan, so a meeting uses your plan's usage,
+not a separate bill. Ambient groups speech into bursts, so the agent takes one
+short turn per burst rather than one per line. A 75-second sample meeting took
+13 turns with Haiku. Claude Code reported that as $0.006 in API terms, which is
+an equivalent figure, not a charge on a subscription.

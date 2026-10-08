@@ -1,59 +1,35 @@
-//! When the assistant may speak: the rules that sit around the jump-in model.
+//! When the assistant may speak: the limits that sit around the model.
 //!
-//! The model is asked "should I say something now?" and answers with a yes or
-//! no and a confidence. Everything that is not judgement lives here instead,
-//! as plain arithmetic a test can pin down: a confidence threshold, a cooldown
-//! after each reply, a cap per meeting, and a floor on how often the model is
-//! asked at all. Cooldown and cap are checked before the model is called — no
-//! point paying for a question whose answer cannot be acted on — and again
-//! in [`Gate::judge`], so a verdict is never acted on past either limit.
+//! Whether something is worth saying is the model's call, made in the
+//! user's own Claude Code session. How often it may act on that call is not:
+//! a cooldown after each utterance and a cap per meeting are plain arithmetic
+//! here, enforced by `speak` whatever the model decides, so a model that loses
+//! the thread cannot talk over a meeting.
 
 use std::time::{Duration, Instant};
 
-/// The jump-in model's answer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Verdict {
-    pub speak: bool,
-    /// 0 to 1. Anything outside that range is clamped.
-    pub confidence: f32,
-    pub reason: String,
-}
-
-/// Why the assistant is staying quiet.
+/// Why the assistant may not speak right now.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Hold {
     /// It has spoken `max_per_meeting` times already.
     Cap,
     /// It spoke recently; this much of the cooldown is left.
     Cooldown(Duration),
-    /// The model was asked moments ago; this long until it may be asked again.
-    TooSoon(Duration),
-    /// The model said no.
-    No,
-    /// The model said yes, but not confidently enough.
-    BelowThreshold(f32),
 }
 
 impl std::fmt::Display for Hold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Hold::Cap => write!(f, "meeting cap reached"),
-            Hold::Cooldown(d) => write!(f, "cooling down ({}s left)", d.as_secs()),
-            Hold::TooSoon(d) => write!(f, "asking again in {}ms", d.as_millis()),
-            Hold::No => write!(f, "nothing to add"),
-            Hold::BelowThreshold(c) => write!(f, "confidence {c:.2} below threshold"),
+            Hold::Cap => write!(f, "it has spoken as often as one meeting allows"),
+            Hold::Cooldown(d) => write!(f, "cooling down ({}s left)", d.as_secs().max(1)),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Rules {
-    pub threshold: f32,
     pub cooldown: Duration,
     pub max_per_meeting: u32,
-    /// The least time between two questions to the jump-in model. Bounds the
-    /// cost of a meeting where every second brings a new line.
-    pub min_interval: Duration,
 }
 
 /// The gate for one meeting. A new meeting gets a new gate.
@@ -62,7 +38,6 @@ pub struct Gate {
     rules: Rules,
     spoken: u32,
     last_spoke: Option<Instant>,
-    last_asked: Option<Instant>,
 }
 
 impl Gate {
@@ -71,7 +46,6 @@ impl Gate {
             rules,
             spoken: 0,
             last_spoke: None,
-            last_asked: None,
         }
     }
 
@@ -79,9 +53,12 @@ impl Gate {
         self.spoken
     }
 
-    /// Whether the assistant could speak at all right now, regardless of
-    /// what the model would say.
-    fn open(&self, now: Instant) -> Result<(), Hold> {
+    pub fn rules(&self) -> &Rules {
+        &self.rules
+    }
+
+    /// Whether the assistant may speak at `now`.
+    pub fn may_speak(&self, now: Instant) -> Result<(), Hold> {
         if self.spoken >= self.rules.max_per_meeting {
             return Err(Hold::Cap);
         }
@@ -92,35 +69,6 @@ impl Gate {
             }
         }
         Ok(())
-    }
-
-    /// Before calling the jump-in model: is there any point?
-    pub fn may_ask(&self, now: Instant) -> Result<(), Hold> {
-        self.open(now)?;
-        if let Some(t) = self.last_asked {
-            let since = now.saturating_duration_since(t);
-            if since < self.rules.min_interval {
-                return Err(Hold::TooSoon(self.rules.min_interval - since));
-            }
-        }
-        Ok(())
-    }
-
-    /// The model was asked at `now`.
-    pub fn asked(&mut self, now: Instant) {
-        self.last_asked = Some(now);
-    }
-
-    /// After the model answered: speak, or why not.
-    pub fn judge(&self, verdict: &Verdict, now: Instant) -> Result<(), Hold> {
-        if !verdict.speak {
-            return Err(Hold::No);
-        }
-        let confidence = verdict.confidence.clamp(0.0, 1.0);
-        if confidence < self.rules.threshold {
-            return Err(Hold::BelowThreshold(confidence));
-        }
-        self.open(now)
     }
 
     /// The assistant spoke at `now`.
@@ -161,82 +109,26 @@ mod tests {
 
     fn rules() -> Rules {
         Rules {
-            threshold: 0.75,
             cooldown: Duration::from_secs(60),
             max_per_meeting: 2,
-            min_interval: Duration::from_secs(5),
-        }
-    }
-
-    fn yes(confidence: f32) -> Verdict {
-        Verdict {
-            speak: true,
-            confidence,
-            reason: "asked directly".into(),
         }
     }
 
     #[test]
-    fn a_confident_yes_on_a_fresh_meeting_speaks() {
-        let g = Gate::new(rules());
-        let t = Instant::now();
-        assert_eq!(g.may_ask(t), Ok(()));
-        assert_eq!(g.judge(&yes(0.9), t), Ok(()));
+    fn a_fresh_meeting_may_speak() {
+        assert_eq!(Gate::new(rules()).may_speak(Instant::now()), Ok(()));
     }
 
     #[test]
-    fn the_threshold_is_inclusive_and_a_no_is_a_no_at_any_confidence() {
-        let g = Gate::new(rules());
-        let t = Instant::now();
-        assert_eq!(g.judge(&yes(0.75), t), Ok(()));
-        assert_eq!(g.judge(&yes(0.74), t), Err(Hold::BelowThreshold(0.74)));
-        let no = Verdict {
-            speak: false,
-            confidence: 1.0,
-            reason: "small talk".into(),
-        };
-        assert_eq!(g.judge(&no, t), Err(Hold::No));
-    }
-
-    #[test]
-    fn an_out_of_range_confidence_is_clamped_not_trusted() {
-        let g = Gate::new(rules());
-        let t = Instant::now();
-        assert_eq!(g.judge(&yes(7.0), t), Ok(()));
-        assert_eq!(g.judge(&yes(-1.0), t), Err(Hold::BelowThreshold(0.0)));
-    }
-
-    #[test]
-    fn after_speaking_it_cools_down_before_asking_or_speaking_again() {
+    fn after_speaking_it_cools_down() {
         let mut g = Gate::new(rules());
         let t = Instant::now();
         g.spoke(t);
-        let later = t + Duration::from_secs(20);
         assert_eq!(
-            g.may_ask(later),
+            g.may_speak(t + Duration::from_secs(20)),
             Err(Hold::Cooldown(Duration::from_secs(40)))
         );
-        assert_eq!(
-            g.judge(&yes(0.99), later),
-            Err(Hold::Cooldown(Duration::from_secs(40)))
-        );
-        let after = t + Duration::from_secs(60);
-        assert_eq!(g.may_ask(after), Ok(()));
-        assert_eq!(g.judge(&yes(0.99), after), Ok(()));
-    }
-
-    #[test]
-    fn the_cooldown_is_rechecked_after_the_model_answers() {
-        // A slow reply-model call can finish inside a cooldown that started
-        // while the jump-in question was in flight; judge must still refuse.
-        let mut g = Gate::new(rules());
-        let t = Instant::now();
-        assert_eq!(g.may_ask(t), Ok(()));
-        g.spoke(t + Duration::from_secs(1));
-        assert!(matches!(
-            g.judge(&yes(0.9), t + Duration::from_secs(2)),
-            Err(Hold::Cooldown(_))
-        ));
+        assert_eq!(g.may_speak(t + Duration::from_secs(60)), Ok(()));
     }
 
     #[test]
@@ -247,10 +139,9 @@ mod tests {
         g.spoke(t + Duration::from_secs(61));
         assert_eq!(g.spoken(), 2);
         let much_later = t + Duration::from_secs(3600);
-        assert_eq!(g.may_ask(much_later), Err(Hold::Cap));
-        assert_eq!(g.judge(&yes(1.0), much_later), Err(Hold::Cap));
+        assert_eq!(g.may_speak(much_later), Err(Hold::Cap));
         // A new meeting starts with a new gate.
-        assert_eq!(Gate::new(rules()).may_ask(much_later), Ok(()));
+        assert_eq!(Gate::new(rules()).may_speak(much_later), Ok(()));
     }
 
     #[test]
@@ -259,21 +150,7 @@ mod tests {
             max_per_meeting: 0,
             ..rules()
         });
-        assert_eq!(g.may_ask(Instant::now()), Err(Hold::Cap));
-    }
-
-    #[test]
-    fn the_model_is_not_asked_more_often_than_the_minimum_interval() {
-        let mut g = Gate::new(rules());
-        let t = Instant::now();
-        g.asked(t);
-        assert_eq!(
-            g.may_ask(t + Duration::from_secs(2)),
-            Err(Hold::TooSoon(Duration::from_secs(3)))
-        );
-        assert_eq!(g.may_ask(t + Duration::from_secs(5)), Ok(()));
-        // Asking does not count against the cap; only speaking does.
-        assert_eq!(g.spoken(), 0);
+        assert_eq!(g.may_speak(Instant::now()), Err(Hold::Cap));
     }
 
     #[test]

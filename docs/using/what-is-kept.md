@@ -18,8 +18,9 @@ folder. Ambient does not encrypt them separately from your Mac's storage.
 Cloud folder sync and backups can copy them elsewhere. Exports and MCP clients
 can also share transcript text beyond this Mac; see [MCP access](mcp.md#access-and-privacy).
 The [live assistant](assistant.md#what-leaves-this-mac), when you turn it on,
-sends recent transcript lines to cloud models and keeps a log of its decisions
-in the session's `assistant.jsonl`.
+hands the transcript to the agent you run in Claude Code, which sends it to
+that agent's model, and keeps a log of what it said in the session's
+`assistant.jsonl`.
 
 The recording prompt asks you, not the other participants. Obtain appropriate
 permission before recording. Ambient does not join the call or announce the

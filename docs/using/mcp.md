@@ -13,10 +13,16 @@ of scraping `transcript.md`. It speaks newline-delimited JSON-RPC 2.0 over
 stdio: no port, no token, no daemon. The client starts the process, and the
 process exits when the client closes its stdin.
 
-It exposes three tools and **nothing writes**. There is no verb here to start a
-recording, name a speaker or delete a session; a reader can read, and that is
-the whole surface. Ambient supplies the ears and nothing else: no lookups, no
-summaries, no prompting built in. The assistant on the other end brings its own.
+It exposes three session tools and **none of them writes**. There is no verb
+here to start a recording, name a speaker or delete a session; a reader can
+read, and that is the whole surface for sessions. Ambient supplies the ears and
+nothing else: no lookups, no summaries. The assistant on the other end brings
+its own.
+
+The same server also carries [the live assistant](assistant.md): four tools
+that let an agent watch the meeting being recorded and speak in it, and a
+`watch` prompt that tells it how. Those tools do nothing while the assistant is
+turned off; see that page for what they write and say.
 
 ## Access and privacy
 
@@ -64,11 +70,14 @@ To check the registration without a client, pipe a request in yourself. The
 server answers one line per request:
 
 ```sh
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ambient mcp
-{"id":1,"jsonrpc":"2.0","result":{"tools":[{"description":"Every recorded session on this machine, newest first.","inputSchema":{"properties":{},"type":"object"},"name":"sessions"},{"description":"The lines of one session, including one being recorded now.","inputSchema":{"properties":{"session":{"description":"The session id, as `sessions` reports it.","type":"string"},"since":{"description":"Skip this many lines; pass back the previous reply's `next`.","type":"integer"},"verbatim":{"description":"Return the words as recognised, before any naming edits.","type":"boolean"}},"required":["session"],"type":"object"},"name":"transcript"},{"description":"What Ambient is doing right now: the live session, if any, and what is waiting.","inputSchema":{"properties":{},"type":"object"},"name":"status"}]}}
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ambient mcp | jq -c '[.result.tools[].name]'
+["sessions","transcript","status","watch_meeting","wait_for_transcript","speak","stop_watching"]
 ```
 
-## The three tools
+Without `jq`, the answer is one JSON-RPC line holding each tool's name,
+description and input schema.
+
+## The three session tools
 
 Every tool answers in the MCP shape — `{"content":[{"type":"text","text":"…"}],"isError":false}`
 — where the text is the tool's JSON, serialised compactly on one line. The

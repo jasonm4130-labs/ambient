@@ -6,125 +6,172 @@ sidebar:
 
 # The live assistant
 
-A design note for `ambient assist` (`src/assist/`) and its voice helper
-(`voice/`). The user's view is [the live assistant](../using/assistant.md). This
-note records what was chosen, and why, for the parts a reviewer would otherwise
-have to reverse-engineer: the process layout, the helper's protocol, model
-downloads, the jump-in prompt and the gate around it.
+A design note for the live assistant: the watching tools on `ambient mcp`
+(`src/assist/`, `src/mcp.rs`) and the voice helper (`voice/`). The user's view
+is [the live assistant](../using/assistant.md). This note records what was
+chosen, and why, for the parts a reviewer would otherwise have to
+reverse-engineer: where the model runs, the tools and prompt that drive it, the
+helper's protocol, and model downloads.
 
-## Processes
+## Where the model runs
+
+The assistant's judgement is not in Ambient. The user runs Claude Code, picks
+a model (`claude --model haiku`), and runs the `watch` prompt that `ambient mcp`
+offers. The agent then loops on Ambient's tools, deciding after each stretch of
+transcript whether to speak.
 
 ```mermaid
 flowchart LR
     rec["Ambient.app<br/>capture + ASR"] -->|"raw.jsonl"| disk[("session folder")]
-    disk -->|"api::call transcript<br/>since cursor"| assist["ambient assist"]
-    assist -->|"jump-in, then reply"| or["OpenRouter<br/>(or AI Gateway)"]
-    assist -->|"JSON lines on stdin"| helper["voice helper<br/>uv run ambient-voice"]
-    helper -->|"events on stdout"| assist
-    assist -->|"assistant.json heartbeat"| menu["status menu"]
+    cc["Claude Code<br/>(the user's model)"] <-->|"MCP over stdio"| mcp["ambient mcp"]
+    disk -->|"api::call transcript<br/>since cursor"| mcp
+    mcp -->|"JSON lines on stdin"| helper["voice helper<br/>uv run ambient-voice"]
+    helper -->|"events on stdout"| mcp
+    mcp -->|"assistant.json heartbeat"| menu["status menu"]
 ```
 
-Three processes, and the recorder is never one of the new ones.
+An earlier cut of this feature ran its own loop, `ambient assist`, which called
+a cheap jump-in model and a reply model on OpenRouter. It was replaced before
+release, for three reasons:
 
-- **The recorder** is unchanged. It already publishes completed turns to
-  `raw.jsonl` during capture, which is all the assistant needs.
-- **`ambient assist`** is the same binary as a CLI verb, started under
-  `op run` so the OpenRouter key arrives in its environment and nowhere else.
-  It loads no models: its footprint is a JSON client's.
-- **The voice helper** is a Python program, run with `uv run`, that loads one
-  TTS model and speaks.
+- **The user already pays for a model.** A subscription to Claude covers the
+  agent, so the assistant needs no API key, no 1Password item and no spend
+  per meeting.
+- **Ambient stays off the network.** With the loop gone, Ambient makes no model
+  call and holds no credential; what leaves the Mac is whatever the user's
+  own agent sends.
+- **One mode, not two.** Keeping the loop as an option would have kept an HTTP
+  client, a secrets file, two prompts and a second set of settings, to
+  duplicate what the agent does.
 
-The split follows the memory budget. Ambient's own process must stay near
-1 GiB beside live ASR ([measurements](measurements.md)); the voices that sound
-human need 0.4–2.7 GB of their own. A model in the recorder would break the
-budget, and a TTS crash would take a recording down with it.
+What did not move is everything that must hold whatever the agent does:
+consent, the limits on speaking, recognising its own voice, and the voice
+itself. Those live in `ambient mcp`, where an agent cannot skip them.
 
-### Reading the transcript
+The process split still follows the memory budget. Ambient's own process must
+stay near 1 GiB beside live ASR ([measurements](measurements.md)); the voices
+that sound human need 0.4–2.7 GB of their own. `ambient mcp` loads no model:
+through a replayed meeting it held 2.5–3.1 MB, sampled every two seconds with
+`footprint`. The voice is a child process with its own memory, 1.1 GB with
+the cloned voice.
 
-`ambient assist` calls `api::call("status")` and `api::call("transcript",
-{session, since})` in process: the same dispatcher, with the same append cursor,
-that `ambient mcp` puts on the wire ([ADR 0016](../adr/0016-mcp-verb-for-live-reading.md)).
-Spawning `ambient mcp` and speaking JSON-RPC to it would return the same bytes
-with an extra process and a pipe to supervise.
+## The tools
 
-A session is live while `audio/room.native.wav` keeps growing, which is what
-`status.live` reports. The assistant joins a session when it becomes live,
-treats what was already said as context rather than a cue, and leaves when it
-stops being live, when `assistant` is turned off, or on Ctrl-C/SIGTERM.
+`ambient mcp` keeps its three session tools and adds four. `src/assist/mod.rs`
+holds their state, `Watch`, one per server process.
 
-### On/off and the consent notice
+| Tool | What it does |
+| --- | --- |
+| `watch_meeting` | Refuses unless `assistant` is on and a session is being recorded. Otherwise speaks the consent notice, starts the heartbeat, and returns the last 40 lines as context, the assistant's name and the limits. Calling it again for the same meeting does not repeat the notice. |
+| `wait_for_transcript` | Blocks until new lines arrive, then returns them as `[mm:ss] who: text`. It also returns `status` (`live`, `ended` or `off`), whether speaking is allowed now, and how many lines were left out as the assistant's own voice. |
+| `speak` | Says up to 600 characters in one of six tones, through the voice helper. Refused while off, before `watch_meeting`, during the cooldown and past the cap. Returns once the line has been said. |
+| `stop_watching` | Ends the watch: the heartbeat goes and the voice is unloaded. |
 
-The switch is the `assistant` setting, default off. The process re-reads it on
-every one-second poll, so the menu's **Live Assistant** item silences an
-assistant mid-meeting without signalling the process.
+A refusal is a tool result with `isError`, worded for the agent: what happened
+and what to do next. A protocol error would read to the agent as a broken
+server.
 
-On joining a meeting the assistant first speaks a fixed notice that an AI is
-listening and may speak; there is no setting to skip it. While in a meeting it
-rewrites `assistant.json` beside the config file each poll with its pid,
-session and state. The status menu reads that file every two seconds and shows
+### Waiting and batching
+
+`wait_for_transcript` holds its cursor on the server, so the agent passes
+nothing but an optional `timeout_s` (default 30, at most 120). It polls the
+transcript every half second and returns a batch when one of these happens:
+
+- the room has been quiet for 3 s after a new line;
+- 20 s have passed since the batch's first line;
+- a line says the assistant's name, which returns at once;
+- the timeout passes with nothing new, which returns an empty batch.
+
+The batching keeps the agent's turns to one per burst of speech rather than one
+per line. In the sample meeting, 14 lines over 75 s took 9 turns. Lines that
+were in the transcript before watching started come back once, from
+`watch_meeting`, as context and not as news.
+
+The MCP loop is synchronous, so a wait holds it. Claude Code calls one tool at
+a time and its tool timeout is far longer than the two-minute cap, so nothing
+queues behind a wait.
+
+### On/off, consent and the notice
+
+The switch is the `assistant` setting, default off. `ambient mcp` re-reads it
+on every watching call and on every poll inside a wait, so the menu's
+**Live Assistant** item silences an assistant mid-meeting. The next wait
+returns `status: off` and the watch ends.
+
+Watching starts by speaking a fixed notice that an AI is listening and may
+speak; there is no setting to skip it. If the notice cannot be spoken, for
+example because the voice helper will not start, `watch_meeting` refuses: a
+listener nobody heard announced is the failure this design exists to prevent.
+
+While it watches, a thread rewrites `assistant.json` beside the config file
+every two seconds, with its pid, session and state. The status menu shows
 **AI assistant listening — it may speak** while the file is under ten seconds
-old and its pid is alive, so a crashed assistant does not leave a stale
-notice.
+old and its pid is alive. The file is removed when the watch ends, when the
+server exits, and when the agent has made no call for three minutes. An agent
+that stopped looping without saying so therefore stops claiming to listen.
 
-## Deciding to speak
+### Limits on speaking
 
-Each poll that brings new lines from a person may ask the jump-in model. The
-[`Gate`](https://github.com/jasonm4130-labs/ambient/blob/main/src/assist/gate.rs)
-decides what is allowed, in this order:
+`speak` enforces two limits, whatever the agent decides
+([`gate.rs`](https://github.com/jasonm4130-labs/ambient/blob/main/src/assist/gate.rs)):
 
-1. **Cap:** `assistant.max_per_meeting` replies, then silence until the next
-   meeting.
-2. **Cooldown:** `assistant.cooldown_s` after each reply.
-3. **Minimum interval:** the jump-in model is asked at most every four seconds.
-   Lines that arrive sooner stay pending for the next poll; lines that arrive
-   during a cooldown are kept as context but do not queue a question.
-4. **Verdict:** the model's `speak` must be true and its `confidence` (clamped
-   to 0–1) at least `assistant.threshold`.
+- `assistant.cooldown_s` (default 60) after each utterance;
+- `assistant.max_per_meeting` (default 10) utterances, then silence until the
+  next meeting.
 
-Cap and cooldown are checked before the model is called, so a held step costs
-nothing, and again on the verdict. Anything unreadable in the model's answer is
-a no: silence is the safe failure for a voice in a meeting.
-
-### The jump-in prompt
-
-The model sees the last 40 lines as `[mm:ss] who: text` and is told to make "no"
-the easy answer. It says yes only when:
-
-- someone addresses the assistant by name, or asks "the AI" something;
-- a factual question was asked, nobody answered it, and a short factual answer
-  would help;
-- something clearly and checkably wrong is about to be acted on.
-
-It says no to small talk, opinions, brainstorming, questions people are already
-answering, rhetorical questions and the assistant's own words, and when unsure.
-It answers with one JSON object, `{"speak", "confidence", "reason"}`. The
-reason, ten words or fewer, is passed to the reply model as why it was brought
-in. The full text is `jump_in_system` in `src/assist/llm.rs`.
-
-The parser accepts the object wherever it appears in the reply, because a
-model that wraps JSON in a sentence or a code fence has still answered. The
-request does not use `response_format`, so one parser serves every model on
-the endpoint.
-
-### The reply
-
-The reply model gets the same lines and the reason, and returns
-`{"text", "emotion"}`: one to three short spoken sentences, with no markdown or
-lists, and one of six moods (neutral, warm, amused, excited, apologetic,
-concerned). An unknown mood reads as neutral, and a short plain-text answer is
-used as speech.
-
-The defaults are Claude Haiku 5.5 for the jump-in call and Claude Sonnet 5.5 for
-the reply, both on OpenRouter's catalogue as of 2026-10-08. Both are settings,
-so a measured comparison can replace either without a code change.
+An utterance whose voice failed still counts, since retrying a stale remark
+later would be worse than missing it. Each utterance is appended to the
+session's `assistant.jsonl` with its text, tone and timings.
 
 ### Its own voice
 
-The speakers feed the microphone, so each reply comes back as a transcript line
-a few seconds later. A line counts as an echo when it has at least three words
-and at least 60% of them appear in something the assistant said in the last two
-minutes, the consent notice included. An echo is kept in the context, labelled
-as the assistant, and never queues a question.
+The speakers feed the microphone, so each utterance comes back as a transcript
+line a few seconds later. A line counts as an echo when it has at least three
+words and at least 60% of them appear in something the assistant said in the
+last two minutes, the consent notice included. Echoes are left out of the batch
+and only counted, so the agent never answers itself.
+
+### The `watch` prompt
+
+`ambient mcp` also serves one MCP prompt, `watch`, which Claude Code offers as
+`/mcp__ambient__watch`; whatever the user types after it is appended as
+`focus`. The full text is `watch_prompt` in `src/assist/mod.rs`. It tells the
+agent:
+
+- to call `watch_meeting` once, then loop on `wait_for_transcript`, ending
+  every turn in a tool call while the meeting is live;
+- to speak when addressed by name or as "the AI" (straight away), when a
+  factual question put to the room goes unanswered (only after the next lines
+  show nobody answered), or when something clearly wrong is about to be acted
+  on, and otherwise to stay silent;
+- to say one to three sentences, at most about 40 words, as plain speech;
+- to write almost nothing between calls, which keeps each turn cheap;
+- to stop when the meeting ends or is switched off.
+
+A prompt served by the MCP server, rather than a Claude Code skill or command
+file, works wherever `ambient mcp` is connected and needs no extra install.
+
+### The demo
+
+On 2026-10-09 a real Claude Code session (`claude -p "/mcp__ambient__watch"
+--model haiku`, signed in with a subscription, no API key) watched the replayed
+75-second sample meeting. The voice was the cloned v1-gravel voice, run with
+`--no-play`. A feeder wrote each utterance back into the room track 3 s later,
+as speakers would.
+
+- **Consent:** it spoke the notice first.
+- **Small talk:** it stayed silent through the greetings, weekend chat and
+  coffee.
+- **Named question:** asked by name for a rate limit, it answered in two
+  sentences. First sound came 3.2 s after the question was said.
+- **Question to the room:** asked "429 or 503?", it waited until someone said
+  they were not sure, then answered 2.6 s after the room paused.
+- **Its own voice:** all three echoes were left out.
+- **Ending:** when the recording stopped it ended and summarised what it had
+  said.
+
+In all it took 13 turns, and the session reported an equivalent API cost of
+$0.006.
 
 ## The voice helper
 
@@ -150,24 +197,24 @@ stream. A bad request line is an error event, never a crash.
 
 `voice::Voice` owns the child:
 
-- **Start:** `ambient assist` warms the helper at launch, so the first reply is
-  not also a cold start. It waits up to ten minutes for `ready`, since the first
+- **Start:** `watch_meeting` starts the helper, because the consent notice is
+  its first line. It waits up to thirty minutes for `ready`, since the first
   run downloads the model, and kills a helper that does not answer in time.
-- **Crash:** a helper that dies mid-reply is restarted and asked once more.
-  After three failures in a row speech is switched off for the rest of the run;
-  the assistant keeps deciding and prints its replies.
+- **Crash:** a helper that dies mid-line is restarted and asked once more.
+  After three failures in a row speech is switched off for that watch, and
+  `speak` reports the failure to the agent.
 - **Error:** an engine error on one line, such as text it cannot synthesise, is
   reported without restarting a healthy helper.
-- **Idle:** the helper stays loaded for the whole meeting. A cold start would
-  make a reply about 1.5 s late. Between meetings it is stopped after five
-  minutes without speech, which returns its memory, and it starts again when
-  needed.
+- **Lifetime:** the helper stays loaded for the whole watch, because a cold
+  start would make a reply about 1.5 s late. It is stopped when the watch
+  ends, which returns its memory, and the next watch starts a fresh one from
+  the settings of the day.
 - **Stop:** `quit` is sent first; a helper still running three seconds later
   is killed.
 
-Speaking blocks the poll loop. Lines that arrive meanwhile are read on the next
-poll, and nothing is lost because the cursor counts lines. The assistant cannot
-be interrupted mid-sentence.
+`speak` returns once the line has been said. Lines that arrive meanwhile are
+read by the next wait, and nothing is lost because the cursor counts lines.
+The assistant cannot be interrupted mid-sentence.
 
 ### Engines, chosen per machine
 
@@ -298,6 +345,9 @@ same was left to a listen; the A/B clips are outside the repository.
   from the same description, is the untested next step.
 - No Settings-page control. The switch is in the status menu and
   `ambient config`.
-- No eval of the jump-in prompt beyond the gate's unit tests and a sample
-  meeting. Model choice should follow a measured comparison on recorded
-  meetings.
+- No eval of the `watch` prompt beyond the tools' unit tests and the sample
+  meeting. Which model watches is the user's choice in Claude Code; Haiku was
+  enough for the sample, and a measured comparison on recorded meetings should
+  settle the default advice.
+- No agent other than Claude Code tried. Any MCP client that calls tools in a
+  loop should work, but only Claude Code was run.

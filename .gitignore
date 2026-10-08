@@ -10,7 +10,6 @@
 .env
 .env.*
 !.env.op
-!.env.assistant.op
 *.p8
 *.p12
 /recordings/

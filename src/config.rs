@@ -33,14 +33,16 @@ pub struct Config {
     /// transcript exists; `None` keeps it forever. The audio is the most
     /// sensitive artefact here and the least useful once the text exists.
     pub audio_retention_days: Option<u32>,
-    /// The live assistant (`ambient assist`). Off unless turned on.
+    /// The live assistant (`ambient mcp`'s watching tools). Off unless
+    /// turned on.
     pub assistant: AssistantConfig,
     /// The assistant's voice. Per machine, because the right engine depends on
     /// how much memory this Mac has.
     pub voice: VoiceConfig,
 }
 
-/// What the live assistant listens with and how readily it speaks.
+/// Whether the live assistant may watch a meeting, and how often it may
+/// speak. What it says is the agent's own judgement.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AssistantConfig {
@@ -49,23 +51,10 @@ pub struct AssistantConfig {
     pub enabled: bool,
     /// The name people address it by, and the name it answers to.
     pub name: String,
-    /// The cheap, fast model that decides whether to speak at all. It runs on
-    /// every new stretch of transcript, so cost and latency matter most here.
-    pub jump_in_model: String,
-    /// The stronger model that writes what is said, called only on a yes.
-    pub reply_model: String,
-    /// How sure the jump-in model must be, from 0 to 1, before a reply is
-    /// written.
-    pub threshold: f32,
     /// Seconds of silence from the assistant after it speaks.
     pub cooldown_s: u32,
     /// The most times it speaks in one meeting.
     pub max_per_meeting: u32,
-    /// The OpenAI-compatible endpoint. OpenRouter directly, or a Cloudflare AI
-    /// Gateway URL that forwards to it.
-    pub base_url: String,
-    /// Ask OpenRouter for zero-data-retention providers only.
-    pub zdr: bool,
 }
 
 impl Default for AssistantConfig {
@@ -73,13 +62,8 @@ impl Default for AssistantConfig {
         Self {
             enabled: false,
             name: "Claude".into(),
-            jump_in_model: "anthropic/claude-haiku-5.5".into(),
-            reply_model: "anthropic/claude-sonnet-5.5".into(),
-            threshold: 0.75,
             cooldown_s: 60,
             max_per_meeting: 10,
-            base_url: "https://openrouter.ai/api/v1".into(),
-            zdr: true,
         }
     }
 }
@@ -220,19 +204,8 @@ impl Config {
             }
             "assistant" => self.assistant.enabled = flag(value)?,
             "assistant.name" => self.assistant.name = nonempty(key, value)?,
-            "assistant.jump_in_model" => self.assistant.jump_in_model = nonempty(key, value)?,
-            "assistant.reply_model" => self.assistant.reply_model = nonempty(key, value)?,
-            "assistant.threshold" => {
-                let t: f32 = value.parse()?;
-                if !(0.0..=1.0).contains(&t) {
-                    anyhow::bail!("assistant.threshold is a confidence from 0 to 1, not {t}");
-                }
-                self.assistant.threshold = t
-            }
             "assistant.cooldown_s" => self.assistant.cooldown_s = value.parse()?,
             "assistant.max_per_meeting" => self.assistant.max_per_meeting = value.parse()?,
-            "assistant.base_url" => self.assistant.base_url = nonempty(key, value)?,
-            "assistant.zdr" => self.assistant.zdr = flag(value)?,
             "voice.engine" => {
                 self.voice.engine = match value {
                     "auto" | "default" => None,
@@ -248,9 +221,8 @@ impl Config {
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
                  threshold, sessions_dir, ask_before_recording, audio_retention_days, \
-                 assistant, assistant.name, assistant.jump_in_model, \
-                 assistant.reply_model, assistant.threshold, assistant.cooldown_s, \
-                 assistant.max_per_meeting, assistant.base_url, assistant.zdr, \
+                 assistant, assistant.name, assistant.cooldown_s, \
+                 assistant.max_per_meeting, \
                  voice.engine, voice.speaker, voice.style, voice.helper_dir, \
                  voice.description, voice.cue, voice.reference"
             ),
@@ -418,15 +390,14 @@ mod tests {
     fn assistant_settings_are_validated_and_round_trip() {
         let p = temp("assistant");
         let mut c = Config::default();
-        c.set("assistant.threshold", "0.6").unwrap();
-        assert!(c.set("assistant.threshold", "1.5").is_err());
+        c.set("assistant.cooldown_s", "30").unwrap();
+        assert!(c.set("assistant.cooldown_s", "soon").is_err());
         assert_eq!(
-            c.assistant.threshold, 0.6,
+            c.assistant.cooldown_s, 30,
             "a refused value leaves it alone"
         );
-        assert!(c.set("assistant.reply_model", " ").is_err());
-        c.set("assistant.reply_model", "anthropic/claude-opus-5.5")
-            .unwrap();
+        assert!(c.set("assistant.name", " ").is_err());
+        c.set("assistant.name", "Hamish").unwrap();
         c.set("voice.engine", "qwen3-tts").unwrap();
         c.set("voice.style", "Dry and understated.").unwrap();
         c.set("voice.description", "An older Scottish man.")

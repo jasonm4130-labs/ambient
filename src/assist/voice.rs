@@ -6,9 +6,8 @@
 //! would break the recorder's memory budget and let a model crash take a
 //! recording down with it. Instead `voice/` holds a small Python helper that
 //! reads one JSON request per line on stdin and answers with one event per
-//! line on stdout; [`Voice`] starts it on the first reply, restarts it when it
-//! dies, stops it after an idle spell, and gives up on speech — not on the
-//! assistant — when it keeps dying.
+//! line on stdout; [`Voice`] starts it on the first line, restarts it when it
+//! dies, and gives up on speech — not on the assistant — when it keeps dying.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -185,8 +184,9 @@ impl Helper {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // The helper's diagnostics land in the assistant's own stderr,
-            // which is where someone running `ambient assist` is looking.
+            // The helper's diagnostics land in `ambient mcp`'s stderr, which
+            // the MCP client keeps as the server's log. Never its stdout:
+            // that is the protocol.
             .stderr(Stdio::inherit())
             .spawn()
             .with_context(|| format!("could not start the voice helper ({})", program.display()))?;
@@ -329,8 +329,6 @@ pub struct Limits {
     pub ready_within: Duration,
     /// One utterance, start to last sample.
     pub say_within: Duration,
-    /// Stop a helper nobody has needed for this long, to give its memory back.
-    pub idle: Duration,
     /// Consecutive failed starts or crashes before speech is given up.
     pub max_failures: u32,
 }
@@ -342,21 +340,19 @@ impl Default for Limits {
             // downloads the 1.7B VoiceDesign model too.
             ready_within: Duration::from_secs(1800),
             say_within: Duration::from_secs(120),
-            idle: Duration::from_secs(300),
             max_failures: 3,
         }
     }
 }
 
-/// The supervised voice: started on demand, restarted after a crash, stopped
-/// when idle, and switched off for the rest of the run after
-/// `max_failures` failures in a row.
+/// The supervised voice: started on demand, restarted after a crash, and
+/// switched off for the rest of the watch after `max_failures` failures in a
+/// row.
 pub struct Voice {
     program: PathBuf,
     args: Vec<String>,
     limits: Limits,
     helper: Option<Helper>,
-    last_used: Instant,
     failures: u32,
     given_up: bool,
 }
@@ -368,7 +364,6 @@ impl Voice {
             args,
             limits,
             helper: None,
-            last_used: Instant::now(),
             failures: 0,
             given_up: false,
         }
@@ -420,7 +415,6 @@ impl Voice {
     /// Say `text`. A helper that died since the last reply is restarted first;
     /// one that dies mid-reply is restarted and asked once more.
     pub fn say(&mut self, text: &str, emotion: &str) -> Result<Spoken> {
-        self.last_used = Instant::now();
         let within = self.limits.say_within;
         let first = self.ensure_started()?.say(text, emotion, within);
         let result = match first {
@@ -439,15 +433,6 @@ impl Voice {
             Err(_) => {}
         }
         result
-    }
-
-    /// Stop the helper if it has been idle too long. Called from the poll loop
-    /// while no meeting is on: in a meeting it stays warm, because a reply
-    /// that has to load the model first is a second and a half late.
-    pub fn tick(&mut self) {
-        if self.helper.is_some() && self.last_used.elapsed() >= self.limits.idle {
-            self.stop();
-        }
     }
 
     pub fn stop(&mut self) {
@@ -596,7 +581,6 @@ done
         Limits {
             ready_within: Duration::from_secs(5),
             say_within: Duration::from_secs(5),
-            idle: Duration::from_secs(300),
             max_failures: 3,
         }
     }
@@ -693,20 +677,12 @@ done
     }
 
     #[test]
-    fn an_idle_helper_is_stopped_and_comes_back_when_needed() {
+    fn a_stopped_helper_comes_back_when_needed() {
         let (p, a) = fake("idle", SPEAKS);
-        let mut v = Voice::new(
-            p,
-            a,
-            Limits {
-                idle: Duration::from_millis(50),
-                ..quick()
-            },
-        );
+        let mut v = Voice::new(p, a, quick());
         v.say("hello", "warm").unwrap();
-        std::thread::sleep(Duration::from_millis(80));
-        v.tick();
-        assert!(!v.is_running(), "idle past the limit");
+        v.stop();
+        assert!(!v.is_running());
         v.say("back", "warm").unwrap();
         assert!(v.is_running());
     }

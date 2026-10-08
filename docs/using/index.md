@@ -27,9 +27,9 @@ contains silence is the failure you will hit, and it can be a permissions or lau
 transcript to Claude Code or any other MCP client as data. Registration, the
 three read-only tools, and how to follow a session while it records.
 
-**[The live assistant](assistant.md)** — `ambient assist` lets an AI assistant
-join a meeting by voice. Off until you turn it on; read what it sends off the
-Mac first.
+**[The live assistant](assistant.md)** — an agent in your own Claude Code
+session joins a meeting by voice through `ambient mcp`. Off until you turn it
+on; read what it sends off the Mac first.
 
 ## What a recording produces
 

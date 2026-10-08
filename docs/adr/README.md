@@ -77,3 +77,4 @@ the record lands unplaced in the nav, which is nearly as good as unwritten.
 | 0014 | [Developer ID and notarisation, not a self-signed identity](0014-developer-id-and-notarization.md) |
 | 0015 | [Capture and transcription are separate work, joined by a serial queue](0015-capture-and-transcription-are-separate.md) |
 | 0017 | [The window is one web page; Rust keeps the menu bar, the bridge and the state](0017-one-web-page-for-the-window.md) |
+| 0018 | [The live assistant's judgement runs in the user's own agent; Ambient serves the tools](0018-live-assistant-runs-in-the-users-agent.md) |
