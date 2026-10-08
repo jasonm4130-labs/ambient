@@ -41,12 +41,23 @@ Run 2 shared the machine with another replay, which is the wall-time
 difference; the footprint spread is the run-to-run noise the budget has to
 clear. A third run against `--budget 1434`, also from before #100 and #103
 landed, failed with `ERROR peak footprint 2144 MiB is over the 1434 MiB budget`.
-`scripts/memory` fails above 2400 MiB (`--budget` or
-`AMBIENT_MEMORY_BUDGET_MIB` overrides it). The target is 1434 MiB (1.4 GiB);
-the remaining change toward it is running finalize in a child process. Lower
-the default to a fresh measurement on current main, never raise it to make a
-change pass. When finalize moves to a child, the gate must measure the child's
-peak too, since `time -l` reports only the process it runs.
+
+The same replay on current main, with #100 and #103 landed, finalize still
+in-process:
+
+| Run | Peak footprint | Peak RSS | Wall |
+| ---: | ---: | ---: | ---: |
+| 1 | 859 MiB | 1312 MiB | 525 s |
+| 2 | 1116 MiB | 1471 MiB | 418 s |
+
+Run 2 ran under heavy load from other work (load average 12 to 27), so the
+257 MiB spread may be wider than on a quiet machine. `scripts/memory` fails above 1320 MiB, about 200 MiB over
+the higher run (`--budget` or `AMBIENT_MEMORY_BUDGET_MIB` overrides it). That
+is already under the 1434 MiB (1.4 GiB) target. Lower the default to a fresh
+measurement on current main, never raise it to make a change pass. Running
+finalize in a child process is the remaining memory change; when it lands, the
+gate must measure the child's peak too, since `time -l` reports only the
+process it runs.
 
 ## Phase 0: provider comparison, CPU against CoreML
 

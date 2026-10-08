@@ -18,13 +18,13 @@
 #
 # The budget is a ceiling, not a baseline: peak footprint moves by tens of MiB
 # between runs on one machine, so there is no --update and no committed
-# measurement. It sits about 200 MiB above the calibration runs (2012 and 2204
-# MiB peak footprint; see docs/developing/measurements.md#memory-gate), so a
-# regression past that point fails. Those runs, and a later 2144 MiB one, were
-# measured before prepacking was disabled on the Parakeet sessions (#103) and
-# before live::repair_from_native was made streaming (#100); both have since
-# landed on main. The target is 1434 MiB (1.4 GiB); the remaining change toward
-# it is running finalize in a child process. Lower the default to a fresh
+# measurement. The first calibration runs (2012 and 2204 MiB peak footprint,
+# and a 2144 MiB one that failed --budget 1434) predate disabling prepacking on
+# the Parakeet sessions (#103) and streaming live::repair_from_native (#100).
+# On current main, with both landed, two runs peaked at 859 and 1116 MiB, so
+# the default sits about 200 MiB above the higher: 1320 MiB. That is already
+# under the 1434 MiB (1.4 GiB) target; see
+# docs/developing/measurements.md#memory-gate. Lower the default to a fresh
 # measurement on current main; do not raise it to make a change pass.
 #
 # /usr/bin/time -l reports the peak of the process it runs. When finalize
@@ -33,7 +33,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 
-budget_mib=${AMBIENT_MEMORY_BUDGET_MIB:-2400}
+budget_mib=${AMBIENT_MEMORY_BUDGET_MIB:-1320}
 pace=15
 meeting=TS3003a
 cache="$HOME/.cache/ambient"
