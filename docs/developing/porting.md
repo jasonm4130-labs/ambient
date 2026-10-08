@@ -18,7 +18,8 @@ is one of the two things still open.
    reports the execution provider state. This needs no permissions.
 3. `cargo run --release -- transcribe <model> <recording>` on a real recording,
    run under `/usr/bin/time -l`, and check `maximum resident set size` stays near
-   2.3 GB. If it does, the 16 GB machine is fine for batch transcription.
+   the figure in [Weight prepacking](measurements.md#weight-prepacking) (~1.3 GB).
+   If it does, the 16 GB machine is fine for batch transcription.
 4. Then `./make-app.sh`, and run the tap **via `open -a`**.
 
 ## What to expect at step 4
