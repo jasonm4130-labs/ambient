@@ -28,7 +28,7 @@
 # that churns on every run buries the one number its diff exists to show.
 # Timings belong in docs/developing/measurements.md.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 
 tolerance=0.005
 baseline=quality/wer.json
