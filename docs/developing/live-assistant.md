@@ -123,11 +123,12 @@ An utterance whose voice failed still counts, since retrying a stale remark
 later would be worse than missing it. Each utterance is appended to the
 session's `assistant.jsonl` with its text, tone and timings.
 
-The limits belong to the meeting, not to one watch. `watch_meeting` reads the
-session's `assistant.jsonl` and resumes the count and the cooldown from the
-utterances already logged there, so `stop_watching` and watching again, an
-off/on toggle, or a second `ambient mcp` process on the same meeting does not
-reset them. The consent notice is still spoken on each new watch.
+The limits belong to the meeting, not to one watch. `watch_meeting`,
+`wait_for_transcript` and `speak` each read the session's `assistant.jsonl`
+and catch up the count and the cooldown with the utterances logged there, so
+`stop_watching` and watching again, an off/on toggle, or a second
+`ambient mcp` process on the same meeting, even one watching at the same time,
+does not reset them. The consent notice is still spoken on each new watch.
 
 ### Its own voice
 

@@ -254,11 +254,11 @@ impl Helper {
             let left = deadline.saturating_duration_since(Instant::now());
             let event = match self.events.recv_timeout(left) {
                 Ok(v) => v,
-                Err(RecvTimeoutError::Timeout) => {
-                    bail!(
+                Err(e @ RecvTimeoutError::Timeout) => {
+                    return Err(anyhow!(e).context(format!(
                         "the voice helper did not finish within {}s",
                         within.as_secs()
-                    )
+                    )))
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.reap();
@@ -428,6 +428,10 @@ impl Voice {
         let first = self.ensure_started()?.say(text, emotion, within);
         let result = match first {
             Ok(s) => Ok(s),
+            Err(e) if e.root_cause().is::<RecvTimeoutError>() => {
+                self.helper = None;
+                Err(e)
+            }
             Err(e) if !self.is_running() => {
                 eprintln!("  voice: {e:#}; restarting the helper");
                 self.failed();
@@ -640,6 +644,37 @@ fi
         assert!(v.given_up(), "three failures in a row");
         let e = v.say("three", "warm").unwrap_err();
         assert!(e.to_string().contains("speech is off"), "{e}");
+    }
+
+    #[test]
+    fn a_helper_that_never_answers_is_replaced_and_given_up_on_after_repeated_hangs() {
+        let body = r#"echo started >> "$M"
+echo '{"event":"ready"}'
+while read -r line; do :; done
+"#;
+        let (p, a) = fake("hangs", body);
+        let marker = PathBuf::from(&a[0]).with_file_name("marker");
+        let mut v = Voice::new(
+            p,
+            a,
+            Limits {
+                say_within: Duration::from_millis(300),
+                ..quick()
+            },
+        );
+        let started = Instant::now();
+        let e = v.say("one", "warm").unwrap_err();
+        assert!(e.to_string().contains("did not finish"), "{e}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "not asked twice"
+        );
+        assert!(!v.is_running(), "the wedged helper is gone");
+        v.say("two", "warm").unwrap_err();
+        let starts = std::fs::read_to_string(&marker).unwrap().lines().count();
+        assert_eq!(starts, 2, "the next reply got a fresh helper");
+        v.say("three", "warm").unwrap_err();
+        assert!(v.given_up(), "three hangs in a row");
     }
 
     #[test]

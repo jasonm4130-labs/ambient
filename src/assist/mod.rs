@@ -150,6 +150,15 @@ struct Meeting {
     notice: (Instant, String),
 }
 
+impl Meeting {
+    /// Bring the gate up to date with the session's log, so the limits hold
+    /// across watches and across `ambient mcp` processes.
+    fn catch_up(&mut self) {
+        let (spoken, last) = spoken_before(&self.dir);
+        self.gate.catch_up(spoken, last);
+    }
+}
+
 /// The state behind the watching tools, one per `ambient mcp` process.
 pub struct Watch {
     paths: Paths,
@@ -323,17 +332,10 @@ impl Watch {
                 id: id.clone(),
                 dir: dir.clone(),
                 cursor: next,
-                gate: {
-                    let (spoken, last) = spoken_before(&dir);
-                    Gate::resume(
-                        Rules {
-                            cooldown: Duration::from_secs(cfg.assistant.cooldown_s.into()),
-                            max_per_meeting: cfg.assistant.max_per_meeting,
-                        },
-                        spoken,
-                        last,
-                    )
-                },
+                gate: Gate::new(Rules {
+                    cooldown: Duration::from_secs(cfg.assistant.cooldown_s.into()),
+                    max_per_meeting: cfg.assistant.max_per_meeting,
+                }),
                 said: Vec::new(),
                 // Kept apart from `said`: the notice invites short questions
                 // by name made mostly of its words, so only a line holding
@@ -367,7 +369,8 @@ impl Watch {
             .rev()
             .map(render)
             .collect();
-        let m = self.meeting.as_ref().expect("joined above");
+        let m = self.meeting.as_mut().expect("joined above");
+        m.catch_up();
         Ok(json!({
             "watching": id,
             "you_are": cfg.assistant.name,
@@ -447,7 +450,8 @@ impl Watch {
             std::thread::sleep(p.poll);
         }
         self.attend("listening");
-        let m = self.meeting.as_ref().expect("still watching");
+        let m = self.meeting.as_mut().expect("still watching");
+        m.catch_up();
         let may_speak = match m.gate.may_speak(Instant::now()) {
             Ok(()) => "yes".to_string(),
             Err(h) => format!("not now: {h}"),
@@ -491,9 +495,10 @@ impl Watch {
             self.leave("the assistant was turned off");
             return Err(Self::off_message());
         }
-        let Some(m) = self.meeting.as_ref() else {
+        let Some(m) = self.meeting.as_mut() else {
             return Err("Not watching a meeting. Call watch_meeting first.".into());
         };
+        m.catch_up();
         if let Err(hold) = m.gate.may_speak(Instant::now()) {
             return Err(format!("Not said: {hold}. Keep listening."));
         }
@@ -563,10 +568,11 @@ impl Watch {
         // Dropped so the next meeting builds its voice from the settings of
         // the day.
         self.speaker = None;
+        self.beating.store(false, Ordering::SeqCst);
         let mut beat = self.beat.lock().unwrap_or_else(|e| e.into_inner());
         beat.session = None;
         drop(beat);
-        let _ = std::fs::remove_file(Self::heartbeat_path(&self.paths.config_file));
+        remove_own_beat(&Self::heartbeat_path(&self.paths.config_file));
     }
 
     /// The agent called: record it, write the heartbeat now, and make sure
@@ -599,7 +605,6 @@ impl Watch {
 impl Drop for Watch {
     fn drop(&mut self) {
         self.leave("the MCP server stopped");
-        self.beating.store(false, Ordering::SeqCst);
     }
 }
 
@@ -609,7 +614,7 @@ fn write_beat(path: &Path, beat: &Mutex<Beat>) {
     let beat = beat.lock().unwrap_or_else(|e| e.into_inner());
     let attending = beat.last_call.is_some_and(|t| t.elapsed() < ATTENTION);
     let Some(session) = beat.session.as_ref().filter(|_| attending) else {
-        let _ = std::fs::remove_file(path);
+        remove_own_beat(path);
         return;
     };
     let at = SystemTime::now()
@@ -624,6 +629,18 @@ fn write_beat(path: &Path, beat: &Mutex<Beat>) {
     let tmp = path.with_extension("json.tmp");
     if std::fs::write(&tmp, v.to_string()).is_ok() {
         let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// Remove the heartbeat only if this process wrote it: another `ambient mcp`
+/// may be listening now.
+fn remove_own_beat(path: &Path) {
+    let owner = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["pid"].as_u64());
+    if owner == Some(u64::from(std::process::id())) {
+        let _ = std::fs::remove_file(path);
     }
 }
 

@@ -361,6 +361,40 @@ fn the_cap_reached_in_one_watch_holds_in_another() {
 }
 
 #[test]
+fn two_watches_on_one_meeting_share_the_cooldown_while_both_watch() {
+    let room = Room::new("twowatch", true);
+    room.live("m1");
+    let mut a = room.watch();
+    let mut b = room.watch();
+    a.watch(None).unwrap();
+    b.watch(None).unwrap();
+    a.speak("It closed on Tuesday.", None).unwrap();
+    let held = b.speak("Also, the build is green.", None).unwrap_err();
+    assert!(held.contains("cooling down"), "{held}");
+    let v = b.wait(SHORT).unwrap();
+    assert!(
+        v["may_speak"].as_str().unwrap().starts_with("not now"),
+        "{v}"
+    );
+    assert_eq!(v["spoken"], 1, "{v}");
+}
+
+#[test]
+fn two_watches_on_one_meeting_share_the_cap_while_both_watch() {
+    let room = Room::new("twocap", true);
+    room.set("assistant.cooldown_s", "0");
+    room.live("m1");
+    let mut a = room.watch();
+    let mut b = room.watch();
+    a.watch(None).unwrap();
+    b.watch(None).unwrap();
+    a.speak("One.", None).unwrap();
+    b.speak("Two.", None).unwrap();
+    let held = a.speak("Three.", None).unwrap_err();
+    assert!(held.contains("as often as one meeting allows"), "{held}");
+}
+
+#[test]
 fn what_it_says_must_be_short_plain_speech_in_a_known_tone() {
     let room = Room::new("shape", true);
     room.live("m1");
@@ -497,6 +531,25 @@ fn stopping_removes_the_notice_and_unloads_the_voice() {
     assert!(room.heartbeat().is_none());
     assert_eq!(room.heard.borrow().stops, 1);
     assert!(w.stop_watching()["stopped_watching"].is_null());
+}
+
+#[test]
+fn leaving_keeps_a_heartbeat_another_process_wrote() {
+    let room = Room::new("otherbeat", true);
+    room.live("m1");
+    let path = Watch::heartbeat_path(&room.config_file);
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    let other = json!({"pid": 1, "session": "m1", "state": "listening", "updated_at": 0});
+    std::fs::write(&path, other.to_string()).unwrap();
+    w.stop_watching();
+    assert_eq!(room.heartbeat(), Some(other.clone()));
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(
+        room.heartbeat(),
+        Some(other),
+        "an idle process leaves it alone"
+    );
 }
 
 #[test]

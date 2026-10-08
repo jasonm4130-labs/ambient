@@ -32,8 +32,8 @@ pub struct Rules {
     pub max_per_meeting: u32,
 }
 
-/// The gate for one meeting. A new meeting gets a new gate; watching the
-/// same meeting again resumes it from what was already said.
+/// The gate for one meeting. A new meeting gets a new gate; it catches up
+/// with what was already said in the meeting before each check.
 #[derive(Debug)]
 pub struct Gate {
     rules: Rules,
@@ -50,14 +50,11 @@ impl Gate {
         }
     }
 
-    /// A gate for a meeting in which it has already spoken `spoken` times,
-    /// last at `last_spoke`.
-    pub fn resume(rules: Rules, spoken: u32, last_spoke: Option<Instant>) -> Self {
-        Self {
-            rules,
-            spoken,
-            last_spoke,
-        }
+    /// Count what was said in the meeting outside this gate: `spoken` times
+    /// in all, last at `last_spoke`.
+    pub fn catch_up(&mut self, spoken: u32, last_spoke: Option<Instant>) {
+        self.spoken = self.spoken.max(spoken);
+        self.last_spoke = self.last_spoke.max(last_spoke);
     }
 
     pub fn spoken(&self) -> u32 {
