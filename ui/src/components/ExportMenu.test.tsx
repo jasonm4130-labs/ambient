@@ -198,4 +198,20 @@ describe("ExportMenu", () => {
     await userEvent.click(await screen.findByTestId("export-save-srt"));
     expect(screen.queryByTestId("export-error")).toBeNull();
   });
+  it("hides the error while the menu is open so it never covers the entries", async () => {
+    const fake = new FakeBridge();
+    fake.answer("export", () => {
+      throw new Error("no such session");
+    });
+
+    renderMenu(fake);
+    await openMenu();
+    await userEvent.click(await screen.findByTestId("export-copy-assistant"));
+    await screen.findByTestId("export-error");
+
+    await openMenu();
+    expect(screen.queryByTestId("export-error")).toBeNull();
+    await userEvent.click(screen.getByTestId("export-menu-trigger"));
+    expect(screen.getByTestId("export-error")).toBeInTheDocument();
+  });
 });

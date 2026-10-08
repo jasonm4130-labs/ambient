@@ -177,7 +177,7 @@ export function ExportMenu({ session }: { session: string }) {
           <SaveSubmenu session={session} onDone={onDone} onPick={start} />
         </div>
       )}
-      {toast !== undefined && (
+      {!open && toast !== undefined && (
         <p
           role="status"
           data-testid="export-toast"
@@ -187,7 +187,7 @@ export function ExportMenu({ session }: { session: string }) {
           {toast.text}
         </p>
       )}
-      {error !== undefined && (
+      {!open && error !== undefined && (
         <div className="bg-background absolute top-full right-0 z-10 mt-1 flex w-max max-w-80 items-start gap-2 rounded-md border px-2 py-1 text-sm shadow-md">
           <p role="alert" data-testid="export-error" className="text-destructive">
             {error}

@@ -53,6 +53,10 @@ function NameField({
   }, [summary.name]);
 
   const commit = () => {
+    if (draft.trim() === "") {
+      setDraft(committed.current);
+      return;
+    }
     if (draft === committed.current) return;
     committed.current = draft;
     void bridge

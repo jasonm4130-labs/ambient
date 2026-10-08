@@ -105,6 +105,24 @@ describe("SessionHeader", () => {
     });
   });
 
+  it("a cleared name reverts on blur and on Enter without calling session.update", async () => {
+    const fake = new FakeBridge();
+    fake.answer("sessions", [summary()]);
+
+    renderHeader(fake);
+
+    const name = await screen.findByRole("textbox", { name: "Session name" });
+    await userEvent.clear(name);
+    await userEvent.tab();
+    await screen.findByDisplayValue("Standup");
+
+    await userEvent.clear(name);
+    await userEvent.type(name, "   {Enter}");
+    await screen.findByDisplayValue("Standup");
+
+    expect(fake.calls.some((c) => c.method === "session.update")).toBe(false);
+  });
+
   it("the … menu closes on Escape and on an outside click", async () => {
     const fake = new FakeBridge();
     fake.answer("sessions", [summary()]);
