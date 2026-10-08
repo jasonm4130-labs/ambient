@@ -11,7 +11,7 @@ export interface HealthCheck {
 export const fixes: Record<string, string> = {
   models: "Run ./fetch-models.sh from the Ambient checkout to install the models.",
   config: "Open Settings and correct the configuration, then check again.",
-  "sessions/writable": "Choose a writable sessions folder in Settings → Storage.",
+  "sessions/writable": "Choose a writable sessions folder in Settings → Export.",
   "sessions/stale-lock":
     "Quit Ambient, remove transcribing.lock from the listed session folder, then reopen Ambient.",
   permissions:
