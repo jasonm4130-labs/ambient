@@ -195,7 +195,11 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
         ) : (
           <>
             {selectedSummary?.error != null && (
-              <p role="alert" data-testid="session-error" className="text-destructive bg-accent p-3">
+              <p
+                role="alert"
+                data-testid="session-error"
+                className="text-destructive bg-accent p-3"
+              >
                 This session is broken: {selectedSummary.error}
               </p>
             )}

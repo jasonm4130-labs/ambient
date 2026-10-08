@@ -28,9 +28,10 @@ function formatDuration(seconds: number | null): string | null {
 }
 
 /// The inline-editable name: `Enter` or blur commits with
-/// `session.update {name}`, `Escape` reverts to the prop. A draft equal to
-/// the last committed name is never re-sent, so Enter-then-blur is one call. Draft state is resynced from `summary.name`
-/// whenever it changes underneath — the only way the load-bearing "renders
+/// `session.update {name}`; `Escape`, or committing a blank draft, reverts to
+/// the last committed name. A draft equal to the last committed name is never
+/// re-sent, so Enter-then-blur is one call. Draft state is resynced from
+/// `summary.name` whenever it changes underneath — the only way the load-bearing "renders
 /// from the `sessions` reply" test can pass.
 function NameField({
   summary,

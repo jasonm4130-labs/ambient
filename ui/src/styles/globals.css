@@ -45,8 +45,9 @@
 }
 
 /* shadcn `neutral` base colour, with `--ring` darkened from 0.708 so the
-   focus outline clears 3:1 against the background, radius 0.5rem per the spec (not the 0.625rem
-   default shadcn ships) and the system font stack rather than a webfont. */
+   focus outline clears 3:1 against the background, radius 0.5rem per the
+   spec (not the 0.625rem default shadcn ships) and the system font stack
+   rather than a webfont. */
 :root {
   color-scheme: light;
   --radius: 0.5rem;

@@ -51,7 +51,11 @@ export function formatStarted(startedAt: string | null): string | null {
   const date = new Date(startedAt);
   if (Number.isNaN(date.getTime())) return null;
   const day = date.toLocaleDateString("en", { month: "short", day: "numeric" });
-  const time = date.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const time = date.toLocaleTimeString("en", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
   return `${day}, ${time}`;
 }
 
