@@ -135,9 +135,11 @@ The speakers feed the microphone, so each utterance comes back as a transcript
 line a few seconds later. A line counts as an echo when it has at least three
 words and at least 60% of them appear in something the assistant said in the
 last two minutes. Echoes are left out of the batch and only counted, so the
-agent never answers itself. The consent notice is not remembered for this: a
-question by name right after it, such as "Claude, are you listening?", shares
-most of its words, and dropping that would hide the most natural first line.
+agent never answers itself. The consent notice is checked the other way round:
+a line is its echo only when it holds at least 60% of the notice's words. A
+short question by name right after it, such as "Claude, are you listening?",
+is made mostly of the notice's words, and dropping that would hide the most
+natural first line.
 
 ### The `watch` prompt
 
