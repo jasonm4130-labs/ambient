@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -197,6 +198,9 @@ impl Helper {
             // the MCP client keeps as the server's log. Never its stdout:
             // that is the protocol.
             .stderr(Stdio::inherit())
+            // Its own process group, so `kill` reaches the real helper that
+            // `uv run` starts, not just `uv`.
+            .process_group(0)
             .spawn()
             .with_context(|| format!("could not start the voice helper ({})", program.display()))?;
         let stdin = child.stdin.take().expect("piped stdin");
@@ -318,6 +322,8 @@ impl Helper {
     }
 
     fn kill(&mut self) {
+        // SAFETY: plain syscall; the group id is the child's pid, set at spawn.
+        unsafe { libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL) };
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -706,6 +712,43 @@ while read -r line; do :; done
         let starts = std::fs::read_to_string(&hung).unwrap().lines().count();
         assert_eq!(starts, 2, "the next reply got a fresh helper");
         assert!(v.given_up(), "a crash and two hangs in a row");
+    }
+
+    #[test]
+    fn killing_a_hung_helper_also_kills_the_process_it_started() {
+        // Like `uv run`: the started process runs the real helper as its
+        // own child and waits for it, so killing only the parent orphans it.
+        // The real helper is wedged, so it never notices stdin closing.
+        let body = r#"/bin/sh -c 'echo $$ > "$0"; echo "{\"event\":\"ready\"}"; exec sleep 30' "$M.pid"
+echo "the helper exited" >&2
+"#;
+        let (p, a) = fake("grandchild", body);
+        let pid_file = PathBuf::from(&a[0]).with_file_name("marker.pid");
+        let mut v = Voice::new(
+            p,
+            a,
+            Limits {
+                say_within: Duration::from_millis(300),
+                ..quick()
+            },
+        );
+        v.say("one", "warm").unwrap_err();
+        assert!(!v.is_running());
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        // SAFETY: signal 0 only checks whether the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let survived = unsafe { libc::kill(pid, 0) } == 0;
+        if survived {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(!survived, "the real helper (pid {pid}) outlived the kill");
     }
 
     #[test]
