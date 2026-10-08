@@ -219,10 +219,10 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
             {selectedSummary !== null &&
             (sessionState(selectedSummary) === "live" ||
               sessionState(selectedSummary) === "transcribing") ? (
-              <LiveTranscript key={selected} session={selected} onDone={refresh} />
+              <LiveTranscript key={`live-${selected}`} session={selected} onDone={refresh} />
             ) : (
               <Transcript
-                key={selected}
+                key={`transcript-${selected}`}
                 unavailable={
                   selectedSummary !== null && !selectedSummary.transcribed
                     ? "Separate voices needs a finished transcript."
