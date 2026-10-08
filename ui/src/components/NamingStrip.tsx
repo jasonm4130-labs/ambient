@@ -55,6 +55,17 @@ export function NamingStrip({ session, onChanged }: NamingStripProps) {
     if (config !== undefined) setRoster(config.roster);
   }, [loadUnnamed, loadRoster]);
 
+  const name = (label: string) => {
+    const who = (drafts[label] ?? "").trim();
+    if (who === "") return;
+    setError(undefined);
+    void bridge
+      .call("speakers.name", { session, label, name: who })
+      .then(refresh)
+      .then(onChanged)
+      .catch(failed);
+  };
+
   useEffect(() => {
     void refresh().catch(failed);
   }, [refresh]);
@@ -92,6 +103,11 @@ export function NamingStrip({ session, onChanged }: NamingStripProps) {
               const value = e.target.value;
               setDrafts((prev) => ({ ...prev, [speaker.label]: value }));
             }}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              e.preventDefault();
+              name(speaker.label);
+            }}
           />
           <datalist id={`naming-strip-roster-${speaker.label}`}>
             {roster.map((who) => (
@@ -102,16 +118,7 @@ export function NamingStrip({ session, onChanged }: NamingStripProps) {
             type="button"
             size="sm"
             data-testid="naming-strip-name"
-            onClick={() => {
-              const name = (drafts[speaker.label] ?? "").trim();
-              if (name === "") return;
-              setError(undefined);
-              void bridge
-                .call("speakers.name", { session, label: speaker.label, name })
-                .then(refresh)
-                .then(onChanged)
-                .catch(failed);
-            }}
+            onClick={() => name(speaker.label)}
           >
             Name
           </Button>

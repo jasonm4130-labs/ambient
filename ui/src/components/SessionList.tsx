@@ -44,6 +44,17 @@ function formatDuration(seconds: number | null): string | null {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/// `started_at` as a short local date and time ("Oct 8, 14:05"), or null
+/// when absent or unparseable.
+export function formatStarted(startedAt: string | null): string | null {
+  if (startedAt === null) return null;
+  const date = new Date(startedAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const day = date.toLocaleDateString("en", { month: "short", day: "numeric" });
+  const time = date.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return `${day}, ${time}`;
+}
+
 interface SessionListProps {
   sessions: SessionSummary[];
   selectedId: string | null;
@@ -228,8 +239,13 @@ export function SessionList({ sessions, selectedId, onSelect }: SessionListProps
                     {s.name ?? s.id}
                   </span>
                   <span className="text-muted-foreground flex w-full min-w-0 items-center gap-1 whitespace-nowrap text-xs">
+                    <span data-testid="session-row-started" className="shrink-0">
+                      {formatStarted(s.started_at)}
+                    </span>
                     <span>{formatDuration(s.duration_s)}</span>
-                    <Badge variant="outline">{sessionState(s)}</Badge>
+                    <Badge variant="outline" title={s.error ?? undefined}>
+                      {sessionState(s)}
+                    </Badge>
                     <span className="min-w-0 truncate">{s.tags.slice(0, 2).join(" · ")}</span>
                     {s.tags.length > 2 && <span className="shrink-0">+{s.tags.length - 2}</span>}
                   </span>

@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { act } from "react";
+import { describe, expect, it, vi } from "vitest";
 import { BridgeProvider } from "@/lib/bridge-context";
 import { FakeBridge } from "@/test/fake-bridge";
 import { ExportMenu } from "./ExportMenu";
@@ -88,8 +89,48 @@ describe("ExportMenu", () => {
 
     await screen.findByText("Export failed: no such session");
 
-    // The menu is still usable: it stayed open and its entries are still
-    // there to click.
+    // The menu is still usable: reopening it shows its entries again.
+    await openMenu();
     await screen.findByTestId("export-copy-assistant");
+  });
+
+  it("closes on an action, on Escape and on an outside click", async () => {
+    const fake = new FakeBridge();
+    fake.answer("save", { path: null });
+
+    renderMenu(fake);
+    await openMenu();
+    await userEvent.click(await screen.findByTestId("export-save-trigger"));
+    await userEvent.click(await screen.findByTestId("export-save-srt"));
+    expect(screen.queryByTestId("export-copy-assistant")).toBeNull();
+
+    await openMenu();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("export-copy-assistant")).toBeNull();
+
+    await openMenu();
+    await userEvent.click(document.body);
+    expect(screen.queryByTestId("export-copy-assistant")).toBeNull();
+  });
+
+  it("the Saved to toast clears itself", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fake = new FakeBridge();
+      fake.answer("save", { path: "/Users/x/session.srt" });
+
+      renderMenu(fake);
+      await openMenu();
+      await userEvent.click(await screen.findByTestId("export-save-trigger"));
+      await userEvent.click(await screen.findByTestId("export-save-srt"));
+      await screen.findByTestId("export-toast");
+
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.queryByTestId("export-toast")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

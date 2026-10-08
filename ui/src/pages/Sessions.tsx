@@ -194,6 +194,11 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
           </div>
         ) : (
           <>
+            {selectedSummary?.error != null && (
+              <p role="alert" data-testid="session-error" className="text-destructive bg-accent p-3">
+                This session is broken: {selectedSummary.error}
+              </p>
+            )}
             {(selectedSummary?.warnings ?? []).map((warning) => (
               <p key={warning} role="alert" className="bg-accent p-3">
                 {warning}

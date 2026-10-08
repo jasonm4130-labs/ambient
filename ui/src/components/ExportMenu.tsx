@@ -1,7 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useBridge } from "@/lib/bridge-context";
 import type { Bridge } from "@/lib/bridge";
+import { useDismiss } from "@/lib/dismiss";
+
+/// How long a success toast stays up before it clears itself.
+const TOAST_MS = 4000;
 
 interface ExportReply {
   session: string;
@@ -67,21 +71,24 @@ function SaveFormatList({ onPick }: { onPick: (format: string) => void }) {
 function SaveSubmenu({
   session,
   onDone,
+  onPick,
 }: {
   session: string;
   onDone: (toast: string | null, error?: string) => void;
+  onPick: () => void;
 }) {
   const bridge = useBridge();
   const [open, setOpen] = useState(false);
 
   const save = useCallback(
     (format: string) => {
+      onPick();
       void bridge
         .call<SaveReply>("save", { session, format })
         .then((reply) => onDone(reply.path === null ? null : `Saved to ${reply.path}`))
         .catch((e: unknown) => onDone(null, `Export failed: ${errorMessage(e)}`));
     },
-    [bridge, session, onDone],
+    [bridge, session, onDone, onPick],
   );
 
   return (
@@ -110,16 +117,25 @@ export function ExportMenu({ session }: { session: string }) {
   const [open, setOpen] = useState(false);
   const [toast, setToast] = useState<string>();
   const [error, setError] = useState<string>();
+  const root = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useDismiss(open, root, close);
 
   const onDone = useCallback((message: string | null, err?: string) => {
     setToast(message ?? undefined);
     setError(err);
   }, []);
 
+  useEffect(() => {
+    if (toast === undefined) return;
+    const timer = setTimeout(() => setToast(undefined), TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
   const copyForAssistant = useCopyForAssistant(bridge, session, onDone);
 
   return (
-    <div className="relative">
+    <div className="relative" ref={root}>
       <Button
         type="button"
         variant="outline"
@@ -137,16 +153,32 @@ export function ExportMenu({ session }: { session: string }) {
             size="sm"
             className="w-full justify-start"
             data-testid="export-copy-assistant"
-            onClick={copyForAssistant}
+            onClick={() => {
+              close();
+              copyForAssistant();
+            }}
           >
             Copy for an assistant
           </Button>
-          <SaveSubmenu session={session} onDone={onDone} />
+          <SaveSubmenu session={session} onDone={onDone} onPick={close} />
         </div>
       )}
-      {toast !== undefined && <p data-testid="export-toast">{toast}</p>}
+      {toast !== undefined && (
+        <p
+          role="status"
+          data-testid="export-toast"
+          className="bg-background absolute top-full right-0 z-10 mt-1 w-max max-w-80 truncate rounded-md border px-2 py-1 text-sm shadow-md"
+          title={toast}
+        >
+          {toast}
+        </p>
+      )}
       {error !== undefined && (
-        <p role="alert" data-testid="export-error" className="text-destructive text-sm">
+        <p
+          role="alert"
+          data-testid="export-error"
+          className="bg-background text-destructive absolute top-full right-0 z-10 mt-1 w-max max-w-80 rounded-md border px-2 py-1 text-sm shadow-md"
+        >
           {error}
         </p>
       )}

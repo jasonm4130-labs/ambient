@@ -47,6 +47,35 @@ describe("Sessions", () => {
     await screen.findByText("hi there");
   });
 
+  it("shows a broken session's error above its transcript", async () => {
+    const fake = new FakeBridge();
+    fake.answer("sessions", [
+      {
+        id: "a",
+        dir: "/x/a",
+        name: "Standup",
+        started_at: "2026-09-01",
+        duration_s: 60,
+        transcribed: false,
+        live: false,
+        transcribing: false,
+        error: "could not read session.json",
+        tags: [],
+        pinned: false,
+      },
+    ]);
+    fake.answer("transcript", { session: "a", state: "broken", next: 0, lines: [] });
+    fake.answer("speakers.unnamed", []);
+    fake.answer("config.get", { roster: [] });
+
+    renderSessions(fake);
+
+    await userEvent.click(await screen.findByRole("button", { name: /Standup/u }));
+    expect(await screen.findByTestId("session-error")).toHaveTextContent(
+      "could not read session.json",
+    );
+  });
+
   it("calls onSettings when the Settings row is clicked", async () => {
     const fake = new FakeBridge();
     fake.answer("sessions", []);
