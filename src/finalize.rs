@@ -2,9 +2,9 @@
 //!
 //! [`crate::session::transcribe_session`] loads the recogniser and the
 //! diarizer, and after it returns macOS's allocator keeps the pages it freed:
-//! a 25-minute meeting left the process at ~1 GiB resident and 430–690 MiB of
-//! footprint with 13 MB of heap live, and `malloc_zone_pressure_relief`
-//! returned none of it (`docs/developing/measurements.md`). A process that
+//! a 25-minute meeting left the process at over 1 GiB resident and 430–690 MiB
+//! of footprint (`docs/developing/measurements.md`) with 13 MB of heap live,
+//! and `malloc_zone_pressure_relief` returned none of it. A process that
 //! exits returns everything, so the app's queue runs each job as
 //! `ambient finalize <session-dir>` — the same signed executable, so no new
 //! binary or entitlement — and waits for it.
