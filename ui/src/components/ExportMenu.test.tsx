@@ -21,7 +21,11 @@ async function openMenu() {
 describe("ExportMenu", () => {
   it("Copy for an assistant calls export then clipboard.write with the returned text, and toasts Copied", async () => {
     const fake = new FakeBridge();
-    fake.answer("export", { session: "2026-09-05-1200", format: "assistant", text: "the transcript" });
+    fake.answer("export", {
+      session: "2026-09-05-1200",
+      format: "assistant",
+      text: "the transcript",
+    });
     fake.answer("clipboard.write", { done: true });
 
     renderMenu(fake);

@@ -35,7 +35,11 @@ function errorMessage(e: unknown): string {
 /// "Copy for an assistant": `export {format:"assistant"}` then
 /// `clipboard.write {text}`, the same two-call shape `Transcript`'s Copy
 /// Markdown button uses.
-function useCopyForAssistant(bridge: Bridge, session: string, onDone: (toast: string | null, error?: string) => void) {
+function useCopyForAssistant(
+  bridge: Bridge,
+  session: string,
+  onDone: (toast: string | null, error?: string) => void,
+) {
   return useCallback(() => {
     void bridge
       .call<ExportReply>("export", { session, format: "assistant" })
