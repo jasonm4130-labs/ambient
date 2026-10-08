@@ -18,14 +18,14 @@
 #
 # The budget is a ceiling, not a baseline: peak footprint moves by tens of MiB
 # between runs on one machine, so there is no --update and no committed
-# measurement. It starts about 200 MiB above what main measured when this gate
-# landed (2012 and 2204 MiB peak footprint over two runs, prepacking on,
-# finalize in-process; see docs/developing/measurements.md#memory-gate), so
-# main passes and a regression past that point fails. The target is 1434 MiB (1.4 GiB), once three changes have
-# landed: prepacking off on the Parakeet sessions, repair_from_native
-# streaming instead of reading whole native WAVs, and finalize in a child
-# process. Lower the default below as each lands; do not raise it to make a
-# change pass.
+# measurement. It sits about 200 MiB above the calibration runs (2012 and 2204
+# MiB peak footprint; see docs/developing/measurements.md#memory-gate), so a
+# regression past that point fails. Those runs, and a later 2144 MiB one, were
+# measured before prepacking was disabled on the Parakeet sessions (#103) and
+# before live::repair_from_native was made streaming (#100); both have since
+# landed on main. The target is 1434 MiB (1.4 GiB); the remaining change toward
+# it is running finalize in a child process. Lower the default to a fresh
+# measurement on current main; do not raise it to make a change pass.
 #
 # /usr/bin/time -l reports the peak of the process it runs. When finalize
 # moves to a child process, the child's peak has to be gated as well, or this

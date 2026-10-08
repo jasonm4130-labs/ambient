@@ -28,7 +28,9 @@ Measured 2026-10-08 on the M5 Max with `scripts/memory --budget 99999`, which
 runs `src/bin/memrun.rs` under `/usr/bin/time -l`: AMI TS3003a Mix-Headset, all
 1505.6 s, resampled to 48 kHz and streamed in 200 ms drains into
 `LiveTranscriber` on both tracks at 15× realtime, then Stop and
-`session::transcribe_session`. Prepacking on, finalize in-process.
+`session::transcribe_session`, with finalize in-process. These runs predate
+disabling prepacking on the Parakeet sessions (#103) and streaming
+`live::repair_from_native` (#100), both now on main.
 
 | Run | Peak footprint | Peak RSS | Wall |
 | ---: | ---: | ---: | ---: |
@@ -37,12 +39,14 @@ runs `src/bin/memrun.rs` under `/usr/bin/time -l`: AMI TS3003a Mix-Headset, all
 
 Run 2 shared the machine with another replay, which is the wall-time
 difference; the footprint spread is the run-to-run noise the budget has to
-clear. `scripts/memory` fails above 2400 MiB (`--budget` or
-`AMBIENT_MEMORY_BUDGET_MIB` overrides it). The target is 1434 MiB (1.4 GiB)
-once prepacking is off on the Parakeet sessions, `repair_from_native` streams
-instead of reading whole native WAVs, and finalize runs in a child process;
-lower the default as each lands. When finalize moves to a child, the gate must
-measure the child's peak too, since `time -l` reports only the process it runs.
+clear. A third run against `--budget 1434`, also from before #100 and #103
+landed, failed with `ERROR peak footprint 2144 MiB is over the 1434 MiB budget`.
+`scripts/memory` fails above 2400 MiB (`--budget` or
+`AMBIENT_MEMORY_BUDGET_MIB` overrides it). The target is 1434 MiB (1.4 GiB);
+the remaining change toward it is running finalize in a child process. Lower
+the default to a fresh measurement on current main, never raise it to make a
+change pass. When finalize moves to a child, the gate must measure the child's
+peak too, since `time -l` reports only the process it runs.
 
 ## Phase 0: provider comparison, CPU against CoreML
 
