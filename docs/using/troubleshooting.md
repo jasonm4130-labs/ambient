@@ -13,7 +13,7 @@ After making a change, choose **Check again**.
 
 - Run ./fetch-models.sh from the Ambient checkout to install the models.
 - Open Settings and correct the configuration, then check again.
-- Choose a writable sessions folder in Settings → Storage.
+- Choose a writable sessions folder in Settings → Export.
 - Quit Ambient, remove transcribing.lock from the listed session folder, then reopen Ambient.
 - Open System Settings → Privacy & Security and allow Ambient to use the microphone and system audio.
 - Run ambient doctor in a terminal to inspect the failure, then check again.
