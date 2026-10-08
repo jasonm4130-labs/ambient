@@ -115,14 +115,19 @@ function SaveSubmenu({
 export function ExportMenu({ session }: { session: string }) {
   const bridge = useBridge();
   const [open, setOpen] = useState(false);
-  const [toast, setToast] = useState<string>();
+  const [toast, setToast] = useState<{ text: string }>();
   const [error, setError] = useState<string>();
   const root = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useDismiss(open, root, close);
+  const dismissError = useCallback(() => setError(undefined), []);
+  const start = useCallback(() => {
+    close();
+    dismissError();
+  }, [close, dismissError]);
 
   const onDone = useCallback((message: string | null, err?: string) => {
-    setToast(message ?? undefined);
+    setToast(message === null ? undefined : { text: message });
     setError(err);
   }, []);
 
@@ -131,6 +136,15 @@ export function ExportMenu({ session }: { session: string }) {
     const timer = setTimeout(() => setToast(undefined), TOAST_MS);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (error === undefined) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") dismissError();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [error, dismissError]);
 
   const copyForAssistant = useCopyForAssistant(bridge, session, onDone);
 
@@ -154,13 +168,13 @@ export function ExportMenu({ session }: { session: string }) {
             className="w-full justify-start"
             data-testid="export-copy-assistant"
             onClick={() => {
-              close();
+              start();
               copyForAssistant();
             }}
           >
             Copy for an assistant
           </Button>
-          <SaveSubmenu session={session} onDone={onDone} onPick={close} />
+          <SaveSubmenu session={session} onDone={onDone} onPick={start} />
         </div>
       )}
       {toast !== undefined && (
@@ -168,19 +182,26 @@ export function ExportMenu({ session }: { session: string }) {
           role="status"
           data-testid="export-toast"
           className="bg-background absolute top-full right-0 z-10 mt-1 w-max max-w-80 truncate rounded-md border px-2 py-1 text-sm shadow-md"
-          title={toast}
+          title={toast.text}
         >
-          {toast}
+          {toast.text}
         </p>
       )}
       {error !== undefined && (
-        <p
-          role="alert"
-          data-testid="export-error"
-          className="bg-background text-destructive absolute top-full right-0 z-10 mt-1 w-max max-w-80 rounded-md border px-2 py-1 text-sm shadow-md"
-        >
-          {error}
-        </p>
+        <div className="bg-background absolute top-full right-0 z-10 mt-1 flex w-max max-w-80 items-start gap-2 rounded-md border px-2 py-1 text-sm shadow-md">
+          <p role="alert" data-testid="export-error" className="text-destructive">
+            {error}
+          </p>
+          <button
+            type="button"
+            aria-label="Dismiss export error"
+            data-testid="export-error-dismiss"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={dismissError}
+          >
+            ×
+          </button>
+        </div>
       )}
     </div>
   );

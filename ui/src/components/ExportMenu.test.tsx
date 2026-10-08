@@ -133,4 +133,69 @@ describe("ExportMenu", () => {
       vi.useRealTimers();
     }
   });
+  it("a repeated identical toast gets a fresh timeout", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const fake = new FakeBridge();
+      fake.answer("save", { path: "/Users/x/session.srt" });
+
+      renderMenu(fake);
+      const saveSrt = async () => {
+        await openMenu();
+        await userEvent.click(await screen.findByTestId("export-save-trigger"));
+        await userEvent.click(await screen.findByTestId("export-save-srt"));
+      };
+      await saveSrt();
+      await screen.findByTestId("export-toast");
+
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+      await saveSrt();
+      await waitFor(() => {
+        expect(fake.calls.filter((c) => c.method === "save")).toHaveLength(2);
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByTestId("export-toast")).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(2500);
+      });
+      expect(screen.queryByTestId("export-toast")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the export error clears on its dismiss button, on Escape and on the next export action", async () => {
+    const fake = new FakeBridge();
+    fake.answer("export", () => {
+      throw new Error("no such session");
+    });
+    fake.answer("save", () => new Promise(() => {}));
+
+    renderMenu(fake);
+    const fail = async () => {
+      await openMenu();
+      await userEvent.click(await screen.findByTestId("export-copy-assistant"));
+      await screen.findByTestId("export-error");
+    };
+
+    await fail();
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss export error" }));
+    expect(screen.queryByTestId("export-error")).toBeNull();
+
+    await fail();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("export-error")).toBeNull();
+
+    await fail();
+    await openMenu();
+    await userEvent.click(await screen.findByTestId("export-save-trigger"));
+    await userEvent.click(await screen.findByTestId("export-save-srt"));
+    expect(screen.queryByTestId("export-error")).toBeNull();
+  });
 });
