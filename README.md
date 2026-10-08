@@ -3,7 +3,7 @@
 **Record on your Mac. Transcribe on your Mac. Keep the conversation yours.**
 
 Ambient is a macOS menu bar app for recording room audio and calls, transcribing
-speech locally, and separating speakers. Browse, search and correct transcripts
+speech locally, and separating speakers. Browse and search transcripts
 in one window, then export them as Markdown, text, JSON or subtitles. No meeting
 bot, transcription account or cloud inference service is required.
 

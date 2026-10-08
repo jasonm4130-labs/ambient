@@ -43,7 +43,7 @@ The signed bundle is the same binary, so if you launch Ambient as an app and
 never installed a copy on `PATH`, point at the executable inside it:
 
 ```sh
-claude mcp add ambient -- "$PWD/build/Ambient.app/Contents/MacOS/ambient" mcp
+claude mcp add ambient -- /Applications/Ambient.app/Contents/MacOS/ambient mcp
 ```
 
 Either path works: the MCP verb reads files and needs no microphone, so it
@@ -86,7 +86,7 @@ No arguments. What Ambient is doing this second — cheap enough to call on ever
 turn.
 
 ```json
-{"awaiting_transcript":0,"live":{"id":"2026-09-05-1608"},"sessions":2}
+{"awaiting_transcript":0,"live":{"id":"2026-09-05T1608"},"sessions":2}
 ```
 
 `live` is `null` when nothing is recording. `awaiting_transcript` counts
@@ -101,10 +101,10 @@ No arguments. Every session on this machine, newest first — the same rows
 ```json
 [
   {
-    "dir": "/Users/…/Documents/Ambient/2026-09-05-1608",
+    "dir": "/Users/…/Documents/Ambient/2026-09-05T1608",
     "duration_s": null,
     "error": null,
-    "id": "2026-09-05-1608",
+    "id": "2026-09-05T1608",
     "live": true,
     "name": null,
     "started_at": null,
@@ -112,10 +112,10 @@ No arguments. Every session on this machine, newest first — the same rows
     "transcribing": false
   },
   {
-    "dir": "/Users/…/Documents/Ambient/2026-09-05-1412",
+    "dir": "/Users/…/Documents/Ambient/2026-09-05T1412",
     "duration_s": 1184.0,
     "error": null,
-    "id": "2026-09-05-1412",
+    "id": "2026-09-05T1412",
     "live": false,
     "name": "Roadmap sync",
     "started_at": "2026-09-05T14:12:03Z",
@@ -146,7 +146,7 @@ heard).
     {"end_ms": 7980, "speaker": "Priya", "start_ms": 3400, "text": "Yes. I pushed the schema change on Friday.", "track": "call"}
   ],
   "next": 3,
-  "session": "2026-09-05-1412",
+  "session": "2026-09-05T1412",
   "state": "done"
 }
 ```
@@ -164,7 +164,7 @@ have an earlier `start_ms`; sort on `start_ms` if you want the clock.
 with the previous reply's `next`.
 
 ```json
-{"lines":[],"next":3,"session":"2026-09-05-1412","state":"done"}
+{"lines":[],"next":3,"session":"2026-09-05T1412","state":"done"}
 ```
 
 `state` says whether asking again is worth it:
@@ -186,7 +186,7 @@ appends completed speech turns to `raw.jsonl`. A `live` reply can therefore
 contain new lines. An empty reply means no new completed turn is available yet:
 
 ```json
-{"lines":[],"next":0,"session":"2026-09-05-1608","state":"live"}
+{"lines":[],"next":0,"session":"2026-09-05T1608","state":"live"}
 ```
 
 This is completed-turn transcription, not word-by-word streaming. Model loading,
