@@ -51,8 +51,8 @@ in-process:
 | 2 | 1116 MiB | 1471 MiB | 418 s |
 
 Run 2 ran under heavy load from other work (load average 12 to 27), so the
-257 MiB spread may be wider than on a quiet machine. `scripts/memory` fails above 1320 MiB, about 200 MiB over
-the higher run (`--budget` or `AMBIENT_MEMORY_BUDGET_MIB` overrides it). That
+257 MiB spread may be wider than on a quiet machine. `scripts/memory` fails
+above 1320 MiB, about 200 MiB over the higher run (`--budget` or `AMBIENT_MEMORY_BUDGET_MIB` overrides it). That
 is already under the 1434 MiB (1.4 GiB) target. Lower the default to a fresh
 measurement on current main, never raise it to make a change pass. Running
 finalize in a child process is the remaining memory change; when it lands, the
