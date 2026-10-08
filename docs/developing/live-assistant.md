@@ -308,7 +308,7 @@ first starts with that engine.
   the helper copies `espeak-ng-data` into the same cache once.
 
 The helper is found at `voice.helper_dir`, which defaults to the `voice/` folder
-of the source tree the binary was built from. A packaged helper is future work;
+of the source checkout the binary runs from. A packaged helper is future work;
 for now the assistant is a source-checkout feature.
 
 ## Measurements

@@ -142,7 +142,7 @@ All are set with `ambient config <key> <value>`; see [settings](settings.md).
 | `voice.reference` | none | A designed voice folder to clone, such as `voices/v1-gravel`. Relative paths are inside the helper folder. Qwen3-TTS only. |
 | `voice.description` | none | Design a voice from this description, once. Used when `voice.reference` is unset. |
 | `voice.cue` | none | A delivery cue appended to the description when designing. |
-| `voice.helper_dir` | `voice/` in the source tree | Where the helper project is. |
+| `voice.helper_dir` | `voice/` in the checkout the binary runs from | Where the helper project is. |
 
 To hear the voice without playing it, for a test, start the server as
 `ambient mcp --no-play --save-audio <dir>`; each utterance is written to

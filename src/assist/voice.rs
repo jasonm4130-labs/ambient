@@ -108,10 +108,19 @@ pub fn total_ram() -> u64 {
     }
 }
 
-/// The `voice/` folder of the source tree this binary was built from. A
-/// release bundle would set `voice.helper_dir` instead.
+/// The `voice/` folder of the source checkout this binary sits in, found by
+/// walking up from the executable (`target/…/ambient` or
+/// `build/Ambient.app/…`). Found at run time, not compiled in, so a release
+/// binary carries no build path. Elsewhere, set `voice.helper_dir`.
 pub fn default_helper_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("voice")
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.ancestors()
+                .map(|dir| dir.join("voice"))
+                .find(|dir| dir.join("pyproject.toml").is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from("voice"))
 }
 
 /// The command that runs the helper for `engine`: `uv run` in the helper's
