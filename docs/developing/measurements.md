@@ -22,6 +22,28 @@ v3-int8, synthesised speech via `say`.
 Peak memory on the 127 s file is flat at the 30 s-chunk level rather than the
 ~3.7 GB an unchunked 120 s run needed, which is the chunking working.
 
+## Memory gate
+
+Measured 2026-10-08 on the M5 Max with `scripts/memory --budget 99999`, which
+runs `src/bin/memrun.rs` under `/usr/bin/time -l`: AMI TS3003a Mix-Headset, all
+1505.6 s, resampled to 48 kHz and streamed in 200 ms drains into
+`LiveTranscriber` on both tracks at 15× realtime, then Stop and
+`session::transcribe_session`. Prepacking on, finalize in-process.
+
+| Run | Peak footprint | Peak RSS | Wall |
+| ---: | ---: | ---: | ---: |
+| 1 | 2204 MiB | 2570 MiB | 180 s |
+| 2 | 2012 MiB | 2359 MiB | 307 s |
+
+Run 2 shared the machine with another replay, which is the wall-time
+difference; the footprint spread is the run-to-run noise the budget has to
+clear. `scripts/memory` fails above 2400 MiB (`--budget` or
+`AMBIENT_MEMORY_BUDGET_MIB` overrides it). The target is 1434 MiB (1.4 GiB)
+once prepacking is off on the Parakeet sessions, `repair_from_native` streams
+instead of reading whole native WAVs, and finalize runs in a child process;
+lower the default as each lands. When finalize moves to a child, the gate must
+measure the child's peak too, since `time -l` reports only the process it runs.
+
 ## Phase 0: provider comparison, CPU against CoreML
 
 Parakeet TDT 0.6b encoder, 60 s of audio, via
