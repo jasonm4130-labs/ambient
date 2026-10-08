@@ -45,7 +45,7 @@ function formatDuration(seconds: number | null): string | null {
 }
 
 /// `started_at` as a short local date and time ("Oct 8, 14:05"), or null
-/// when absent or unparseable.
+/// when absent or unparsable.
 export function formatStarted(startedAt: string | null): string | null {
   if (startedAt === null) return null;
   const date = new Date(startedAt);
