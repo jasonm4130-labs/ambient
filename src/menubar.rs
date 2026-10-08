@@ -13,7 +13,7 @@
 //! GUI wants.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Instant;
@@ -304,19 +304,7 @@ define_class!(
 
 impl Delegate {
     fn log(&self, msg: &str) {
-        eprintln!("{msg}");
-        let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
-        if let Some(parent) = self.ivars().log.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.ivars().log)
-        {
-            use std::io::Write;
-            let _ = f.write_all(line.as_bytes());
-        }
+        append_log(&self.ivars().log, msg);
     }
 
     /// The one place a failure is recorded: the log line, and the words the
@@ -660,6 +648,23 @@ impl Delegate {
 /// `app.log` sorts after every `2…` session id, so any walk that forgets to
 /// filter picks the log up as the newest session — and the sessions folder
 /// should hold only sessions.
+/// One line to stderr and to the app log at `path`.
+fn append_log(path: &Path, msg: &str) {
+    eprintln!("{msg}");
+    let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 fn log_path() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -715,7 +720,16 @@ pub fn run() -> anyhow::Result<()> {
         // CLI's `record` uses; there is no flag to pass here.
         queue: RefCell::new(Queue::spawn(|dir, meter| match std::env::current_exe() {
             Ok(exe) => crate::finalize::run(crate::finalize::command(&exe, dir), dir, meter),
-            Err(_) => crate::session::transcribe_session(dir, None, Some(meter.clone())),
+            Err(e) => {
+                append_log(
+                    &log_path(),
+                    &format!(
+                        "warning: cannot locate own executable ({e}); finalizing in-process, \
+                         which keeps its memory resident after the job"
+                    ),
+                );
+                crate::session::transcribe_session(dir, None, Some(meter.clone()))
+            }
         })),
         pending_failure: RefCell::new(None),
         // Launched from Finder there is nowhere for stderr to go, so keep our
