@@ -427,19 +427,17 @@ impl Voice {
         let within = self.limits.say_within;
         let first = self.ensure_started()?.say(text, emotion, within);
         let result = match first {
-            Ok(s) => Ok(s),
-            Err(e) if e.root_cause().is::<RecvTimeoutError>() => {
-                self.helper = None;
-                Err(e)
-            }
-            Err(e) if !self.is_running() => {
+            Err(e) if !timed_out(&e) && !self.is_running() => {
                 eprintln!("  voice: {e:#}; restarting the helper");
                 self.failed();
                 self.helper = None;
                 self.ensure_started()?.say(text, emotion, within)
             }
-            Err(e) => Err(e),
+            other => other,
         };
+        if result.as_ref().is_err_and(timed_out) {
+            self.helper = None;
+        }
         match &result {
             Ok(_) => self.failures = 0,
             Err(_) if !self.is_running() => self.failed(),
@@ -453,6 +451,11 @@ impl Voice {
             h.stop();
         }
     }
+}
+
+/// A say that ran out of time, which leaves the helper wedged.
+fn timed_out(e: &anyhow::Error) -> bool {
+    e.root_cause().is::<RecvTimeoutError>()
 }
 
 impl Drop for Voice {
@@ -675,6 +678,34 @@ while read -r line; do :; done
         assert_eq!(starts, 2, "the next reply got a fresh helper");
         v.say("three", "warm").unwrap_err();
         assert!(v.given_up(), "three hangs in a row");
+    }
+
+    #[test]
+    fn a_restarted_helper_that_hangs_is_replaced_and_counted() {
+        let body = r#"if [ ! -e "$M" ]; then
+  touch "$M"; echo '{"event":"ready"}'; read -r line; exit 3
+fi
+echo started >> "$M.hung"
+echo '{"event":"ready"}'
+while read -r line; do :; done
+"#;
+        let (p, a) = fake("crash-then-hang", body);
+        let hung = PathBuf::from(&a[0]).with_file_name("marker.hung");
+        let mut v = Voice::new(
+            p,
+            a,
+            Limits {
+                say_within: Duration::from_millis(300),
+                ..quick()
+            },
+        );
+        let e = v.say("one", "warm").unwrap_err();
+        assert!(e.to_string().contains("did not finish"), "{e}");
+        assert!(!v.is_running(), "the hung replacement is gone");
+        v.say("two", "warm").unwrap_err();
+        let starts = std::fs::read_to_string(&hung).unwrap().lines().count();
+        assert_eq!(starts, 2, "the next reply got a fresh helper");
+        assert!(v.given_up(), "a crash and two hangs in a row");
     }
 
     #[test]
