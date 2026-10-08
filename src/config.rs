@@ -103,7 +103,8 @@ pub struct VoiceConfig {
     /// designed, such as "He delivers this deadpan, with dry wit."
     pub cue: Option<String>,
     /// A designed voice folder (`reference.wav` + `voice.json`) to clone
-    /// instead of designing one. Wins over `description`.
+    /// instead of designing one. Wins over `description`. A relative path is
+    /// inside the helper folder, e.g. `voices/v1-gravel`.
     pub reference: Option<PathBuf>,
     /// The helper project to run. `None` is the `voice/` folder of the source
     /// tree this binary was built from.

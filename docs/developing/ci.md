@@ -20,6 +20,7 @@ microphone permissions or record live audio.
 | `changes` | Always | Selects Rust, UI and docs work from changed paths |
 | `hygiene` | Always | Existing hook tests, spelling and dependency licenses/advisories |
 | `ui` | UI, generated bundle or workflow changes | TypeScript, lint, all UI tests, build and generated-bundle drift |
+| `voice` | Voice helper (`voice/`) or workflow changes | The helper's ruff format and lint checks and its pytest suite, with a fake engine |
 | `rust` | Rust, UI, packaging, license or workflow changes | Formatting, Clippy, all-target tests, SF Symbols and signed bundle assembly |
 | `docs` | Docs, contributor/security guidance, licenses or workflow changes | Typecheck, static build, Markdown links, built routes, Mermaid and ADR navigation |
 | `gate` | Always | Fails if a required job failed or was cancelled |

@@ -158,8 +158,10 @@ stream. A bad request line is an error event, never a crash.
   the assistant keeps deciding and prints its replies.
 - **Error:** an engine error on one line, such as text it cannot synthesise, is
   reported without restarting a healthy helper.
-- **Idle:** after five minutes without speech the helper is stopped, which
-  returns its memory, and it starts again on the next reply.
+- **Idle:** the helper stays loaded for the whole meeting. A cold start would
+  make a reply about 1.5 s late. Between meetings it is stopped after five
+  minutes without speech, which returns its memory, and it starts again when
+  needed.
 - **Stop:** `quit` is sent first; a helper still running three seconds later
   is killed.
 
@@ -186,6 +188,51 @@ chunks, and each reply's mood becomes its free-text instruction, prefixed by
 into sentences and plays the first while the next is generated; a playback
 thread fed by a queue keeps generation and playback overlapping.
 
+### Designed voices: design once, clone for every reply
+
+The captain's voice, `voice/voices/v1-gravel`, is described rather than
+picked from a preset list. Qwen3-TTS can only design a voice with its 1.7B
+VoiceDesign model, which peaks around 5.6 GB and re-imagines the voice on
+every call. So the description is rendered once into a short reference clip,
+and every reply comes from the 0.6B Base model cloning that clip in context.
+The voice is then the same on every line, at a fraction of the memory.
+
+The cost is per-line emotion. The clone path takes no instruction, so a
+reply's mood reaches the voice only through its words.
+
+A designed voice is a folder holding `reference.wav` and `voice.json`. The
+JSON holds the clip's transcript and the description, cue, model and seed it
+came from.
+
+- **Shipped voice:** `v1-gravel` is committed. It is the first sentence (3.8 s)
+  of the render the captain approved, so no machine needs the 1.7B model to
+  use it.
+- **Other voices:** `voice.description` and `voice.cue` design one on first
+  use. The design is cached under `designed/`, keyed by everything that shaped
+  it, so editing the description makes a new voice rather than reusing a stale
+  one.
+
+**The voice pack.** Loading the 0.6B clone model as published peaks at 2.8 GB.
+Most of that is not the quantised layers:
+
+- a 151,936 × 2048 bf16 text-embedding table (622 MB) that mlx-audio
+  deliberately leaves unquantised;
+- ~0.7 GB of fp32 speech-tokenizer weights.
+
+On first use the helper loads the model lazily and slims it:
+
+- the 4-bit checkpoint, with the text embedding quantised to 8-bit;
+- the speech decoder cast to fp16, which measured 37–51 dB SNR against fp32
+  on identical codes;
+- the reference encoded once.
+
+It saves the result under `packs/`, keyed by model and reference. Later
+starts build the model straight from the pack without the speech encoder,
+which is only needed to encode the reference, and seed mlx-audio's reference
+cache with the saved codes. The loader mirrors mlx-audio 0.5.8's own
+(`base_load_model` and the Qwen3-TTS `post_load_hook`). `pyproject.toml` pins
+that version, and `PACK_VERSION` invalidates old packs when the layout changes.
+
 ### Model download and caching
 
 Nothing is bundled into the app, and nothing is downloaded until the helper
@@ -198,6 +245,8 @@ first starts with that engine.
   - Supertonic uses its package's cache, `~/.cache/supertonic3`.
   - Kokoro's int8 model and voices come from the kokoro-onnx GitHub release into
     `~/Library/Caches/Ambient/voice/kokoro`. `AMBIENT_VOICE_CACHE` moves that folder.
+- **Designed voices and packs:** `~/Library/Caches/Ambient/voice/designed`
+  and `…/packs`, about 0.9 GB per voice.
 - **espeak-ng:** Kokoro's phonemiser aborts on the wheel's long data path, so
   the helper copies `espeak-ng-data` into the same cache once.
 
@@ -221,12 +270,32 @@ the same ~6–7 s sentence twice. Peak memory is `/usr/bin/time -l`'s
 A first-ever Qwen3-TTS load from a cold disk took 15 s, which is why the helper
 is warmed at launch. These figures agree with the earlier voice survey.
 
+The cloned `v1-gravel` voice was tuned step by step, each step in its own
+process with three test lines:
+
+| Step | Peak footprint | Steady footprint | First sound |
+| --- | --- | --- | --- |
+| Clone as published: 8-bit, 7.2 s reference, 0.32 s chunks | 2.78 GB | 2.40 GB | 73–118 ms |
+| 4-bit talker | 2.50 GB | — | 69–82 ms |
+| 3.8 s reference | 2.73 GB | — | 73–78 ms |
+| 0.16 s stream chunks | 2.72 GB | — | 44–59 ms |
+| MLX buffer cache left at its default (for contrast) | 3.73 GB | — | 74–77 ms |
+| All slimming, applied after a lazy load | 2.19 GB | 1.30 GB | 55–89 ms |
+| **Voice pack, loaded through the helper (shipped)** | **1.56 GB** | **1.13 GB** | **46–57 ms** |
+
+The first start on a machine builds the pack, peaking at 2.71 GB once.
+Everything above transcribed word-for-word through Ambient's Parakeet, and
+median pitch stayed within the approved clips' range. Whether it sounds the
+same was left to a listen; the A/B clips are outside the repository.
+
 ## Not in v1
 
 - No avatar, no speech-to-speech model, no hosted TTS, and macOS only.
 - No barge-in: the assistant finishes its sentence even if someone talks over
   it.
 - No packaged helper: it needs `uv` and the source tree.
+- No per-reply emotion for a cloned voice. A reference clip per mood, designed
+  from the same description, is the untested next step.
 - No Settings-page control. The switch is in the status menu and
   `ambient config`.
 - No eval of the jump-in prompt beyond the gate's unit tests and a sample

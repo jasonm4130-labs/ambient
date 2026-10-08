@@ -50,7 +50,8 @@ pub fn consent_notice(name: &str) -> String {
 /// Where the voice goes. [`voice::Voice`] in a real run; tests record instead.
 pub trait Speaker {
     fn say(&mut self, text: &str, emotion: &str) -> Result<()>;
-    /// Called every poll, so a helper can be stopped when idle.
+    /// Called every poll outside a meeting, so a helper can be stopped when
+    /// idle. Inside one it stays loaded, so a reply is never also a cold start.
     fn tick(&mut self) {}
     fn stop(&mut self) {}
 }
@@ -174,10 +175,12 @@ impl<'a> Assistant<'a> {
         let cfg = Config::load_from(&self.paths.config_file).assistant;
         if !cfg.enabled {
             self.leave("the assistant was turned off");
+            self.speaker.tick();
             return Ok(Step::Off);
         }
         let Some(live) = self.live_session() else {
             self.leave("the meeting ended");
+            self.speaker.tick();
             return Ok(Step::NoMeeting);
         };
         if self.meeting.as_ref().map(|m| m.id.as_str()) != Some(live.as_str()) {
@@ -187,9 +190,7 @@ impl<'a> Assistant<'a> {
         }
         self.beat("listening");
         self.read_new(now)?;
-        let step = self.consider(&cfg, now)?;
-        self.speaker.tick();
-        Ok(step)
+        self.consider(&cfg, now)
     }
 
     fn join(&mut self, id: &str, cfg: &AssistantConfig, now: Instant) -> Result<()> {

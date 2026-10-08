@@ -148,7 +148,10 @@ pub fn helper_command(
     // A designed voice is Qwen3-TTS only; other engines would refuse it.
     if engine == Engine::Qwen3Tts {
         match &voice.reference {
-            Some(r) => flag("--reference", Some(r.display().to_string())),
+            // A relative reference names a voice shipped with the helper,
+            // such as `voices/v1-gravel`, so the setting survives moving
+            // the checkout.
+            Some(r) => flag("--reference", Some(dir.join(r).display().to_string())),
             None => {
                 flag("--description", voice.description.clone());
                 if voice.description.is_some() {
@@ -438,7 +441,9 @@ impl Voice {
         result
     }
 
-    /// Stop the helper if it has been idle too long. Called from the poll loop.
+    /// Stop the helper if it has been idle too long. Called from the poll loop
+    /// while no meeting is on: in a meeting it stays warm, because a reply
+    /// that has to load the model first is a second and a half late.
     pub fn tick(&mut self) {
         if self.helper.is_some() && self.last_used.elapsed() >= self.limits.idle {
             self.stop();
@@ -547,6 +552,17 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.ends_with("--reference /voices/gravel"), "{joined}");
         assert!(!joined.contains("--description"), "{joined}");
+        voice.reference = Some(PathBuf::from("voices/v1-gravel"));
+        let (_, args) = helper_command(Path::new("/v"), Engine::Qwen3Tts, &voice, &[]);
+        assert!(
+            args.join(" ").ends_with("--reference /v/voices/v1-gravel"),
+            "{args:?}"
+        );
+        let (_, args) = helper_command(Path::new("/v"), Engine::Kokoro, &voice, &[]);
+        assert!(
+            !args.join(" ").contains("--reference"),
+            "only Qwen3-TTS clones"
+        );
     }
 
     /// A stand-in helper written as a shell script, so these tests exercise

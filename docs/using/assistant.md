@@ -74,21 +74,51 @@ engine's runtime and downloads its model.
 
 | Engine | Picked by `auto` | First sound | Helper peak memory | Expression |
 | --- | --- | --- | --- | --- |
-| `qwen3-tts` (Qwen3-TTS 0.6B, MLX) | 32 GB or more | ~0.1 s (streamed) | ~2.7 GB | Follows a delivery instruction per reply |
+| `qwen3-tts` (Qwen3-TTS 0.6B, MLX) | 32 GB or more | ~0.05–0.1 s (streamed) | ~2.7 GB preset, ~1.6 GB cloned voice | A delivery instruction per reply (preset), or a designed voice |
 | `supertonic3` (Supertonic 3, ONNX) | 16–31 GB | ~0.4 s (first sentence) | ~0.6 GB | `<laugh>` / `<sigh>` on amused or apologetic replies |
 | `kokoro` (Kokoro-82M int8, ONNX) | under 16 GB | ~0.7 s (first sentence) | ~0.4 GB | None |
 
 The figures were measured on an M5 Max; see the
 [design note](../developing/live-assistant.md#measurements). The reply model
 picks a mood for each reply (neutral, warm, amused, excited, apologetic or
-concerned), which Qwen3-TTS turns into tone of voice. `voice.style` adds a
-standing instruction to every Qwen3-TTS reply, for example
+concerned). With a preset Qwen3-TTS speaker it becomes tone of voice, and
+`voice.style` adds a standing instruction to every reply, for example
 `ambient config voice.style "Dry and understated."`.
+
+### A voice of your own
+
+Qwen3-TTS can also speak in a voice designed from a description. The voice is
+designed once by the larger 1.7B VoiceDesign model, then a small clone of it
+speaks every reply:
+
+```sh
+ambient config voice.reference voices/v1-gravel
+```
+
+That selects the voice shipped in `voice/voices/v1-gravel`: an older Scottish
+man with a deep, gravelly voice. Its `voice.json` records the description and
+delivery cue it was designed from. To design another, set a description and,
+optionally, a cue, and leave `voice.reference` unset:
+
+```sh
+ambient config voice.description "A warm, softly spoken woman in her forties with a slight Irish lilt."
+ambient config voice.cue "She delivers this calmly, with a smile."
+```
+
+The first start then designs the voice, which downloads the 1.7B model and
+briefly uses about 5.6 GB. Later starts reuse the design. A cloned voice sounds
+the same on every reply. It does not take a per-reply mood, so the reply's
+emotion comes through only in its words.
+
+A cloned voice is lighter than a preset one. The helper keeps a slimmed copy
+of the model, built on first use. It peaks at about 1.6 GB, settles at about
+1.1 GB, and speaks within about 50 ms.
 
 Licences differ: Qwen3-TTS and Kokoro are Apache-2.0; Supertonic 3 is
 OpenRAIL-M, which carries use restrictions. Models download to the Hugging
 Face cache, `~/.cache/supertonic3` and `~/Library/Caches/Ambient/voice`, not
-into the app.
+into the app. Designed voices and the slimmed clone are cached in
+`~/Library/Caches/Ambient/voice` too, about 0.9 GB per voice.
 
 ## Settings
 
@@ -107,7 +137,10 @@ All are set with `ambient config <key> <value>`; see [settings](settings.md).
 | `assistant.zdr` | `true` | Use only zero-data-retention providers. |
 | `voice.engine` | `auto` | `auto`, `qwen3-tts`, `supertonic3` or `kokoro`. |
 | `voice.speaker` | engine default | `Vivian` (Qwen3-TTS), `F1` (Supertonic), `af_heart` (Kokoro). |
-| `voice.style` | none | Standing delivery instruction, Qwen3-TTS only. |
+| `voice.style` | none | Standing delivery instruction for preset Qwen3-TTS speakers. |
+| `voice.reference` | none | A designed voice folder to clone, such as `voices/v1-gravel`. Relative paths are inside the helper folder. Qwen3-TTS only. |
+| `voice.description` | none | Design a voice from this description, once. Used when `voice.reference` is unset. |
+| `voice.cue` | none | A delivery cue appended to the description when designing. |
 | `voice.helper_dir` | `voice/` in the source tree | Where the helper project is. |
 
 ## What leaves this Mac

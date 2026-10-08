@@ -53,6 +53,7 @@ impl Model for Scripted {
 struct Recorder {
     said: Vec<(String, String)>,
     stops: u32,
+    ticks: u32,
 }
 
 impl Speaker for Recorder {
@@ -62,6 +63,9 @@ impl Speaker for Recorder {
     }
     fn stop(&mut self) {
         self.stops += 1;
+    }
+    fn tick(&mut self) {
+        self.ticks += 1;
     }
 }
 
@@ -380,4 +384,25 @@ fn following_one_session_ignores_another_that_is_live() {
     assert_eq!(a.step(Instant::now()).unwrap(), Step::NoMeeting);
     drop(a);
     assert!(speaker.said.is_empty());
+}
+
+#[test]
+fn the_voice_stays_warm_through_a_meeting_and_may_idle_out_between_them() {
+    let room = Room::new("warm", true);
+    let dir = room.live("m1");
+    let model = Scripted::new(NO, REPLY);
+    let mut speaker = Recorder::default();
+    let mut a = Assistant::new(room.paths(), None, &model, &mut speaker);
+    let t = Instant::now();
+    a.step(t).unwrap();
+    for i in 1..4 {
+        a.step(t + Duration::from_secs(i)).unwrap();
+    }
+    std::fs::remove_file(dir.join("audio").join("room.native.wav")).unwrap();
+    assert_eq!(a.step(t).unwrap(), Step::NoMeeting);
+    drop(a);
+    assert_eq!(
+        speaker.ticks, 1,
+        "only the step outside the meeting may idle it out"
+    );
 }
