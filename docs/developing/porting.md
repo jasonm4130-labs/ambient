@@ -40,8 +40,11 @@ stale cdhash, so rule the signing identity out before raising a ticket.
 
 The memory budget is the binding constraint, not throughput:
 
-> **~2.2 GB during a transcription burst, chunked at 30 s; negligible while
-> capturing.**
+> **~1.3 GB during a transcription burst, chunked at 30 s with weight
+> prepacking off; negligible while capturing.**
+
+That figure is from [Weight prepacking](measurements.md#weight-prepacking); the
+~2.2 GB in [Speech recognition](asr.md#revised-design-axiom) predates it.
 
 Unchunked, memory scales linearly with audio length — an extrapolated ~35 GB for
 a 30-minute session, which fails on this machine outright. So step 3 is not a
