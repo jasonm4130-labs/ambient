@@ -1,8 +1,8 @@
 """`ambient-voice`: the live assistant's voice, as a child process.
 
 The protocol is newline-delimited JSON, one message per line in each
-direction, so the parent (`ambient assist`) needs no audio code and a crash
-here never touches the recorder.
+direction, so the parent (`ambient mcp`'s voice supervisor) needs no audio
+code and a crash here never touches the recorder.
 
 In, on stdin:
 

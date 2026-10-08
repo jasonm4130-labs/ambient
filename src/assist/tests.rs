@@ -292,6 +292,47 @@ fn the_cap_holds_even_without_a_cooldown() {
 }
 
 #[test]
+fn watching_the_same_meeting_again_keeps_its_cooldown_and_count() {
+    let room = Room::new("rewatch", true);
+    room.live("m1");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    w.speak("It closed on Tuesday.", None).unwrap();
+    w.stop_watching();
+    let v = w.watch(None).unwrap();
+    assert_eq!(v["limits"]["spoken"], 1, "{v}");
+    let held = w.speak("Also, the build is green.", None).unwrap_err();
+    assert!(held.contains("cooling down"), "{held}");
+    assert_eq!(
+        room.said(),
+        [
+            consent_notice("Claude"),
+            "It closed on Tuesday.".to_string(),
+            consent_notice("Claude"),
+        ],
+        "the notice is spoken again on each new watch"
+    );
+}
+
+#[test]
+fn the_cap_reached_in_one_watch_holds_in_another() {
+    let room = Room::new("capshared", true);
+    room.set("assistant.cooldown_s", "0");
+    room.live("m1");
+    let mut first = room.watch();
+    first.watch(None).unwrap();
+    first.speak("One.", None).unwrap();
+    room.heard.borrow_mut().broken = true;
+    first.speak("Two.", None).unwrap_err();
+    room.heard.borrow_mut().broken = false;
+    let mut second = room.watch();
+    let v = second.watch(None).unwrap();
+    assert_eq!(v["limits"]["spoken"], 2, "{v}");
+    let held = second.speak("Three.", None).unwrap_err();
+    assert!(held.contains("as often as one meeting allows"), "{held}");
+}
+
+#[test]
 fn what_it_says_must_be_short_plain_speech_in_a_known_tone() {
     let room = Room::new("shape", true);
     room.live("m1");
@@ -503,6 +544,10 @@ fn its_name_counts_only_as_a_whole_word() {
     assert!(mentions("is that Claude's call?", "Claude"));
     assert!(!mentions("Claudette sent the invite", "Claude"));
     assert!(!mentions("no names here", "Claude"));
+    assert!(mentions("Ambient Bot, what was the budget?", "Ambient Bot"));
+    assert!(mentions("ask ambient  BOT then", "Ambient Bot"));
+    assert!(!mentions("the bot in ambient", "Ambient Bot"));
+    assert!(!mentions("Ambient Bots are here", "Ambient Bot"));
 }
 
 #[test]

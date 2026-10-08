@@ -62,6 +62,10 @@ assistant free per meeting and takes Ambient off the network entirely.
 - Ambient no longer controls the model, its latency or its prompt adherence.
   The tools' refusals are worded for an agent, and the prompt is served by
   Ambient so every client gets the same instructions.
+- The cooldown and cap are per meeting: each watch resumes them from the
+  session's `assistant.jsonl`, so they are shared by every `ambient mcp`
+  process watching that meeting. There is no locking, so two processes that
+  speak at the same instant can each pass the check.
 - The transcript leaves the Mac through the user's agent, under that client's
   terms rather than a zero-data-retention route Ambient chose.
 

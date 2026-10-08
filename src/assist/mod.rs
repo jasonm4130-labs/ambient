@@ -322,10 +322,17 @@ impl Watch {
                 id: id.clone(),
                 dir: dir.clone(),
                 cursor: next,
-                gate: Gate::new(Rules {
-                    cooldown: Duration::from_secs(cfg.assistant.cooldown_s.into()),
-                    max_per_meeting: cfg.assistant.max_per_meeting,
-                }),
+                gate: {
+                    let (spoken, last) = spoken_before(&dir);
+                    Gate::resume(
+                        Rules {
+                            cooldown: Duration::from_secs(cfg.assistant.cooldown_s.into()),
+                            max_per_meeting: cfg.assistant.max_per_meeting,
+                        },
+                        spoken,
+                        last,
+                    )
+                },
                 said: vec![(now, notice.clone())],
             });
             self.attend("listening");
@@ -627,11 +634,49 @@ fn render(line: &Value) -> String {
     format!("[{:02}:{:02}] {who}: {text}", s / 60, s % 60)
 }
 
-/// Whether `text` says `name` as a word, ignoring case.
+/// Whether `text` says `name` as whole words, ignoring case.
 fn mentions(text: &str, name: &str) -> bool {
-    let name = name.to_lowercase();
-    text.split(|c: char| !c.is_alphanumeric())
-        .any(|w| w.to_lowercase() == name)
+    let words = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let name = words(name);
+    !name.is_empty() && words(text).windows(name.len()).any(|w| w == name)
+}
+
+/// How often the assistant has already spoken in the meeting at `dir`, and
+/// when it last did, from its `assistant.jsonl`. A failed voice counts, as it
+/// does in `speak`, so the limits hold across watches and processes.
+fn spoken_before(dir: &Path) -> (u32, Option<Instant>) {
+    let text = std::fs::read_to_string(dir.join("assistant.jsonl")).unwrap_or_default();
+    let mut spoken = 0;
+    let mut last: Option<chrono::DateTime<chrono::FixedOffset>> = None;
+    for event in text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    {
+        let counts =
+            event["event"] == "spoke" || (event["event"] == "error" && event["stage"] == "voice");
+        if !counts {
+            continue;
+        }
+        spoken += 1;
+        if let Some(at) = event["at"]
+            .as_str()
+            .and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok())
+        {
+            last = last.max(Some(at));
+        }
+    }
+    let last = last.and_then(|at| {
+        let ago = (chrono::Local::now().fixed_offset() - at)
+            .to_std()
+            .unwrap_or_default();
+        Instant::now().checked_sub(ago)
+    });
+    (spoken, last)
 }
 
 /// Append one event to the session's `assistant.jsonl`, so what the assistant
