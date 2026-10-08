@@ -42,8 +42,8 @@ difference; the footprint spread is the run-to-run noise the budget has to
 clear. A third run against `--budget 1434`, also from before #100 and #103
 landed, failed with `ERROR peak footprint 2144 MiB is over the 1434 MiB budget`.
 
-The same replay on current main, with #100 and #103 landed, finalize still
-in-process:
+The same replay on main after #100 and #103 landed, before #107 moved the
+app's finalize into a child process:
 
 | Run | Peak footprint | Peak RSS | Wall |
 | ---: | ---: | ---: | ---: |
@@ -55,10 +55,12 @@ Run 2 ran under heavy load from other work (load average 12 to 27), so the
 above 1320 MiB, about 200 MiB over the higher run (`--budget` or
 `AMBIENT_MEMORY_BUDGET_MIB` overrides it). That is already under the 1434 MiB
 (1.4 GiB) target. Lower the default to a fresh
-measurement on current main, never raise it to make a change pass. Running
-finalize in a child process is the remaining memory change; when it lands, the
-gate must measure the child's peak too, since `time -l` reports only the
-process it runs.
+measurement on current main, never raise it to make a change pass. The menu
+bar app now finalizes in a child process (#107; see
+[Idle memory after finalize](#idle-memory-after-finalize-in-process-and-in-a-child)),
+but the replay still finalizes in process: the gate measures one process that
+records and then finalizes. It does not measure the peak of the app's finalize
+child on its own.
 
 ## Phase 0: provider comparison, CPU against CoreML
 

@@ -4,9 +4,10 @@
 //!
 //! Streams `<native.wav>` from disk in 200 ms drains into a `LiveTranscriber`
 //! on both tracks, paced at `pace`× realtime (default 15), then stops it and
-//! finalizes the session with `session::transcribe_session`, exactly as the
-//! app's queue does after Stop. `<16k.wav>` is the same audio at 16 kHz: the
-//! capture path writes both, and finalization reads both.
+//! finalizes the session with `session::transcribe_session`: the same work the
+//! app's `ambient finalize` child runs after Stop, but in this process.
+//! `<16k.wav>` is the same audio at 16 kHz: the capture path writes both, and
+//! finalization reads both.
 //!
 //! The input is read in drains, never whole, so the process holds what the app
 //! holds and nothing more: `livecheck` keeps the whole file in memory twice,
