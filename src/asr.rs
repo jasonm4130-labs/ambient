@@ -59,8 +59,17 @@ impl Recognizer {
             Ok(format!("{dir}/{name}"))
         };
 
-        let build =
-            |p: String| -> Result<Session> { Session::builder().a()?.commit_from_file(p).a() };
+        // Prepacking copies every weight matrix into a second, kernel-friendly
+        // layout and keeps both; disabling it cuts ~1 GB of peak RSS for
+        // slower decode (docs/developing/measurements.md, Weight prepacking).
+        let build = |p: String| -> Result<Session> {
+            Session::builder()
+                .a()?
+                .with_prepacking(false)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                .commit_from_file(p)
+                .a()
+        };
 
         let encoder = build(find("encoder")?)?;
         let decoder = build(find("decoder")?)?;

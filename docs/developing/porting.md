@@ -18,7 +18,8 @@ is one of the two things still open.
    reports the execution provider state. This needs no permissions.
 3. `cargo run --release -- transcribe <model> <recording>` on a real recording,
    run under `/usr/bin/time -l`, and check `maximum resident set size` stays near
-   2.3 GB. If it does, the 16 GB machine is fine for batch transcription.
+   the figure in [Weight prepacking](measurements.md#weight-prepacking) (~1.3 GB).
+   If it does, the 16 GB machine is fine for batch transcription.
 4. Then `./make-app.sh`, and run the tap **via `open -a`**.
 
 ## What to expect at step 4
@@ -39,13 +40,16 @@ stale cdhash, so rule the signing identity out before raising a ticket.
 
 The memory budget is the binding constraint, not throughput:
 
-> **~2.2 GB during a transcription burst, chunked at 30 s; negligible while
-> capturing.**
+> **~1.3 GB during a transcription burst, chunked at 30 s with weight
+> prepacking off; negligible while capturing.**
+
+That figure is from [Weight prepacking](measurements.md#weight-prepacking); the
+~2.2 GB in [Speech recognition](asr.md#revised-design-axiom) predates it.
 
 Unchunked, memory scales linearly with audio length — an extrapolated ~35 GB for
 a 30-minute session, which fails on this machine outright. So step 3 is not a
-formality: it is the whole port. At ~60× realtime on CPU there is no throughput
-question to answer.
+formality: it is the whole port. At ~20–30× realtime on CPU with prepacking off
+there is no throughput question to answer.
 
 Diarization is a separate concern and a much smaller one — 249 MB peak on a
 10.2-minute track, because the sliding window does not accumulate. It is a

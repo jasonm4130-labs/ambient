@@ -621,6 +621,32 @@ already fails. **The default holds.** `src/session.rs`'s shipped chunk
 length stays at 30 and `quality/wer.json` does not change with it, because no
 shipped constant moved.
 
+## Weight prepacking
+
+`cargo build --release` then `/usr/bin/time -l ./target/release/wer --json
+<path>` and the same with `--manifest
+~/.cache/ambient/fixtures/calls/manifest.json`, on 2026-10-08, once on the
+parent commit and once with `session.disable_prepacking=1` on the three
+Parakeet sessions (`with_prepacking(false)` in `src/asr.rs`). ONNX Runtime's
+prepacking copies each weight matrix into a kernel-friendly layout and keeps
+both; disabling it keeps one. Peak RSS is `maximum resident set size` from
+`/usr/bin/time -l`, divided by 1,048,576. Both runs reproduce
+`quality/wer.json` and `quality/calls.json` exactly, so neither baseline
+changes.
+
+| Fixture | Prepacking | S | I | D | WER | Decode | Realtime | Peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| clean | on | 39 | 3 | 5 | 0.0218 | 23.06 s | 39.6× | 2301 MB |
+| clean | off | 39 | 3 | 5 | 0.0218 | 41.63 s | 21.9× | 1337 MB |
+| calls | on | 134 | 83 | 12 | 0.1000 | 29.12 s | 30.9× | 2118 MB |
+| calls | off | 134 | 83 | 12 | 0.1000 | 31.09 s | 28.9× | 1114 MB |
+
+Peak RSS falls by ~1 GB on both fixtures with the transcript unchanged. The
+decode column is not a clean comparison: a repeat of the prepacking-on clean
+run on the same busy machine came in at 37.86 s (24.1×), so the decode cost
+of disabling prepacking is somewhere between ~7% (calls) and the clean row's
+spread, and still well above realtime either way.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still
