@@ -171,11 +171,17 @@ still builds without them. A machine missing either is told so on the first
 line and gets the WER set only — the DER harness then reports the missing
 manifest and names this script.
 
-| Meeting | Seconds | Reference turns |
-| --- | ---: | ---: |
-| ES2004a | 300 | 41 |
-| IS1009a | 300 | 47 |
-| TS3003a | 300 | 36 |
+| Meeting | Seconds | Reference turns | Full seconds | Full turns |
+| --- | ---: | ---: | ---: | ---: |
+| ES2004a | 300 | 41 | 1049.35 | 260 |
+| IS1009a | 300 | 47 | 838.83 | 195 |
+| TS3003a | 300 | 36 | 1505.64 | 242 |
+
+The same run writes `~/.cache/ambient/fixtures/der-full/manifest.json`, which
+names the cached recordings and their uncut references directly — nothing is
+decoded or cut, and the digests above already vouch for both. Five minutes is
+too short to show what clustering does to a real meeting: see
+[DER on whole meetings](#der-on-whole-meetings).
 
 ## Word error rate on the fixture
 
@@ -268,8 +274,9 @@ first; the table says which way it should then go.
 [--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
 `ambient record` runs for a finished session — the model resolution of
 `session::diarize_session`, the same pyannote segmentation and WeSpeaker
-embedding, `Diarizer::diarize` at the shipped 0.5 threshold — so these are the
-numbers a user gets. Scored at the conventional 0.25 s collar; `--collar 0`
+embedding, `Diarizer::diarize` at the shipped 0.5 threshold, before the
+small-cluster fold in [DER on whole meetings](#der-on-whole-meetings) existed —
+so these were the numbers a user got then. Scored at the conventional 0.25 s collar; `--collar 0`
 scores every frame instead.
 
 | Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER | Run |
@@ -373,6 +380,109 @@ three speakers 10.25 s between them. Calling the whole meeting one person is
 almost right there and would be badly wrong anywhere else. IS1009a is the
 honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
 meeting with four real ones — and it is not enough on its own.
+
+## DER on whole meetings
+
+`cargo run --release --bin der -- --manifest
+~/.cache/ambient/fixtures/der-full/manifest.json --json <tmp>`, on 2026-10-08,
+M5 Max: the same three meetings uncut, 3393.83 s in all, at the same 0.25 s
+collar. `scripts/quality` now gates this set against `quality/der-full.json`
+beside the clips.
+
+The 300 s clips hid the real failure. At 0.5 with clustering alone, the whole
+meetings, each with four real speakers, came out at 36, 28 and 31:
+
+| Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 1049.35 | 4 | 36 | 74.92 s | 13.27 s | 30.89 s | 0.1794 |
+| IS1009a | 838.83 | 4 | 28 | 45.40 s | 13.23 s | 49.30 s | 0.2101 |
+| TS3003a | 1505.64 | 4 | 31 | 60.91 s | 24.46 s | 33.81 s | 0.1395 |
+| **total** | 3393.83 | 12 | 95 | 181.23 s | 50.96 s | 114.00 s | **0.1704** |
+
+`AMBIENT_DEBUG_DIAR=1` prints how much speech each cluster ends up holding, and
+it shows the shape: four clusters of 77-800 s, then a tail of thirty-odd
+holding 0-9 s each. That tail is one voice drifting — distance from the
+microphone, laughter, crosstalk — far enough to clear the threshold for a few
+seconds. Raising the threshold cuts the tail, but by 0.7 it also starts
+merging real people on the clips (IS1009a 4 → 3).
+
+So `Diarizer::diarize` now folds a cluster into a bigger one when two things
+hold: it owns less than `MIN_CLUSTER` of speech, and the cosine distance
+between its mean embedding and the nearest cluster that owns more is at most
+`FOLD_DISTANCE`. Neither test works alone.
+
+- **Time alone** erases brief real speakers. ES2004a's clip has participants
+  with 9 s and 17 s of reference speech; a 10 s floor with no distance test
+  folds that clip into one speaker and raises its DER by 0.0425, past the
+  gate's 0.01. A floor set as a share of the track (1.5% at threshold 0.6)
+  did the same to TS3003a's clip, 4 reference speakers to 1, and dropped one of
+  TS3003a's four on the whole meeting.
+- **Distance** is what tells the two apart. At 0.6 with a 10 s floor, the small
+  clusters on ES2004a's clip, which are its real quiet participants, sit
+  0.78-0.94 from the nearest big cluster; the excursions on the whole
+  meetings mostly sit 0.43-0.78. A drifted voice is still that voice.
+
+Swept at thresholds 0.50-0.65, floors 5-30 s and fold distances 0.65-0.90.
+Speaker counts are ES2004a/IS1009a/TS3003a; *spk err* is |hyp − ref| summed
+over the three; *clip Δ* is the worst clip meeting against the clip baseline
+before this change (0.5, no fold: 6/7/6 speakers, spk err 8, DER 0.1434), where
+the gate allows +0.01. Rows at 0.50 unless marked:
+
+| Floor | Distance | Full spk | Full DER | Full spk err | Clip spk | Clip DER | Clip spk err | Clip Δ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| none | — | 36/28/31 | 0.1704 | 83 | 6/7/6 | 0.1434 | 8 | +0.0000 |
+| 5 s | 0.80 | 4/10/7 | 0.1474 | 9 | 3/5/3 | 0.1323 | 2 | −0.0072 |
+| 8 s | 0.80 | 4/7/4 | 0.1419 | 3 | 4/5/3 | 0.1341 | 3 | −0.0050 |
+| 10 s | 0.65 | 7/7/7 | 0.1345 | 9 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.70 | 5/6/7 | 0.1343 | 6 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.75 | 4/6/6 | 0.1337 | 4 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s | 0.85 | 4/5/3 | 0.1356 | 2 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s | 0.90 | 4/5/3 | 0.1356 | 2 | 2/4/2 | 0.1182 | 3 | +0.0086 |
+| **12 s** | **0.80** | **4/5/4** | **0.1336** | **1** | **4/4/2** | **0.1147** | **3** | **−0.0050** |
+| 15 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 20 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/3/2 | 0.1393 | 4 | +0.0385 |
+| 30 s | 0.80 | 4/4/4 | 0.1507 | 0 | 4/3/2 | 0.1521 | 4 | +0.0824 |
+| 10 s @ 0.55 | 0.80 | 4/5/4 | 0.1335 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s @ 0.60 | 0.80 | 4/5/3 | 0.1362 | 2 | 3/4/2 | 0.1131 | 2 | −0.0112 |
+| 10 s @ 0.65 | 0.80 | 4/5/4 | 0.1323 | 1 | 3/3/2 | 0.1377 | 3 | +0.0385 |
+
+The shipped rule is a 12 s floor and a 0.8 fold distance, with the threshold
+left at 0.5. Floors of 10, 12 and 15 s give identical rows, so 12 s sits
+mid-plateau. Distance is the more sensitive knob: 0.75 leaves 4/6/6 on the
+meetings and 0.85 drops one of TS3003a's four, so 0.8 is the best point
+rather than a flat one, though both neighbours still pass the gate. The
+threshold stays where it was because 0.55 moves the full DER by 0.0001
+and 0.6 costs a speaker on TS3003a, so nothing here argues for a new default,
+and leaving it means a config file saved with 0.5 gets exactly these numbers.
+The lowest full DER in the sweep, 0.1323 at 0.65, merges two of IS1009a's
+clip speakers and fails the gate by 0.0385.
+
+At the shipped rule, every clip meeting improves or holds and the clip speaker
+error falls from 8 to 3:
+
+| Meeting | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 3 | 4 | 9.65 s | 4.49 s | 1.96 s | 0.1230 |
+| IS1009a | 4 | 4 | 4.80 s | 8.21 s | 10.54 s | 0.1602 |
+| TS3003a | 4 | 2 | 15.69 s | 2.27 s | 0.00 s | 0.0800 |
+| **total** | 11 | 10 | 30.14 s | 14.97 s | 12.50 s | **0.1147** |
+
+and on the whole meetings:
+
+| Meeting | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 4 | 4 | 74.92 s | 13.27 s | 6.93 s | 0.1433 |
+| IS1009a | 4 | 5 | 45.40 s | 13.23 s | 20.17 s | 0.1534 |
+| TS3003a | 4 | 4 | 60.91 s | 24.46 s | 12.21 s | 0.1142 |
+| **total** | 12 | 13 | 181.23 s | 50.96 s | 39.31 s | **0.1336** |
+
+TS3003a's clip at two speakers is the near-monologue described under
+[DER by minimum embedding length](#der-by-minimum-embedding-length): its other
+two reference speakers hold 0.3 s and 2.0 s, too little to embed at all, and
+the clip it scored before this change found six. Missed speech and false
+alarm do not move anywhere in this section: folding relabels spans, so every
+gain is confusion, 114.00 s → 39.31 s on the meetings.
 
 ## Live transcription: cost per block
 

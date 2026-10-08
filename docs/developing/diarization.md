@@ -18,10 +18,17 @@ recording that already exists. Two models, in sequence:
 | segment | pyannote-segmentation-3.0 | how many people are talking in each 10 s window, and which parts belong to each |
 | embed | WeSpeaker resnet34 (VoxCeleb) | a 256-d vector per (window, speaker) |
 | cluster | agglomerative, cosine, average linkage | which of those are the same person |
+| fold | nearest cluster by mean embedding | whether a cluster holding under 12 s of speech is a drifted voice |
 
 Segmentation's speaker indices are local to a window and mean nothing across
 windows, so nothing tries to stitch windows together by permutation — the
-global clustering is what recovers a consistent identity. Each raw record then
+global clustering is what recovers a consistent identity. Clustering alone
+over-clusters a real meeting — a voice drifting through 25 minutes clears the
+threshold in short excursions, 36 "speakers" for 4 people — so a cluster
+holding less than 12 s of speech is folded into the nearest cluster that holds
+more, provided their mean embeddings are within cosine distance 0.8. A small
+cluster further than that from all of them is kept as a brief speaker of its
+own (see [DER on whole meetings](measurements.md#der-on-whole-meetings)). Each raw record then
 takes the speaker holding the most of it, labelled `room-1`, `call-2`: speaker
 1 in the room and speaker 1 on the call are different people, and nothing
 downstream should be able to assume otherwise.
