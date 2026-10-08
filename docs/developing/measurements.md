@@ -171,11 +171,17 @@ still builds without them. A machine missing either is told so on the first
 line and gets the WER set only — the DER harness then reports the missing
 manifest and names this script.
 
-| Meeting | Seconds | Reference turns |
-| --- | ---: | ---: |
-| ES2004a | 300 | 41 |
-| IS1009a | 300 | 47 |
-| TS3003a | 300 | 36 |
+| Meeting | Seconds | Reference turns | Full seconds | Full turns |
+| --- | ---: | ---: | ---: | ---: |
+| ES2004a | 300 | 41 | 1049.35 | 260 |
+| IS1009a | 300 | 47 | 838.83 | 195 |
+| TS3003a | 300 | 36 | 1505.64 | 242 |
+
+The same run writes `~/.cache/ambient/fixtures/der-full/manifest.json`, which
+names the cached recordings and their uncut references directly — nothing is
+decoded or cut, and the digests above already vouch for both. Five minutes is
+too short to show what clustering does to a real meeting: see
+[DER on whole meetings](#der-on-whole-meetings).
 
 ## Word error rate on the fixture
 
@@ -317,12 +323,13 @@ the reference count is in the header.
 | ---: | ---: | ---: | ---: | ---: |
 | 0.30 | 0.2242 (12 spk) | 0.3204 (22 spk) | 0.2739 (17 spk) | 0.2745 |
 | 0.40 | 0.1538 (9 spk) | 0.2332 (13 spk) | 0.1332 (8 spk) | 0.1678 |
-| **0.50 (shipped)** | **0.1279 (6 spk)** | **0.2058 (7 spk)** | **0.1116 (6 spk)** | **0.1434** |
+| **0.50 (shipped then)** | **0.1279 (6 spk)** | **0.2058 (7 spk)** | **0.1116 (6 spk)** | **0.1434** |
 | 0.60 | 0.1218 (5 spk) | 0.1741 (5 spk) | 0.0873 (4 spk) | 0.1217 |
 | 0.70 | 0.1163 (4 spk) | 0.2443 (3 spk) | 0.0800 (2 spk) | 0.1375 |
 | 0.80 | 0.1157 (3 spk) | 0.3588 (2 spk) | 0.0800 (2 spk) | 0.1709 |
 
-The default holds at 0.5. The lowest total is 0.6 at 0.1217, and its speaker
+The default held at 0.5 on these clips alone; it is 0.6 since the whole-meeting
+sweep in [DER on whole meetings](#der-on-whole-meetings). The lowest total is 0.6 at 0.1217, and its speaker
 counts stay inside twice the reference on every meeting, but the keep rule for
 this sweep asks for more than 0.01 of DER on *every* meeting and ES2004a gives
 0.0061 — 0.1279 to 0.1218. One meeting of three carrying a change to a shipped
@@ -373,6 +380,91 @@ three speakers 10.25 s between them. Calling the whole meeting one person is
 almost right there and would be badly wrong anywhere else. IS1009a is the
 honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
 meeting with four real ones — and it is not enough on its own.
+
+## DER on whole meetings
+
+`cargo run --release --bin der -- --manifest
+~/.cache/ambient/fixtures/der-full/manifest.json --threshold <t> --min-share <s>
+--json <tmp>`, on 2026-10-08, M5 Max: the same three meetings uncut, 3393.83 s
+in all, at the same 0.25 s collar. `scripts/quality` now gates this set against
+`quality/der-full.json` beside the clips.
+
+The 300 s clips hid the real failure. At the old default — 0.5, no floor — the
+whole meetings, each with four real speakers, came out at 36, 28 and 31:
+
+| Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 1049.35 | 4 | 36 | 74.92 s | 13.27 s | 30.89 s | 0.1794 |
+| IS1009a | 838.83 | 4 | 28 | 45.40 s | 13.23 s | 49.30 s | 0.2101 |
+| TS3003a | 1505.64 | 4 | 31 | 60.91 s | 24.46 s | 33.81 s | 0.1395 |
+| **total** | 3393.83 | 12 | 95 | 181.23 s | 50.96 s | 114.00 s | **0.1704** |
+
+`AMBIENT_DEBUG_DIAR=1` prints how much speech each cluster ends up holding, and
+it shows the shape: four clusters of 77-800 s, then a tail of thirty-odd
+holding 0-9 s each. That tail is one voice drifting — distance from the
+microphone, laughter, crosstalk — far enough to clear the threshold for a few
+seconds. Raising the threshold cuts the tail, but by 0.7 it also starts
+merging real people on the clips (IS1009a 4 → 3), so `Diarizer::diarize` now
+folds every cluster holding less than `MIN_CLUSTER_SHARE` of the track's
+attributed speech into the nearest larger cluster by mean embedding.
+
+The floor is a share, not seconds, because a fixed floor cannot serve both
+lengths. Swept at 5, 10, 20, 30 and 60 s, 10 s gives the meetings 4/4/3
+speakers but folds ES2004a's clip, whose quiet participants hold 9 s and 17 s
+of reference speech, into one speaker: that clip's DER rises 0.0425, past the
+gate's 0.01. Only 5 s at 0.5-0.6 stays inside the gate, and it leaves 5-9
+speakers on the meetings. The quiet participant in five minutes holds about
+what an excursion holds in half an hour; a share scales with the track.
+
+Cells are DER with hypothesis speakers in brackets; *speaker error* is
+|hyp − ref| summed over the three meetings; *clip Δ* is the worst clip
+meeting against the 0.5 clip baseline, where the gate allows +0.01.
+
+| Threshold | Share | ES2004a | IS1009a | TS3003a | Full DER | Spk error | Clip DER | Clip Δ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.50 | 0 | 0.1794 (36) | 0.2101 (28) | 0.1395 (31) | 0.1704 | 83 | 0.1434 | +0.0000 |
+| 0.50 | 1.0% | 0.1421 (4) | 0.1745 (6) | 0.1188 (3) | 0.1405 | 3 | 0.1393 | +0.0000 |
+| 0.50 | 1.5% | 0.1421 (4) | 0.1542 (4) | 0.1188 (3) | 0.1354 | 1 | 0.1377 | −0.0025 |
+| 0.50 | 2.0% | 0.1421 (4) | 0.1542 (4) | 0.1188 (3) | 0.1354 | 1 | 0.1377 | −0.0025 |
+| 0.50 | 3.0% | 0.1421 (4) | 0.1542 (4) | 0.1318 (2) | 0.1409 | 2 | 0.1371 | +0.0072 |
+| 0.55 | 0 | 0.1657 (29) | 0.1910 (20) | 0.1363 (25) | 0.1597 | 62 | 0.1349 | +0.0000 |
+| 0.55 | 1.5% | 0.1421 (4) | 0.1542 (4) | 0.1185 (3) | 0.1352 | 1 | 0.1292 | −0.0062 |
+| 0.60 | 0 | 0.1607 (23) | 0.1723 (17) | 0.1222 (19) | 0.1475 | 47 | 0.1217 | −0.0062 |
+| 0.60 | 1.0% | 0.1421 (4) | 0.1542 (4) | 0.1175 (3) | 0.1348 | 1 | 0.1209 | −0.0062 |
+| **0.60** | **1.5%** | **0.1421 (4)** | **0.1542 (4)** | **0.1175 (3)** | **0.1348** | **1** | **0.1209** | **−0.0062** |
+| 0.60 | 2.0% | 0.1421 (4) | 0.1542 (4) | 0.1175 (3) | 0.1348 | 1 | 0.1209 | −0.0062 |
+| 0.60 | 3.0% | 0.1421 (4) | 0.1542 (4) | 0.1320 (2) | 0.1409 | 2 | 0.1207 | +0.0086 |
+| 0.65 | 0 | 0.1510 (15) | 0.1646 (11) | 0.1161 (12) | 0.1398 | 26 | 0.1406 | +0.0385 |
+| 0.65 | 1.5% | 0.1433 (4) | 0.1542 (4) | 0.1090 (4) | 0.1316 | 0 | 0.1415 | +0.0385 |
+| 0.70 | 0 | 0.1506 (10) | 0.1577 (7) | 0.1135 (7) | 0.1368 | 12 | 0.1375 | +0.0385 |
+| 0.70 | 1.5% | 0.1446 (4) | 0.1534 (4) | 0.1090 (4) | 0.1318 | 0 | 0.1400 | +0.0385 |
+
+The shipped pair is 0.6 and 1.5%. It is the lowest full DER whose clip rows
+all improve, and it sits on a plateau: 1.0%, 1.5% and 2.0% give identical
+rows at 0.6, so the choice does not rest on an edge. The table's lowest full
+DER, 0.1316 with every speaker count exact at 0.65, costs IS1009a's clip
+0.0385 because it merges two of its people, and the gate refuses that. TS3003a
+keeping 3 of 4 is the price paid instead: its quietest participants hold 26.5 s
+and 39.6 s of 1025 s of reference speech, 2.6% and 3.9%, and one of them
+fragments below the floor.
+
+Every clip meeting improves at the shipped pair:
+
+| Meeting | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 3 | 5 | 9.65 s | 4.49 s | 1.80 s | 0.1218 |
+| IS1009a | 4 | 5 | 4.80 s | 8.21 s | 12.58 s | 0.1741 |
+| TS3003a | 4 | 1 | 15.69 s | 2.27 s | 1.25 s | 0.0856 |
+| **total** | 11 | 11 | 30.14 s | 14.97 s | 15.63 s | **0.1209** |
+
+TS3003a's clip at one speaker is the near-monologue described under
+[DER by minimum embedding length](#der-by-minimum-embedding-length) — one
+participant holds 242 of its 250 s — so one speaker is nearly right there.
+Missed speech and false alarm do not move anywhere in this section: folding
+relabels spans, so every gain is confusion, 114.00 s → 41.75 s on the meetings.
+
+A config file saved before this change stores `threshold: 0.5` and keeps it;
+the floor still applies there, and the 0.50 / 1.5% row is what those users get.
 
 ## Live transcription: cost per block
 

@@ -33,9 +33,17 @@ const POWERSET: [&[usize]; N_CLASSES] = [&[], &[0], &[1], &[2], &[0, 1], &[0, 2]
 /// phonemes happened to land in the fragment rather than by the voice.
 const MIN_EMBED: usize = SR;
 
+/// A cluster holding less than this share of the track's attributed speech is
+/// folded into the nearest one that holds more — see `absorb_small`. Measured
+/// on whole AMI meetings in docs/developing/measurements.md: 1% to 2% all land
+/// on the same speakers there, so this sits mid-plateau rather than on an edge.
+pub const MIN_CLUSTER_SHARE: f32 = 0.015;
+
 /// Cosine distance at which two clusters stop being the same person. Cheap to
-/// retune because `diarize` appends rather than rewrites.
-pub const DEFAULT_THRESHOLD: f32 = 0.5;
+/// retune because `diarize` appends rather than rewrites. Chosen together with
+/// [`MIN_CLUSTER_SHARE`]: see "DER on whole meetings" in
+/// docs/developing/measurements.md.
+pub const DEFAULT_THRESHOLD: f32 = 0.6;
 
 trait OrtExt<T> {
     fn a(self) -> Result<T>;
@@ -111,6 +119,17 @@ impl Diarizer {
 
     /// Speaker spans over a whole 16 kHz mono track.
     pub fn diarize(&mut self, samples: &[f32], threshold: f32) -> Result<Vec<Span>> {
+        self.diarize_with(samples, threshold, MIN_CLUSTER_SHARE)
+    }
+
+    /// `diarize` with the small-cluster share supplied rather than
+    /// [`MIN_CLUSTER_SHARE`]: for the `der` harness to sweep, not for callers.
+    pub fn diarize_with(
+        &mut self,
+        samples: &[f32],
+        threshold: f32,
+        min_share: f32,
+    ) -> Result<Vec<Span>> {
         if samples.len() < MIN_EMBED {
             return Ok(Vec::new());
         }
@@ -168,38 +187,29 @@ impl Diarizer {
         if cands.is_empty() {
             return Ok(Vec::new());
         }
-        let labels = cluster(
-            &cands.iter().map(|c| c.emb.clone()).collect::<Vec<_>>(),
-            threshold,
-        );
+        let embs: Vec<Vec<f32>> = cands.iter().map(|c| c.emb.clone()).collect();
+        let n_frames = samples.len() / SHIFT + 2;
+        let labels = cluster(&embs, threshold);
+        let found = labels.iter().copied().max().unwrap_or(0) + 1;
+        let held = speech_frames(&winners(&cands, &labels, n_frames), found);
+        let floor = (f64::from(min_share) * held.iter().sum::<usize>() as f64) as usize;
+        let labels = absorb_small(&embs, &labels, &held, floor);
         let n_clusters = labels.iter().copied().max().unwrap_or(0) + 1;
         if debug {
-            eprintln!("  {} candidate(s) -> {n_clusters} speaker(s)", cands.len());
-        }
-
-        // Windows overlap, so a frame can be claimed twice. Let them vote.
-        let n_frames = samples.len() / SHIFT + 2;
-        let mut votes = vec![0u32; n_frames * n_clusters];
-        for (c, cand) in cands.iter().enumerate() {
-            let k = labels[c];
-            for &f in &cand.frames {
-                if f < n_frames {
-                    votes[f * n_clusters + k] += 1;
-                }
-            }
+            let mut secs: Vec<f64> = held
+                .iter()
+                .map(|&h| (h * SHIFT) as f64 / SR as f64)
+                .collect();
+            secs.sort_by(|a, b| b.total_cmp(a));
+            eprintln!(
+                "  {} candidate(s) -> {found} cluster(s) holding {secs:.1?} s -> {n_clusters} speaker(s)",
+                cands.len()
+            );
         }
 
         let mut spans: Vec<Span> = Vec::new();
-        for f in 0..n_frames {
-            let row = &votes[f * n_clusters..(f + 1) * n_clusters];
-            let (k, &v) = row
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, &v)| v)
-                .unwrap_or((0, &0));
-            if v == 0 {
-                continue;
-            }
+        for (f, k) in winners(&cands, &labels, n_frames).into_iter().enumerate() {
+            let Some(k) = k else { continue };
             let a = f * SHIFT;
             let b = ((f + 1) * SHIFT).min(samples.len());
             if a >= b {
@@ -216,6 +226,109 @@ impl Diarizer {
         }
         Ok(spans)
     }
+}
+
+/// Which cluster owns each global frame. Windows overlap, so a frame can be
+/// claimed twice; the candidates covering it vote, and a frame nobody claims
+/// is `None`.
+fn winners(cands: &[Cand], labels: &[usize], n_frames: usize) -> Vec<Option<usize>> {
+    let n_clusters = labels.iter().copied().max().unwrap_or(0) + 1;
+    let mut votes = vec![0u32; n_frames * n_clusters];
+    for (cand, &k) in cands.iter().zip(labels) {
+        for &f in &cand.frames {
+            if f < n_frames {
+                votes[f * n_clusters + k] += 1;
+            }
+        }
+    }
+    (0..n_frames)
+        .map(|f| {
+            let row = &votes[f * n_clusters..(f + 1) * n_clusters];
+            let (k, &v) = row
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, &v)| v)
+                .unwrap_or((0, &0));
+            (v > 0).then_some(k)
+        })
+        .collect()
+}
+
+/// Frames each of `n` clusters ends up owning.
+fn speech_frames(owners: &[Option<usize>], n: usize) -> Vec<usize> {
+    let mut held = vec![0usize; n];
+    for k in owners.iter().flatten() {
+        held[*k] += 1;
+    }
+    held
+}
+
+/// Fold every cluster that owns fewer than `min_frames` of speech into the
+/// nearest cluster that owns at least that much, nearest by cosine to that
+/// cluster's mean embedding, one candidate at a time.
+///
+/// Average linkage alone over-clusters a real meeting: across 25 minutes a
+/// voice drifts with distance from the microphone, laughter and crosstalk,
+/// and each excursion that clears the threshold becomes a "speaker" holding a
+/// few seconds. A threshold high enough to stop that also merges real people.
+/// Speech time is what separates the two — a participant speaks for minutes,
+/// an excursion for seconds — so the floor is on time held rather than on
+/// distance. It is a share of the track rather than a fixed number of seconds
+/// because the quiet participant in a five-minute clip holds about as much as
+/// an excursion does in half an hour. When no cluster reaches the floor there
+/// is nothing to fold into and the clustering stands.
+fn absorb_small(
+    embs: &[Vec<f32>],
+    labels: &[usize],
+    held: &[usize],
+    min_frames: usize,
+) -> Vec<usize> {
+    let big: Vec<usize> = (0..held.len()).filter(|&k| held[k] >= min_frames).collect();
+    if big.is_empty() || big.len() == held.len() {
+        return labels.to_vec();
+    }
+    let dim = embs.first().map_or(0, Vec::len);
+    let centroids: Vec<Vec<f32>> = big
+        .iter()
+        .map(|&k| {
+            let mut c = vec![0.0f32; dim];
+            for (e, _) in embs.iter().zip(labels).filter(|(_, &l)| l == k) {
+                for (a, b) in c.iter_mut().zip(e) {
+                    *a += b;
+                }
+            }
+            let norm = c.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-9);
+            c.iter().map(|v| v / norm).collect()
+        })
+        .collect();
+    let folded: Vec<usize> = embs
+        .iter()
+        .zip(labels)
+        .map(|(e, &l)| {
+            if held[l] >= min_frames {
+                return l;
+            }
+            let dot = |c: &Vec<f32>| c.iter().zip(e).map(|(a, b)| a * b).sum::<f32>();
+            let nearest = (0..big.len())
+                .max_by(|&a, &b| dot(&centroids[a]).total_cmp(&dot(&centroids[b])))
+                .unwrap_or(0);
+            big[nearest]
+        })
+        .collect();
+    first_appearance(&folded)
+}
+
+/// Renumber labels in first-appearance order, so speaker 0 is whoever spoke
+/// first rather than whichever row the matrix happened to keep.
+fn first_appearance(owner: &[usize]) -> Vec<usize> {
+    let mut map = std::collections::HashMap::new();
+    owner
+        .iter()
+        .map(|&o| {
+            let next = map.len();
+            *map.entry(o).or_insert(next)
+        })
+        .collect()
 }
 
 /// Agglomerative clustering, average linkage, cosine distance. Merging stops
@@ -273,16 +386,7 @@ fn cluster(embs: &[Vec<f32>], threshold: f32) -> Vec<usize> {
         }
     }
 
-    // Renumber survivors in first-appearance order, so speaker 0 is whoever
-    // spoke first rather than whichever row the matrix happened to keep.
-    let mut map = std::collections::HashMap::new();
-    owner
-        .iter()
-        .map(|&o| {
-            let next = map.len();
-            *map.entry(o).or_insert(next)
-        })
-        .collect()
+    first_appearance(&owner)
 }
 
 #[cfg(test)]
@@ -331,6 +435,40 @@ mod tests {
         ];
         let labels = cluster(&embs, 0.5);
         assert_eq!(labels, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn a_small_cluster_folds_into_the_nearest_big_one() {
+        let embs = vec![
+            unit(&[1.0, 0.0, 0.0]),
+            unit(&[0.0, 1.0, 0.0]),
+            unit(&[0.9, 0.0, 0.4]),
+            unit(&[0.0, 1.0, 0.0]),
+        ];
+        // Cluster 2 holds a sliver of speech and sits nearest cluster 0.
+        let labels = absorb_small(&embs, &[0, 1, 2, 1], &[500, 400, 20], 100);
+        assert_eq!(labels, vec![0, 1, 0, 1]);
+    }
+
+    #[test]
+    fn folding_renumbers_in_first_appearance_order() {
+        let embs = vec![unit(&[0.0, 1.0]), unit(&[1.0, 0.0]), unit(&[0.1, 1.0])];
+        // The first speaker heard is the small one, so after folding the
+        // big cluster it joined has to become speaker 0.
+        let labels = absorb_small(&embs, &[0, 1, 2], &[10, 900, 900], 100);
+        assert_eq!(labels, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn nothing_folds_when_no_cluster_reaches_the_floor() {
+        let embs = vec![unit(&[1.0, 0.0]), unit(&[0.0, 1.0])];
+        assert_eq!(absorb_small(&embs, &[0, 1], &[10, 20], 100), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_zero_floor_changes_nothing() {
+        let embs = vec![unit(&[1.0, 0.0]), unit(&[0.0, 1.0])];
+        assert_eq!(absorb_small(&embs, &[0, 1], &[0, 5], 0), vec![0, 1]);
     }
 
     #[test]

@@ -15,7 +15,7 @@ the app does not keep, so the struct in `src/config.rs` and the key list in
 | `apps` | Bundle IDs to tap. Empty taps everything the Mac plays. | Comma-separated list; blanks trimmed and dropped | empty |
 | `input_device` | Record the room with a named device rather than the system default. | Device name as `ambient config` lists it; `default` or the empty string clears it | system default |
 | `diarize` | Separate voices once the transcript exists. | `true`/`yes`/`on`/`1`, or `false`/`no`/`off`/`0` | `true` |
-| `threshold` | How readily two utterances are called different people. Governs `record`'s automatic diarization only — a standalone `ambient diarize` ignores it and takes `--threshold`. | Float | `0.5` |
+| `threshold` | How readily two utterances are called different people. Governs `record`'s automatic diarization only — a standalone `ambient diarize` ignores it and takes `--threshold`. | Float | `0.6` |
 | `sessions_dir` | Where sessions are written. | Path; `default` or the empty string clears it | `~/Documents/Ambient` |
 | `ask_before_recording` | Wait to be told before recording a call the app noticed. | `true`/`yes`/`on`/`1`, or `false`/`no`/`off`/`0` | `true` |
 | `audio_retention_days` | How long the track wavs are kept. `0` deletes them as soon as the transcript exists. | Unsigned integer, or `forever` / `never` to keep them indefinitely | `7` |
@@ -34,7 +34,13 @@ neither is unaffected.
 
 `threshold` is the exception, and it is worth knowing before you tune it: the
 standalone `ambient diarize <dir>` never loads the config file at all. It starts
-from the built-in `0.5` and only `--threshold` moves it. `ambient config` with no
+from the built-in `0.6` and only `--threshold` moves it.
+
+The default moved from `0.5` to `0.6` on 2026-10-08. A config file saved
+before then stores `0.5` and keeps it, because the file holds every setting
+rather than only the changed ones; `ambient config threshold 0.6` adopts the
+new default. The small-cluster floor that came with it applies whatever the
+threshold is. `ambient config` with no
 arguments prints the resolved values and says outright when `AMBIENT_HOME` is
 overriding `sessions_dir`.
 

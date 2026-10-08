@@ -7,6 +7,8 @@
 #                  openslr.org/12)
 #   fixtures/der   diarization error rate, from AMI Mix-Headset audio
 #                  (CC BY 4.0) with the pyannote only_words references
+#   fixtures/der-full
+#                  the same three meetings uncut, as a manifest only
 #   fixtures/calls word error rate on phone-call-like audio, from Earnings-21
 #                  conference-bridge recordings and their human transcripts
 #
@@ -396,6 +398,35 @@ if [ -n "$want_der" ]; then
       echo ']'
     } >"$der_manifest"
     echo "wrote $der_manifest"
+  fi
+  files=$((files + 1))
+
+  # The same meetings at full length. The 300 s cut hides the failure that
+  # matters on a real meeting: over 15-25 minutes the clustering finds 30-odd
+  # speakers where 300 s of the same audio finds six. Nothing is decoded or
+  # cut, so the manifest points at the pinned downloads themselves — already
+  # 16 kHz mono, and checked against their digests above on every run.
+  full_out="$cache/fixtures/der-full"
+  full_manifest="$full_out/manifest.json"
+  if [ -z "$force" ] && [ -f "$full_manifest" ]; then
+    echo "already present: $full_manifest"
+  else
+    mkdir -p "$full_out"
+    full_entries=""
+    for m in $meetings; do
+      full_seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 \
+        "$ami/$m.Mix-Headset.wav")
+      full_entries="$full_entries$(
+        printf '  {"wav": "%s", "rttm": "%s", "meeting": "%s", "seconds": %.2f}' \
+          "$ami/$m.Mix-Headset.wav" "$ami/$m.rttm" "$m" "$full_seconds"
+      )"$'\n'
+    done
+    {
+      echo '['
+      printf '%s' "$full_entries" | sed '$!s/$/,/'
+      echo ']'
+    } >"$full_manifest"
+    echo "wrote $full_manifest"
   fi
   files=$((files + 1))
 fi
