@@ -33,6 +33,13 @@ the capture drain does not wait for it. After Stop, the capture half writes the
 transcription, speaker labels and `transcript.md` without replacing published
 lines. The CLI runs finalization after capture; the menu bar app uses its serial
 queue, so another recording can start while the previous session finishes.
+The queue runs each job as `ambient finalize <session-dir>`, a child process of
+the same signed executable, because macOS's allocator keeps the pages a
+finalize frees and a menu bar app that runs all day would hold them between
+meetings. The child reports its stage on stdout and exits when its stdin
+closes, so it never outlives the app. The live pass and the child still take
+one decoder lane, a `flock` beside the in-process mutex, so only one
+recogniser runs at a time.
 
 `status` records the stage: `recording …` with the level meter, then `finishing`,
 `captured`, `transcribing`, `separating voices`, `done` — or `failed: …`.

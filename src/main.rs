@@ -342,6 +342,16 @@ fn main() -> Result<()> {
             let json = flags.iter().any(|a| a == "--json");
             ambient::session::show(std::path::Path::new(&dir), verbatim, json)
         }
+        // Not in USAGE: the menu bar app's queue runs this in a child process
+        // so the memory finalizing takes goes back to the system when it
+        // exits, and its stdout is a protocol for that parent, not a person.
+        Some(ambient::finalize::SUBCOMMAND) => {
+            let dir = args.next().unwrap_or_default();
+            if dir.is_empty() || args.next().is_some() {
+                bail!("{USAGE}");
+            }
+            ambient::finalize::serve(std::path::Path::new(&dir))
+        }
         Some("diarize") => {
             let dir = args.next().unwrap_or_default();
             if dir.is_empty() {

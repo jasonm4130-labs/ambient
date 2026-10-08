@@ -9,9 +9,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -28,8 +29,74 @@ const CALL_SPOOL: &str = "call.live.pcm";
 /// Live acquisition can be cancelled while another session owns this lane.
 static DECODER: Mutex<()> = Mutex::new(());
 
-pub fn decoder() -> MutexGuard<'static, ()> {
-    DECODER.lock().unwrap_or_else(|e| e.into_inner())
+/// The file that extends [`DECODER`] across processes, once
+/// [`share_decoder`] names one. The menu bar app finalizes in a child
+/// process, and the live pass and the queue's transcriber are still one
+/// worker: holding the mutex then `flock`ing this file is what keeps a child's
+/// recogniser off the CPU while the app's live worker holds the lane, and the
+/// other way round.
+static SHARED: OnceLock<PathBuf> = OnceLock::new();
+
+/// The environment variable that hands [`share_decoder`]'s file to a child.
+pub const DECODER_ENV: &str = "AMBIENT_DECODER_LOCK";
+
+/// Extend the decoder lane to every process given the same `path`. The first
+/// call wins; later ones are ignored, so a process has exactly one lane.
+pub fn share_decoder(path: PathBuf) {
+    let _ = SHARED.set(path);
+}
+
+/// The lane's file, if this process shares one.
+pub fn shared_decoder() -> Option<&'static Path> {
+    SHARED.get().map(PathBuf::as_path)
+}
+
+/// Held for as long as one recogniser owns the lane. The `flock` is released
+/// when its file closes, which a crashed holder's kernel does for it.
+pub struct DecoderGuard {
+    _shared: Option<File>,
+    _local: MutexGuard<'static, ()>,
+}
+
+pub fn decoder() -> DecoderGuard {
+    let local = DECODER.lock().unwrap_or_else(|e| e.into_inner());
+    DecoderGuard {
+        _shared: lock_shared(true).unwrap_or(None),
+        _local: local,
+    }
+}
+
+/// `Ok(None)` when no lane is shared, or when the lock is held elsewhere and
+/// `wait` is false; an error opening the file degrades to the local mutex
+/// rather than refusing to transcribe.
+fn lock_shared(wait: bool) -> Result<Option<File>, ()> {
+    let Some(path) = shared_decoder() else {
+        return Ok(None);
+    };
+    let Ok(file) = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+    else {
+        return Ok(None);
+    };
+    let op = if wait {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    loop {
+        // Safe: the fd is open for the duration of the call.
+        if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
+            return Ok(Some(file));
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::EWOULDBLOCK) => return Err(()),
+            _ => return Ok(None),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -352,21 +419,28 @@ fn transcribe_block(
     ))
 }
 
-fn decoder_for(stop: &Receiver<()>, cancellable: bool) -> Option<MutexGuard<'static, ()>> {
+fn decoder_for(stop: &Receiver<()>, cancellable: bool) -> Option<DecoderGuard> {
     if !cancellable {
         return Some(decoder());
     }
     loop {
-        match DECODER.try_lock() {
-            Ok(guard) => return Some(guard),
-            Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
-            Err(TryLockError::WouldBlock) => {
-                if stop_requested(stop) {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+        let local = match DECODER.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        if let Some(local) = local {
+            if let Ok(shared) = lock_shared(false) {
+                return Some(DecoderGuard {
+                    _shared: shared,
+                    _local: local,
+                });
             }
         }
+        if stop_requested(stop) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
