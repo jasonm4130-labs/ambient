@@ -48,8 +48,8 @@ That figure is from [Weight prepacking](measurements.md#weight-prepacking); the
 
 Unchunked, memory scales linearly with audio length — an extrapolated ~35 GB for
 a 30-minute session, which fails on this machine outright. So step 3 is not a
-formality: it is the whole port. At ~60× realtime on CPU there is no throughput
-question to answer.
+formality: it is the whole port. At ~20–30× realtime on CPU with prepacking off
+there is no throughput question to answer.
 
 Diarization is a separate concern and a much smaller one — 249 MB peak on a
 10.2-minute track, because the sliding window does not accumulate. It is a
