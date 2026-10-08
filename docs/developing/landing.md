@@ -48,15 +48,19 @@ it scores an Earnings-21 calls fixture the same way against `quality/calls.json`
 so a change that helps read audiobooks and hurts phone calls cannot merge, and
 it scores the AMI diarization fixture and compares each meeting's diarization
 error rate against `quality/der.json` for the 300 s clips and
-`quality/der-full.json` for the same meetings uncut. Its last line carries all
-four totals: `QUALITY OK clean=<wer> calls=<wer> der=<der> der_full=<der>` when
-no row has drifted up by more than half a point of WER or a point of DER, or
-`QUALITY BASELINE clean=<wer> calls=<wer> der=<der> der_full=<der>` the first
-time a baseline file is missing, when it writes that file instead; a
-regression prints the offending rows and exits non-zero, and a task that
-improves a number records it with `scripts/quality --update`, so the diff to
-`quality/wer.json`, `quality/calls.json`, `quality/der.json` or
-`quality/der-full.json` is the evidence in the pull request.
+`quality/der-full.json` for the same meetings uncut. Last it runs
+`scripts/memory`, which replays a whole 25-minute AMI meeting through the
+recording path and fails if the peak physical footprint is over its budget
+(see [Measurements](measurements.md#memory-gate)). Its last line carries all
+five: `QUALITY OK clean=<wer> calls=<wer> der=<der> der_full=<der> memory=<MiB>`
+when no row has drifted up by more than half a point of WER or a point of DER
+and the footprint is within budget, or `QUALITY BASELINE clean=<wer>
+calls=<wer> der=<der> der_full=<der> memory=<MiB>` the first time a baseline
+file is missing, when it writes that file instead; a regression prints the
+offending rows and exits non-zero, and a task that improves a number records it
+with `scripts/quality --update`, so the diff to `quality/wer.json`,
+`quality/calls.json`, `quality/der.json` or `quality/der-full.json` is the
+evidence in the pull request.
 
 It runs only once `CHECK_CMD` in `loop/config` says so, which is a change a
 person commits: the hooks deny a task's own commit that stages `loop/`. The
@@ -69,9 +73,9 @@ gate. The line to commit is
 
 `run_check` in `loop/land.sh` asks that the whole command's last line be
 exactly `CHECK OK`, and a green quality run ends with
-`QUALITY OK clean=<wer> calls=<wer> der=<der> der_full=<der>` instead, so the
-trailing `echo` is what makes the pair a verifier: it runs only when both
-halves passed, and without it every green night reads as red.
+`QUALITY OK clean=<wer> calls=<wer> der=<der> der_full=<der> memory=<MiB>`
+instead, so the trailing `echo` is what makes the pair a verifier: it runs only
+when both halves passed, and without it every green night reads as red.
 
 The same commit adds `"Bash(scripts/quality:*)"` and `"Bash(./scripts/quality:*)"` to the
 `allow` list in `.claude/settings.json`, beside the `scripts/check` entries: the generator runs
