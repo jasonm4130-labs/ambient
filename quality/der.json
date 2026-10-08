@@ -3,40 +3,40 @@
     "meeting": "ES2004a",
     "seconds": 300.0,
     "reference_speakers": 3,
-    "hypothesis_speakers": 5,
+    "hypothesis_speakers": 4,
     "missed_s": 9.649999999999839,
     "false_alarm_s": 4.489999999999949,
-    "confusion_s": 1.8000000000000014,
-    "der": 0.1217537427436353
+    "confusion_s": 1.9600000000000015,
+    "der": 0.12297586312249238
   },
   {
     "meeting": "IS1009a",
     "seconds": 300.0,
     "reference_speakers": 4,
-    "hypothesis_speakers": 5,
+    "hypothesis_speakers": 4,
     "missed_s": 4.799999999999942,
     "false_alarm_s": 8.20999999999987,
-    "confusion_s": 12.579999999999776,
-    "der": 0.1741171667687083
+    "confusion_s": 10.53999999999982,
+    "der": 0.1602367830169239
   },
   {
     "meeting": "TS3003a",
     "seconds": 300.0,
     "reference_speakers": 4,
-    "hypothesis_speakers": 1,
+    "hypothesis_speakers": 2,
     "missed_s": 15.68999999999971,
     "false_alarm_s": 2.2699999999999956,
-    "confusion_s": 1.2500000000000009,
-    "der": 0.0856136910598313
+    "confusion_s": 0.0,
+    "der": 0.08004278456192443
   },
   {
     "meeting": "total",
     "seconds": 900.0,
     "reference_speakers": 11,
-    "hypothesis_speakers": 11,
+    "hypothesis_speakers": 10,
     "missed_s": 30.13999999999949,
     "false_alarm_s": 14.969999999999814,
-    "confusion_s": 15.629999999999779,
-    "der": 0.12093097338085432
+    "confusion_s": 12.49999999999982,
+    "der": 0.11469926533538058
   }
 ]

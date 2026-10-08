@@ -274,8 +274,9 @@ first; the table says which way it should then go.
 [--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
 `ambient record` runs for a finished session — the model resolution of
 `session::diarize_session`, the same pyannote segmentation and WeSpeaker
-embedding, `Diarizer::diarize` at the shipped 0.5 threshold — so these are the
-numbers a user gets. Scored at the conventional 0.25 s collar; `--collar 0`
+embedding, `Diarizer::diarize` at the shipped 0.5 threshold, before the
+small-cluster fold in [DER on whole meetings](#der-on-whole-meetings) existed —
+so these were the numbers a user got then. Scored at the conventional 0.25 s collar; `--collar 0`
 scores every frame instead.
 
 | Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER | Run |
@@ -323,13 +324,12 @@ the reference count is in the header.
 | ---: | ---: | ---: | ---: | ---: |
 | 0.30 | 0.2242 (12 spk) | 0.3204 (22 spk) | 0.2739 (17 spk) | 0.2745 |
 | 0.40 | 0.1538 (9 spk) | 0.2332 (13 spk) | 0.1332 (8 spk) | 0.1678 |
-| **0.50 (shipped then)** | **0.1279 (6 spk)** | **0.2058 (7 spk)** | **0.1116 (6 spk)** | **0.1434** |
+| **0.50 (shipped)** | **0.1279 (6 spk)** | **0.2058 (7 spk)** | **0.1116 (6 spk)** | **0.1434** |
 | 0.60 | 0.1218 (5 spk) | 0.1741 (5 spk) | 0.0873 (4 spk) | 0.1217 |
 | 0.70 | 0.1163 (4 spk) | 0.2443 (3 spk) | 0.0800 (2 spk) | 0.1375 |
 | 0.80 | 0.1157 (3 spk) | 0.3588 (2 spk) | 0.0800 (2 spk) | 0.1709 |
 
-The default held at 0.5 on these clips alone; it is 0.6 since the whole-meeting
-sweep in [DER on whole meetings](#der-on-whole-meetings). The lowest total is 0.6 at 0.1217, and its speaker
+The default holds at 0.5. The lowest total is 0.6 at 0.1217, and its speaker
 counts stay inside twice the reference on every meeting, but the keep rule for
 this sweep asks for more than 0.01 of DER on *every* meeting and ES2004a gives
 0.0061 — 0.1279 to 0.1218. One meeting of three carrying a change to a shipped
@@ -384,13 +384,13 @@ meeting with four real ones — and it is not enough on its own.
 ## DER on whole meetings
 
 `cargo run --release --bin der -- --manifest
-~/.cache/ambient/fixtures/der-full/manifest.json --threshold <t> --min-share <s>
---json <tmp>`, on 2026-10-08, M5 Max: the same three meetings uncut, 3393.83 s
-in all, at the same 0.25 s collar. `scripts/quality` now gates this set against
-`quality/der-full.json` beside the clips.
+~/.cache/ambient/fixtures/der-full/manifest.json --json <tmp>`, on 2026-10-08,
+M5 Max: the same three meetings uncut, 3393.83 s in all, at the same 0.25 s
+collar. `scripts/quality` now gates this set against `quality/der-full.json`
+beside the clips.
 
-The 300 s clips hid the real failure. At the old default — 0.5, no floor — the
-whole meetings, each with four real speakers, came out at 36, 28 and 31:
+The 300 s clips hid the real failure. At 0.5 with clustering alone, the whole
+meetings, each with four real speakers, came out at 36, 28 and 31:
 
 | Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -404,67 +404,85 @@ it shows the shape: four clusters of 77-800 s, then a tail of thirty-odd
 holding 0-9 s each. That tail is one voice drifting — distance from the
 microphone, laughter, crosstalk — far enough to clear the threshold for a few
 seconds. Raising the threshold cuts the tail, but by 0.7 it also starts
-merging real people on the clips (IS1009a 4 → 3), so `Diarizer::diarize` now
-folds every cluster holding less than `MIN_CLUSTER_SHARE` of the track's
-attributed speech into the nearest larger cluster by mean embedding.
+merging real people on the clips (IS1009a 4 → 3).
 
-The floor is a share, not seconds, because a fixed floor cannot serve both
-lengths. Swept at 5, 10, 20, 30 and 60 s, 10 s gives the meetings 4/4/3
-speakers but folds ES2004a's clip, whose quiet participants hold 9 s and 17 s
-of reference speech, into one speaker: that clip's DER rises 0.0425, past the
-gate's 0.01. Only 5 s at 0.5-0.6 stays inside the gate, and it leaves 5-9
-speakers on the meetings. The quiet participant in five minutes holds about
-what an excursion holds in half an hour; a share scales with the track.
+So `Diarizer::diarize` now folds a cluster into a bigger one when two things
+hold: it owns less than `MIN_CLUSTER` of speech, and the cosine distance
+between its mean embedding and the nearest cluster that owns more is at most
+`FOLD_DISTANCE`. Neither test works alone.
 
-Cells are DER with hypothesis speakers in brackets; *speaker error* is
-|hyp − ref| summed over the three meetings; *clip Δ* is the worst clip
-meeting against the 0.5 clip baseline, where the gate allows +0.01.
+- **Time alone** erases brief real speakers. ES2004a's clip has participants
+  with 9 s and 17 s of reference speech; a 10 s floor with no distance test
+  folds that clip into one speaker and raises its DER by 0.0425, past the
+  gate's 0.01. A floor set as a share of the track (1.5% at threshold 0.6)
+  did the same to TS3003a's clip, 4 reference speakers to 1, and dropped one of
+  TS3003a's four on the whole meeting.
+- **Distance** is what tells the two apart. At 0.6 with a 10 s floor, the small
+  clusters on ES2004a's clip, which are its real quiet participants, sit
+  0.78-0.94 from the nearest big cluster; the excursions on the whole
+  meetings mostly sit 0.43-0.78. A drifted voice is still that voice.
 
-| Threshold | Share | ES2004a | IS1009a | TS3003a | Full DER | Spk error | Clip DER | Clip Δ |
+Swept at thresholds 0.50-0.65, floors 5-30 s and fold distances 0.65-0.90.
+Speaker counts are ES2004a/IS1009a/TS3003a; *spk err* is |hyp − ref| summed
+over the three; *clip Δ* is the worst clip meeting against the clip baseline
+before this change (0.5, no fold: 6/7/6 speakers, spk err 8, DER 0.1434), where
+the gate allows +0.01. Rows at 0.50 unless marked:
+
+| Floor | Distance | Full spk | Full DER | Full spk err | Clip spk | Clip DER | Clip spk err | Clip Δ |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.50 | 0 | 0.1794 (36) | 0.2101 (28) | 0.1395 (31) | 0.1704 | 83 | 0.1434 | +0.0000 |
-| 0.50 | 1.0% | 0.1421 (4) | 0.1745 (6) | 0.1188 (3) | 0.1405 | 3 | 0.1393 | +0.0000 |
-| 0.50 | 1.5% | 0.1421 (4) | 0.1542 (4) | 0.1188 (3) | 0.1354 | 1 | 0.1377 | −0.0025 |
-| 0.50 | 2.0% | 0.1421 (4) | 0.1542 (4) | 0.1188 (3) | 0.1354 | 1 | 0.1377 | −0.0025 |
-| 0.50 | 3.0% | 0.1421 (4) | 0.1542 (4) | 0.1318 (2) | 0.1409 | 2 | 0.1371 | +0.0072 |
-| 0.55 | 0 | 0.1657 (29) | 0.1910 (20) | 0.1363 (25) | 0.1597 | 62 | 0.1349 | +0.0000 |
-| 0.55 | 1.5% | 0.1421 (4) | 0.1542 (4) | 0.1185 (3) | 0.1352 | 1 | 0.1292 | −0.0062 |
-| 0.60 | 0 | 0.1607 (23) | 0.1723 (17) | 0.1222 (19) | 0.1475 | 47 | 0.1217 | −0.0062 |
-| 0.60 | 1.0% | 0.1421 (4) | 0.1542 (4) | 0.1175 (3) | 0.1348 | 1 | 0.1209 | −0.0062 |
-| **0.60** | **1.5%** | **0.1421 (4)** | **0.1542 (4)** | **0.1175 (3)** | **0.1348** | **1** | **0.1209** | **−0.0062** |
-| 0.60 | 2.0% | 0.1421 (4) | 0.1542 (4) | 0.1175 (3) | 0.1348 | 1 | 0.1209 | −0.0062 |
-| 0.60 | 3.0% | 0.1421 (4) | 0.1542 (4) | 0.1320 (2) | 0.1409 | 2 | 0.1207 | +0.0086 |
-| 0.65 | 0 | 0.1510 (15) | 0.1646 (11) | 0.1161 (12) | 0.1398 | 26 | 0.1406 | +0.0385 |
-| 0.65 | 1.5% | 0.1433 (4) | 0.1542 (4) | 0.1090 (4) | 0.1316 | 0 | 0.1415 | +0.0385 |
-| 0.70 | 0 | 0.1506 (10) | 0.1577 (7) | 0.1135 (7) | 0.1368 | 12 | 0.1375 | +0.0385 |
-| 0.70 | 1.5% | 0.1446 (4) | 0.1534 (4) | 0.1090 (4) | 0.1318 | 0 | 0.1400 | +0.0385 |
+| none | — | 36/28/31 | 0.1704 | 83 | 6/7/6 | 0.1434 | 8 | +0.0000 |
+| 5 s | 0.80 | 4/10/7 | 0.1474 | 9 | 3/5/3 | 0.1323 | 2 | −0.0072 |
+| 8 s | 0.80 | 4/7/4 | 0.1419 | 3 | 4/5/3 | 0.1341 | 3 | −0.0050 |
+| 10 s | 0.65 | 7/7/7 | 0.1345 | 9 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.70 | 5/6/7 | 0.1343 | 6 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.75 | 4/6/6 | 0.1337 | 4 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s | 0.85 | 4/5/3 | 0.1356 | 2 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s | 0.90 | 4/5/3 | 0.1356 | 2 | 2/4/2 | 0.1182 | 3 | +0.0086 |
+| **12 s** | **0.80** | **4/5/4** | **0.1336** | **1** | **4/4/2** | **0.1147** | **3** | **−0.0050** |
+| 15 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 20 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/3/2 | 0.1393 | 4 | +0.0385 |
+| 30 s | 0.80 | 4/4/4 | 0.1507 | 0 | 4/3/2 | 0.1521 | 4 | +0.0824 |
+| 10 s @ 0.55 | 0.80 | 4/5/4 | 0.1335 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s @ 0.60 | 0.80 | 4/5/3 | 0.1362 | 2 | 3/4/2 | 0.1131 | 2 | −0.0112 |
+| 10 s @ 0.65 | 0.80 | 4/5/4 | 0.1323 | 1 | 3/3/2 | 0.1377 | 3 | +0.0385 |
 
-The shipped pair is 0.6 and 1.5%. It is the lowest full DER whose clip rows
-all improve, and it sits on a plateau: 1.0%, 1.5% and 2.0% give identical
-rows at 0.6, so the choice does not rest on an edge. The table's lowest full
-DER, 0.1316 with every speaker count exact at 0.65, costs IS1009a's clip
-0.0385 because it merges two of its people, and the gate refuses that. TS3003a
-keeping 3 of 4 is the price paid instead: its quietest participants hold 26.5 s
-and 39.6 s of 1025 s of reference speech, 2.6% and 3.9%, and one of them
-fragments below the floor.
+The shipped rule is a 12 s floor and a 0.8 fold distance, with the threshold
+left at 0.5. Floors of 10, 12 and 15 s give identical rows, so 12 s sits
+mid-plateau. Distance is the more sensitive knob: 0.75 leaves 4/6/6 on the
+meetings and 0.85 drops one of TS3003a's four, so 0.8 is the best point
+rather than a flat one, though both neighbours still pass the gate. The
+threshold stays where it was because 0.55 moves the full DER by 0.0001
+and 0.6 costs a speaker on TS3003a, so nothing here argues for a new default,
+and leaving it means a config file saved with 0.5 gets exactly these numbers.
+The lowest full DER in the sweep, 0.1323 at 0.65, merges two of IS1009a's
+clip speakers and fails the gate by 0.0385.
 
-Every clip meeting improves at the shipped pair:
+At the shipped rule, every clip meeting improves or holds and the clip speaker
+error falls from 8 to 3:
 
 | Meeting | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ES2004a | 3 | 5 | 9.65 s | 4.49 s | 1.80 s | 0.1218 |
-| IS1009a | 4 | 5 | 4.80 s | 8.21 s | 12.58 s | 0.1741 |
-| TS3003a | 4 | 1 | 15.69 s | 2.27 s | 1.25 s | 0.0856 |
-| **total** | 11 | 11 | 30.14 s | 14.97 s | 15.63 s | **0.1209** |
+| ES2004a | 3 | 4 | 9.65 s | 4.49 s | 1.96 s | 0.1230 |
+| IS1009a | 4 | 4 | 4.80 s | 8.21 s | 10.54 s | 0.1602 |
+| TS3003a | 4 | 2 | 15.69 s | 2.27 s | 0.00 s | 0.0800 |
+| **total** | 11 | 10 | 30.14 s | 14.97 s | 12.50 s | **0.1147** |
 
-TS3003a's clip at one speaker is the near-monologue described under
-[DER by minimum embedding length](#der-by-minimum-embedding-length) — one
-participant holds 242 of its 250 s — so one speaker is nearly right there.
-Missed speech and false alarm do not move anywhere in this section: folding
-relabels spans, so every gain is confusion, 114.00 s → 41.75 s on the meetings.
+and on the whole meetings:
 
-A config file saved before this change stores `threshold: 0.5` and keeps it;
-the floor still applies there, and the 0.50 / 1.5% row is what those users get.
+| Meeting | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 4 | 4 | 74.92 s | 13.27 s | 6.93 s | 0.1433 |
+| IS1009a | 4 | 5 | 45.40 s | 13.23 s | 20.17 s | 0.1534 |
+| TS3003a | 4 | 4 | 60.91 s | 24.46 s | 12.21 s | 0.1142 |
+| **total** | 12 | 13 | 181.23 s | 50.96 s | 39.31 s | **0.1336** |
+
+TS3003a's clip at two speakers is the near-monologue described under
+[DER by minimum embedding length](#der-by-minimum-embedding-length): its other
+two reference speakers hold 0.3 s and 2.0 s, too little to embed at all, and
+the clip it scored before this change found six. Missed speech and false
+alarm do not move anywhere in this section: folding relabels spans, so every
+gain is confusion, 114.00 s → 39.31 s on the meetings.
 
 ## Live transcription: cost per block
 

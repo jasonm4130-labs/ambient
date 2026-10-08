@@ -1,8 +1,7 @@
 //! Diarization error rate for Ambient's own speaker-separation path.
 //!
 //!   cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
-//!                                    [--min-share <f32>] [--collar <f64>]
-//!                                    [--json <path>]
+//!                                    [--collar <f64>] [--json <path>]
 //!
 //! Scores the AMI fixture `scripts/fetch-fixtures` builds by running what
 //! `ambient record` runs for a finished session: the same model resolution as
@@ -10,15 +9,14 @@
 //! threshold. A harness with its own clustering would measure a pipeline no
 //! user has.
 //!
-//! `--threshold` is the clustering distance `record` passes through from the
-//! settings, and `--min-share` the small-cluster floor `diarize` applies after
-//! it; the two are tuned together, so both can be swept. `--collar` exists
+//! `--threshold` is the one knob worth sweeping — it is the clustering
+//! distance `record` passes through from the settings — and `--collar` exists
 //! so a number here can be compared with a published one, which is quoted at
 //! 0.25 s far more often than at 0.
 
 use ambient::{
     der::{parse_rttm, score, spans_to_turns, Der},
-    diarize::{Diarizer, DEFAULT_THRESHOLD, MIN_CLUSTER_SHARE},
+    diarize::{Diarizer, DEFAULT_THRESHOLD},
     resample::{read_wav_any, to_16k, TARGET_HZ},
     session::{models_root, utf8_path},
 };
@@ -71,7 +69,6 @@ fn main() -> Result<()> {
     let mut manifest = None;
     let mut json = None;
     let mut threshold = DEFAULT_THRESHOLD;
-    let mut min_share = MIN_CLUSTER_SHARE;
     let mut collar = 0.25f64;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -85,12 +82,6 @@ fn main() -> Result<()> {
                     .parse()
                     .with_context(|| format!("--threshold {raw:?} is not a number"))?;
             }
-            "--min-share" => {
-                let raw = value("--min-share")?;
-                min_share = raw
-                    .parse()
-                    .with_context(|| format!("--min-share {raw:?} is not a number"))?;
-            }
             "--collar" => {
                 let raw = value("--collar")?;
                 collar = raw
@@ -99,7 +90,7 @@ fn main() -> Result<()> {
             }
             _ => bail!(
                 "usage: der [--manifest <path>] [--threshold <f32>] \
-                 [--min-share <f32>] [--collar <f64>] [--json <path>]"
+                 [--collar <f64>] [--json <path>]"
             ),
         }
     }
@@ -165,7 +156,7 @@ fn main() -> Result<()> {
         // The clock starts after the models load: a load is a fixed cost per
         // session, and what this column is about is seconds of audio.
         let t0 = Instant::now();
-        let spans = diar.diarize_with(&samples, threshold, min_share)?;
+        let spans = diar.diarize(&samples, threshold)?;
         let run = t0.elapsed().as_secs_f64();
         let hypothesis = spans_to_turns(&spans, TARGET_HZ as usize);
 
