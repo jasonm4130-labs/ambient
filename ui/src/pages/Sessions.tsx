@@ -194,6 +194,15 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
           </div>
         ) : (
           <>
+            {selectedSummary?.error != null && (
+              <p
+                role="alert"
+                data-testid="session-error"
+                className="text-destructive bg-accent p-3"
+              >
+                This session is broken: {selectedSummary.error}
+              </p>
+            )}
             {(selectedSummary?.warnings ?? []).map((warning) => (
               <p key={warning} role="alert" className="bg-accent p-3">
                 {warning}
@@ -210,10 +219,10 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
             {selectedSummary !== null &&
             (sessionState(selectedSummary) === "live" ||
               sessionState(selectedSummary) === "transcribing") ? (
-              <LiveTranscript key={selected} session={selected} onDone={refresh} />
+              <LiveTranscript key={`live-${selected}`} session={selected} onDone={refresh} />
             ) : (
               <Transcript
-                key={selected}
+                key={`transcript-${selected}`}
                 unavailable={
                   selectedSummary !== null && !selectedSummary.transcribed
                     ? "Separate voices needs a finished transcript."

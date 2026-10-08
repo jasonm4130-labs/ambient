@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { SessionList, type SessionSummary } from "./SessionList";
+import { SessionList, formatStarted, type SessionSummary } from "./SessionList";
 
 const base: SessionSummary = {
   id: "2026-09-01T1000",
@@ -52,5 +52,23 @@ describe("SessionList", () => {
     screen.getByRole("button", { name: /Standup/u }).focus();
     await userEvent.keyboard("{ArrowDown}");
     expect(onSelect).toHaveBeenCalledWith("b");
+  });
+
+  it("shows each row's start date and time, and nothing for a missing one", () => {
+    render(
+      <SessionList
+        sessions={[
+          { ...base, id: "a", name: "Standup", started_at: "2026-09-05T09:07:00" },
+          { ...base, id: "b", name: "Undated", started_at: null },
+        ]}
+        selectedId={null}
+        onSelect={() => {}}
+      />,
+    );
+
+    const [dated, undated] = screen.getAllByTestId("session-row-started");
+    expect(dated).toHaveTextContent("Sep 5, 09:07");
+    expect(undated).toHaveTextContent("");
+    expect(formatStarted("not a date")).toBeNull();
   });
 });

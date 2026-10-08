@@ -33,6 +33,22 @@ describe("NamingStrip", () => {
     });
   });
 
+  it("Enter in the name field calls speakers.name", async () => {
+    const fake = new FakeBridge();
+    fake.answer("speakers.unnamed", [{ label: "call-1", sample: "shall we begin" }]);
+    fake.answer("config.get", { roster: [] });
+    fake.answer("speakers.name", { renamed: 3 });
+    renderStrip(fake);
+
+    const input = await screen.findByRole("combobox", { name: "Name for call-1" });
+    await userEvent.type(input, "Priya{Enter}");
+
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "speakers.name");
+      expect(call?.params).toEqual({ session: "2026-09-01T1000", label: "call-1", name: "Priya" });
+    });
+  });
+
   it("Undo calls speakers.undo for the strip's session", async () => {
     const fake = new FakeBridge();
     fake.answer("speakers.unnamed", []);
