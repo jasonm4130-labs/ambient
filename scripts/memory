@@ -29,8 +29,9 @@
 #
 # /usr/bin/time -l reports the peak of the process it runs. The menu bar app
 # finalizes in a child process (`ambient finalize`, #107), but memrun still
-# calls session::transcribe_session in process, so this one peak covers both
-# the recording half and finalize, an upper bound on either app process.
+# calls session::transcribe_session in process: the gate measures one process
+# that records and then finalizes. It does not measure the peak of the app's
+# finalize child on its own.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 

@@ -58,8 +58,9 @@ above 1320 MiB, about 200 MiB over the higher run (`--budget` or
 measurement on current main, never raise it to make a change pass. The menu
 bar app now finalizes in a child process (#107; see
 [Idle memory after finalize](#idle-memory-after-finalize-in-process-and-in-a-child)),
-but the replay still finalizes in process, so the single peak `time -l`
-reports covers recording and finalize together and bounds either app process.
+but the replay still finalizes in process: the gate measures one process that
+records and then finalizes. It does not measure the peak of the app's finalize
+child on its own.
 
 ## Phase 0: provider comparison, CPU against CoreML
 
