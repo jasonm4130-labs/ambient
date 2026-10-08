@@ -2,9 +2,10 @@
 //!
 //! [`crate::session::transcribe_session`] loads the recogniser and the
 //! diarizer, and after it returns macOS's allocator keeps the pages it freed:
-//! a 25-minute meeting left the menu bar app holding over a gigabyte with
-//! 13 MB of it live, and `malloc_zone_pressure_relief` returned none of it. A
-//! process that exits returns everything, so the app's queue runs each job as
+//! a 25-minute meeting left the process at ~1 GiB resident and 430–690 MiB of
+//! footprint with 13 MB of heap live, and `malloc_zone_pressure_relief`
+//! returned none of it (`docs/developing/measurements.md`). A process that
+//! exits returns everything, so the app's queue runs each job as
 //! `ambient finalize <session-dir>` — the same signed executable, so no new
 //! binary or entitlement — and waits for it.
 //!
@@ -20,7 +21,6 @@ use anyhow::{anyhow, Context, Result};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,12 +118,6 @@ fn release_lock(dir: &Path, pid: u32) {
 /// The child: `ambient finalize <dir>`. Prints the protocol [`run`] reads and
 /// exits non-zero on failure.
 pub fn serve(dir: &Path) -> Result<()> {
-    // Background QoS, as the queue's thread runs at: this job may run beside
-    // a live capture, and the capture's drain loop must win every contest.
-    #[cfg(target_os = "macos")]
-    unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
-    }
     if let Some(lane) = std::env::var_os(crate::live::DECODER_ENV) {
         crate::live::share_decoder(PathBuf::from(lane));
     }
@@ -135,31 +129,40 @@ pub fn serve(dir: &Path) -> Result<()> {
         std::process::exit(2);
     });
     let meter = Arc::new(Meter::default());
-    let done = Arc::new(AtomicBool::new(false));
-    let reporter = {
-        let (meter, done) = (meter.clone(), done.clone());
+    let job = {
+        let (dir, meter) = (dir.to_path_buf(), meter.clone());
         std::thread::spawn(move || {
-            let mut last = None;
-            loop {
-                let finished = done.load(Ordering::SeqCst);
-                let phase = meter.phase();
-                // `Capturing` is only the meter's default; this job never
-                // captures, and the parent's meter has already left it.
-                if phase != MeterPhase::Capturing && last != Some(phase) {
-                    println!("phase {}", phase as u8);
-                    let _ = std::io::stdout().flush();
-                    last = Some(phase);
-                }
-                if finished {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
+            // The same arrangement as the queue's thread in the app: the job
+            // on a background-QoS thread, so it yields to a live capture's
+            // drain loop, while this process's main thread stays at its
+            // default to relay progress.
+            #[cfg(target_os = "macos")]
+            unsafe {
+                libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
             }
+            crate::session::transcribe_session(&dir, None, Some(meter))
         })
     };
-    let result = crate::session::transcribe_session(dir, None, Some(meter));
-    done.store(true, Ordering::SeqCst);
-    let _ = reporter.join();
+    let mut last = None;
+    loop {
+        let finished = job.is_finished();
+        let phase = meter.phase();
+        // `Capturing` is only the meter's default; this job never captures,
+        // and the parent's meter has already left it.
+        if phase != MeterPhase::Capturing && last != Some(phase) {
+            println!("phase {}", phase as u8);
+            let _ = std::io::stdout().flush();
+            last = Some(phase);
+        }
+        if finished {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let result = job
+        .join()
+        .map_err(|_| anyhow!("the transcription thread panicked"))
+        .and_then(|r| r);
     if let Err(e) = &result {
         // One line: the parent reads it as the whole message.
         println!("error {}", format!("{e:#}").replace('\n', " "));
