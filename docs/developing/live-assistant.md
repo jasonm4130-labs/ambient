@@ -134,8 +134,10 @@ reset them. The consent notice is still spoken on each new watch.
 The speakers feed the microphone, so each utterance comes back as a transcript
 line a few seconds later. A line counts as an echo when it has at least three
 words and at least 60% of them appear in something the assistant said in the
-last two minutes, the consent notice included. Echoes are left out of the batch
-and only counted, so the agent never answers itself.
+last two minutes. Echoes are left out of the batch and only counted, so the
+agent never answers itself. The consent notice is not remembered for this: a
+question by name right after it, such as "Claude, are you listening?", shares
+most of its words, and dropping that would hide the most natural first line.
 
 ### The `watch` prompt
 

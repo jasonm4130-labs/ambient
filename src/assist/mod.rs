@@ -317,7 +317,6 @@ impl Watch {
             self.leave("a new meeting was watched");
             let dir = self.paths.root().join(&id);
             let notice = consent_notice(&cfg.assistant.name);
-            let now = Instant::now();
             self.meeting = Some(Meeting {
                 id: id.clone(),
                 dir: dir.clone(),
@@ -333,7 +332,9 @@ impl Watch {
                         last,
                     )
                 },
-                said: vec![(now, notice.clone())],
+                // The notice is not remembered for echo detection: it
+                // invites questions by name that share most of its words.
+                said: Vec::new(),
             });
             self.attend("listening");
             log(&dir, json!({"event": "joined", "notice": notice}));

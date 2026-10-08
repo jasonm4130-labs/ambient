@@ -255,6 +255,21 @@ fn its_name_returns_at_once_without_waiting_for_a_pause() {
 }
 
 #[test]
+fn a_question_by_name_right_after_the_notice_is_not_taken_for_its_echo() {
+    let room = Room::new("after-notice", true);
+    room.live("m1");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    room.say("m1", 2_000, "Claude, are you listening?");
+    let v = w.wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(v["named_you"], true);
+    assert_eq!(
+        lines(&v),
+        ["[00:02] someone in the room: Claude, are you listening?"]
+    );
+}
+
+#[test]
 fn speaking_is_said_logged_and_then_held_by_the_cooldown() {
     let room = Room::new("speak", true);
     room.live("m1");
