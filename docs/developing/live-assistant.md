@@ -107,8 +107,10 @@ While it watches, a thread rewrites `assistant.json` beside the config file
 every two seconds, with its pid, session and state. The status menu shows
 **AI assistant listening — it may speak** while the file is under ten seconds
 old and its pid is alive. The file is removed when the watch ends, when the
-server exits, and when the agent has made no call for three minutes. An agent
-that stopped looping without saying so therefore stops claiming to listen.
+server exits, and when the agent has made no call for three minutes, but only
+by the process whose pid it holds, since another `ambient mcp` may be
+listening by then. An agent that stopped looping without saying so therefore
+stops claiming to listen.
 
 ### Limits on speaking
 
@@ -214,6 +216,9 @@ stream. A bad request line is an error event, never a crash.
 - **Crash:** a helper that dies mid-line is restarted and asked once more.
   After three failures in a row speech is switched off for that watch, and
   `speak` reports the failure to the agent.
+- **Hang:** a helper that does not finish a line within two minutes is killed
+  with its process group, so the Python process under `uv run` goes too, and
+  counts as a failure; the next line starts a fresh one.
 - **Error:** an engine error on one line, such as text it cannot synthesise, is
   reported without restarting a healthy helper.
 - **Lifetime:** the helper stays loaded for the whole watch, because a cold
