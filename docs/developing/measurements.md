@@ -757,6 +757,40 @@ run on the same busy machine came in at 37.86 s (24.1×), so the decode cost
 of disabling prepacking is somewhere between ~7% (calls) and the clean row's
 spread, and still well above realtime either way.
 
+## Idle memory after finalize: in process and in a child
+
+M5 Max, 128 GB, macOS 26.6.2, on 2026-10-08, shipped model settings. A scratch
+replay harness streamed AMI `TS3003a` (1505.6 s, four speakers, resampled to
+48 kHz) from disk in 200 ms drains into `live::LiveTranscriber` on both tracks
+at 15× realtime, wrote the session's audio as `capture_into` does, then
+finalized it either in process (`session::transcribe_session`) or through
+`finalize::run`, the menu bar queue's path. The figures are the harness
+process's own `proc_pid_rusage` physical footprint and resident size, in MiB,
+3 s after each step. Every completed run wrote the same 650 lines and 638 speaker
+labels. Other work held the machine's load average between 13 and 50, so the
+wall times are noisy; the default-QoS pair ran side by side under the same
+load and is the fair timing comparison.
+
+| Run | After the live pass | After finalize | Finalize wall |
+| --- | ---: | ---: | ---: |
+| In process, default QoS | 32 fp / 388 rss | **450 fp / 1078 rss** | 48.2 s |
+| Child, default QoS | 32 fp / 388 rss | **32 fp / 388 rss** | 49.6 s |
+
+The live pass already gives its memory back when it stops: the process falls
+from ~1.45 GiB of footprint while recording to ~30 MiB. What stayed was
+finalize's: 430–690 MiB of footprint and over 1 GiB resident in process across
+five in-process runs, and nothing in the child across five child runs. The
+child peaked at 1.97–2.15 GiB sampled RSS of its own and returned all of it on
+exit.
+
+Wall time under the queue's background QoS is not comparable from these runs.
+A background-QoS thread that another thread `pthread_join`s inherits the
+joiner's QoS, so an in-process harness that joins its worker measured default
+QoS (80–98 s here); the same run polling instead of joining was still
+transcribing after 420 s, as was the child (473–2330 s). The app's queue
+thread is never joined, so it has always run at true background QoS, and on a
+machine this loaded that starves finalize in either arrangement.
+
 ---
 
 Every number on this page is from the 128 GB machine; the 16 GB target is still

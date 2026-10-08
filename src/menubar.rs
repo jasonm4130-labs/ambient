@@ -13,7 +13,7 @@
 //! GUI wants.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Instant;
@@ -304,19 +304,7 @@ define_class!(
 
 impl Delegate {
     fn log(&self, msg: &str) {
-        eprintln!("{msg}");
-        let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
-        if let Some(parent) = self.ivars().log.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.ivars().log)
-        {
-            use std::io::Write;
-            let _ = f.write_all(line.as_bytes());
-        }
+        append_log(&self.ivars().log, msg);
     }
 
     /// The one place a failure is recorded: the log line, and the words the
@@ -656,6 +644,23 @@ impl Delegate {
     }
 }
 
+/// One line to stderr and to the app log at `path`.
+fn append_log(path: &Path, msg: &str) {
+    eprintln!("{msg}");
+    let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 /// `~/Library/Logs/Ambient/app.log`. Out of the sessions folder on purpose:
 /// `app.log` sorts after every `2…` session id, so any walk that forgets to
 /// filter picks the log up as the newest session — and the sessions folder
@@ -699,15 +704,32 @@ pub fn run() -> anyhow::Result<()> {
     let status_item =
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
 
+    // One decoder lane across this process and the finalize children it
+    // starts, so the live pass and the queue's transcriber stay one worker.
+    crate::live::share_decoder(std::env::temp_dir().join("ambient-decoder.lock"));
+
     let delegate = Delegate::alloc(mtm).set_ivars(Ivars {
         status_item: status_item.clone(),
         phase: PhaseCell::new(Phase::idle()),
         banner: RefCell::new(None),
         quitting: Cell::new(false),
-        // One worker thread for the life of the app. The default model, as
-        // the CLI's `record` uses; there is no flag to pass here.
-        queue: RefCell::new(Queue::spawn(|dir, meter| {
-            crate::session::transcribe_session(dir, None, Some(meter.clone()))
+        // One worker thread for the life of the app, each job a child
+        // process of this same executable, so what finalizing allocates goes
+        // back to the system when the job ends rather than staying resident
+        // in a menu bar app that runs all day. The default model, as the
+        // CLI's `record` uses; there is no flag to pass here.
+        queue: RefCell::new(Queue::spawn(|dir, meter| match std::env::current_exe() {
+            Ok(exe) => crate::finalize::run(crate::finalize::command(&exe, dir), dir, meter),
+            Err(e) => {
+                append_log(
+                    &log_path(),
+                    &format!(
+                        "warning: cannot locate own executable ({e}); finalizing in-process, \
+                         which keeps its memory resident after the job"
+                    ),
+                );
+                crate::session::transcribe_session(dir, None, Some(meter.clone()))
+            }
         })),
         pending_failure: RefCell::new(None),
         // Launched from Finder there is nowhere for stderr to go, so keep our

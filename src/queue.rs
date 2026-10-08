@@ -4,7 +4,8 @@
 //! on the thread that owns the tap, [`crate::session::transcribe_session`]
 //! here — so a new recording can start the moment the last one's audio is on
 //! disk, rather than after its transcript is. One transcription at a time, on
-//! one thread that lives as long as the process: ASR and diarisation are
+//! one thread that lives as long as the process (the app's job runs each one
+//! in a child process, see [`crate::finalize`]): ASR and diarisation are
 //! heavy, and running two of them beside a live tap risks dropped audio, which
 //! costs more than the wait does.
 //!
