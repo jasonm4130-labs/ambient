@@ -644,10 +644,6 @@ impl Delegate {
     }
 }
 
-/// `~/Library/Logs/Ambient/app.log`. Out of the sessions folder on purpose:
-/// `app.log` sorts after every `2…` session id, so any walk that forgets to
-/// filter picks the log up as the newest session — and the sessions folder
-/// should hold only sessions.
 /// One line to stderr and to the app log at `path`.
 fn append_log(path: &Path, msg: &str) {
     eprintln!("{msg}");
@@ -665,6 +661,10 @@ fn append_log(path: &Path, msg: &str) {
     }
 }
 
+/// `~/Library/Logs/Ambient/app.log`. Out of the sessions folder on purpose:
+/// `app.log` sorts after every `2…` session id, so any walk that forgets to
+/// filter picks the log up as the newest session — and the sessions folder
+/// should hold only sessions.
 fn log_path() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
