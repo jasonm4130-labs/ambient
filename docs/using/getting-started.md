@@ -30,7 +30,8 @@ is missing or a track is silent, use [troubleshooting](troubleshooting.md).
 
 ## Make a test recording
 
-1. Choose **Start Recording** from the menu bar or welcome page.
+1. Choose **Start Recording** from the menu bar, or **Record** (⌘R) at the top of
+   the window's sidebar.
 2. Speak a short sentence and play a short piece of audio on the Mac.
 3. Check that the Room and Call levels respond.
 4. Choose **Stop** and wait for transcription to finish.
