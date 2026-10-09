@@ -797,6 +797,29 @@ run on the same busy machine came in at 37.86 s (24.1×), so the decode cost
 of disabling prepacking is somewhere between ~7% (calls) and the clean row's
 spread, and still well above realtime either way.
 
+## Talk: release to text, and the worker's footprint
+
+M5 Max, 128 GB, on 2026-10-09: `ambient talk --wav q.wav --dry-run`, release
+build, the installed app's models, against a stand-in `fm-inbox.sh`. `q.wav`
+is a 2.8 s macOS `say` rendering of "What is the status of the ambient talk
+pull request?", transcribed word for word. "Release to text" runs from the
+audio being in hand to the transcript; the process is new for every turn, so
+it includes loading the VAD and Parakeet. Peak footprint and resident size are
+`/usr/bin/time -l`'s, for the whole worker process.
+
+| Run | Release to text | Of which model load | Peak footprint | Max RSS |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 640 ms | 513 ms | 906 MiB | 924 MiB |
+| 2 | 603 ms | 473 ms | 904 MiB | 921 MiB |
+| 3 | 714 ms | 586 ms | 904 MiB | 922 MiB |
+
+Loading the models is most of the wait; the VAD and decode of 2.3 s of speech
+take about 130 ms. A slip of the key (`say "uh"`, no speech found) exits in
+20 ms at 12 MiB of footprint, because the recogniser is never loaded. The
+voice helper is its own process and is not in these figures: with the v1-gravel
+Qwen3-TTS voice and `--no-play`, the reply's first audio came 84 ms after the
+request, once the helper had warmed while the reply was awaited.
+
 ## Idle memory after finalize: in process and in a child
 
 M5 Max, 128 GB, macOS 26.6.2, on 2026-10-08, shipped model settings. A scratch

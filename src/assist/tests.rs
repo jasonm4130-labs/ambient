@@ -84,6 +84,7 @@ impl Room {
             poll: Duration::from_millis(10),
             settle: Duration::from_millis(60),
             longest: Duration::from_millis(400),
+            speaking_wait: Duration::from_millis(100),
         })
     }
 
@@ -244,6 +245,7 @@ fn its_name_returns_at_once_without_waiting_for_a_pause() {
         poll: Duration::from_millis(10),
         settle: Duration::from_secs(30),
         longest: Duration::from_secs(30),
+        ..Pacing::default()
     });
     w.watch(None).unwrap();
     room.say("m1", 2_000, "Claude, when did that ticket close?");
@@ -304,6 +306,26 @@ fn speaking_is_said_logged_and_then_held_by_the_cooldown() {
         "{v}"
     );
     assert_eq!(room.said().len(), 2, "the notice and one reply");
+}
+
+#[test]
+fn a_remark_is_not_said_over_a_talk_reply_and_not_counted() {
+    let room = Room::new("talking", true);
+    room.live("m1");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    let lock = voice::SpeakingLock::path(&room.config_file);
+    let talk = voice::SpeakingLock::acquire(&lock, "talk", Duration::ZERO).unwrap();
+    let held = w.speak("It closed on Tuesday.", None).unwrap_err();
+    assert!(held.contains("talk") && held.contains("speaking"), "{held}");
+    assert_eq!(room.said().len(), 1, "only the notice");
+    drop(talk);
+    let v = w.speak("It closed on Tuesday.", None).unwrap();
+    assert_eq!(
+        v["may_still_speak"], 1,
+        "the refused remark was not counted"
+    );
+    assert!(!lock.exists(), "the assistant let go of the voice");
 }
 
 #[test]

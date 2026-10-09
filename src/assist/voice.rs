@@ -16,6 +16,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -370,6 +371,7 @@ pub struct Voice {
     helper: Option<Helper>,
     failures: u32,
     given_up: bool,
+    pid_slot: Option<&'static AtomicI32>,
 }
 
 impl Voice {
@@ -381,6 +383,22 @@ impl Voice {
             helper: None,
             failures: 0,
             given_up: false,
+            pid_slot: None,
+        }
+    }
+
+    /// Keep `slot` holding the running helper's process group, or 0 when
+    /// none runs, so a signal handler can silence it mid-reply: `ambient
+    /// talk` stops speaking the moment the user talks over it.
+    pub fn with_pid_slot(mut self, slot: &'static AtomicI32) -> Self {
+        self.pid_slot = Some(slot);
+        self
+    }
+
+    fn publish_pid(&self) {
+        if let Some(slot) = self.pid_slot {
+            let pid = self.helper.as_ref().map_or(0, |h| h.child.id() as i32);
+            slot.store(pid, Ordering::SeqCst);
         }
     }
 
@@ -412,10 +430,12 @@ impl Voice {
             match Helper::start(&self.program, &self.args, self.limits.ready_within) {
                 Ok(h) => self.helper = Some(h),
                 Err(e) => {
+                    self.publish_pid();
                     self.failed();
                     return Err(e);
                 }
             }
+            self.publish_pid();
         }
         Ok(self.helper.as_mut().expect("started above"))
     }
@@ -443,6 +463,7 @@ impl Voice {
         };
         if result.as_ref().is_err_and(timed_out) {
             self.helper = None;
+            self.publish_pid();
         }
         match &result {
             Ok(_) => self.failures = 0,
@@ -456,7 +477,97 @@ impl Voice {
         if let Some(h) = self.helper.take() {
             h.stop();
         }
+        self.publish_pid();
     }
+}
+
+/// `speaking.lock`, beside the config file: held while a voice speaks, so the
+/// live assistant and `ambient talk` never talk over each other. It names the
+/// holder's pid and what it is (`"assistant"` or `"talk"`); a lock whose pid
+/// is gone is a crash's leftover and is taken over.
+pub struct SpeakingLock {
+    path: PathBuf,
+    mine: String,
+}
+
+/// Who holds `speaking.lock`, read from it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Holder {
+    pub pid: u32,
+    pub who: String,
+}
+
+impl SpeakingLock {
+    /// The lock file for this config file.
+    pub fn path(config_file: &Path) -> PathBuf {
+        config_file.with_file_name("speaking.lock")
+    }
+
+    /// The live holder, if any: a lock naming a pid that is gone holds
+    /// nothing.
+    pub fn holder(path: &Path) -> Option<Holder> {
+        let h: Holder = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        pid_alive(h.pid).then_some(h)
+    }
+
+    /// Take the lock as `who`, waiting up to `wait` for another voice to
+    /// finish.
+    pub fn acquire(path: &Path, who: &str, wait: Duration) -> Result<SpeakingLock> {
+        let mine = json!({"pid": std::process::id(), "who": who}).to_string();
+        let deadline = Instant::now() + wait;
+        loop {
+            let created = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path);
+            match created {
+                Ok(mut f) => {
+                    f.write_all(mine.as_bytes())?;
+                    return Ok(SpeakingLock {
+                        path: path.to_path_buf(),
+                        mine,
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(anyhow!(e).context(format!("could not take {}", path.display())))
+                }
+            }
+            let held = std::fs::read_to_string(path).unwrap_or_default();
+            let live = serde_json::from_str::<Holder>(&held)
+                .ok()
+                .filter(|h| pid_alive(h.pid));
+            match live {
+                // Only the leftover just read is removed, so a lock another
+                // process took over meanwhile survives.
+                None => {
+                    if std::fs::read_to_string(path).unwrap_or_default() == held {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+                Some(h) if Instant::now() >= deadline => {
+                    bail!("the {} (pid {}) is speaking", h.who, h.pid)
+                }
+                Some(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+}
+
+impl Drop for SpeakingLock {
+    fn drop(&mut self) {
+        if std::fs::read_to_string(&self.path).is_ok_and(|t| t == self.mine) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn pid_alive(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 sends nothing; it only asks whether `pid` exists.
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
 /// A say that ran out of time, which leaves the helper wedged.
@@ -749,6 +860,19 @@ echo "the helper exited" >&2
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
         assert!(!survived, "the real helper (pid {pid}) outlived the kill");
+    }
+
+    #[test]
+    fn the_pid_slot_names_the_running_helper_and_clears_when_it_stops() {
+        static SLOT: AtomicI32 = AtomicI32::new(-1);
+        let (p, a) = fake("slot", SPEAKS);
+        let mut v = Voice::new(p, a, quick()).with_pid_slot(&SLOT);
+        v.warm().unwrap();
+        let pid = SLOT.load(Ordering::SeqCst);
+        assert!(pid > 0);
+        assert_eq!(v.helper.as_ref().unwrap().child.id() as i32, pid);
+        v.stop();
+        assert_eq!(SLOT.load(Ordering::SeqCst), 0);
     }
 
     #[test]
