@@ -517,17 +517,24 @@ impl SpeakingLock {
         // Written aside and linked into place, so the lock never exists
         // without its holder in it.
         static STAGED: AtomicU64 = AtomicU64::new(0);
-        let n = STAGED.fetch_add(1, Ordering::Relaxed);
-        let staged = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
-        std::fs::write(&staged, &mine)
-            .with_context(|| format!("could not stage {}", staged.display()))?;
+        sweep_staged(path);
         let deadline = Instant::now() + wait;
-        let taken = loop {
-            match std::fs::hard_link(&staged, path) {
-                Ok(()) => break Ok(()),
+        loop {
+            let n = STAGED.fetch_add(1, Ordering::Relaxed);
+            let staged = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
+            let linked =
+                std::fs::write(&staged, &mine).and_then(|()| std::fs::hard_link(&staged, path));
+            let _ = std::fs::remove_file(&staged);
+            match linked {
+                Ok(()) => {
+                    return Ok(SpeakingLock {
+                        path: path.to_path_buf(),
+                        mine,
+                    })
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => {
-                    break Err(anyhow!(e).context(format!("could not take {}", path.display())))
+                    return Err(anyhow!(e).context(format!("could not take {}", path.display())))
                 }
             }
             let held = std::fs::read_to_string(path).unwrap_or_default();
@@ -549,16 +556,39 @@ impl SpeakingLock {
                     }
                 }
                 Some(h) if Instant::now() >= deadline => {
-                    break Err(anyhow!("the {} (pid {}) is speaking", h.who, h.pid))
+                    bail!("the {} (pid {}) is speaking", h.who, h.pid)
                 }
                 Some(_) => std::thread::sleep(Duration::from_millis(50)),
             }
+        }
+    }
+}
+
+/// Remove `speaking.<pid>-<n>.tmp` files staged by a process that died
+/// between writing one and removing it.
+fn sweep_staged(path: &Path) {
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem().and_then(|s| s.to_str())) else {
+        return;
+    };
+    let prefix = format!("{stem}.");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(&prefix))
+            .and_then(|n| n.strip_suffix(".tmp"))
+            .and_then(|n| n.split_once('-'))
+            .filter(|(_, n)| n.parse::<u64>().is_ok())
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
         };
-        let _ = std::fs::remove_file(&staged);
-        taken.map(|()| SpeakingLock {
-            path: path.to_path_buf(),
-            mine,
-        })
+        if !pid_alive(pid) {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 

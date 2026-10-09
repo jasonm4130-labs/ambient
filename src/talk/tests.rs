@@ -244,6 +244,22 @@ fn a_held_speaking_lock_is_waited_for_and_a_dead_holders_is_taken_over() {
 }
 
 #[test]
+fn a_staged_lock_left_by_a_dead_process_is_swept() {
+    let dir = temp("lock-sweep");
+    let path = dir.join("speaking.lock");
+    let dead = dir.join("speaking.999999-0.tmp");
+    let live = dir.join(format!("speaking.{}-999.tmp", std::process::id()));
+    let other = dir.join("notes.999999-0.tmp");
+    for f in [&dead, &live, &other] {
+        std::fs::write(f, "{}").unwrap();
+    }
+    drop(SpeakingLock::acquire(&path, "talk", Duration::ZERO).unwrap());
+    assert!(!dead.exists(), "a dead process's staged lock is removed");
+    assert!(live.exists(), "a live process's staged lock is kept");
+    assert!(other.exists(), "an unrelated file is kept");
+}
+
+#[test]
 fn a_lock_caught_mid_write_is_held_until_it_is_stale() {
     let dir = temp("lock-empty");
     let path = dir.join("speaking.lock");
