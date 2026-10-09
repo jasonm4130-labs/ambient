@@ -21,11 +21,11 @@ use std::time::Instant;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu,
-    NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSApplicationTerminateReply, NSBeep, NSControlStateValueOff, NSControlStateValueOn, NSImage,
+    NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{
     MainThreadMarker, NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString,
@@ -143,6 +143,23 @@ struct Ivars {
     /// The refresh timer runs at 2 Hz for the level meter; watching for calls
     /// needs nothing like that rate, so it happens every eighth tick.
     ticks: Cell<u64>,
+    /// Talking to firstmate: the hold, the turns and their workers.
+    talk: RefCell<crate::talk::app::Talk>,
+    /// The talk settings as last read, every fourth tick like the
+    /// assistant's.
+    talk_cfg: RefCell<crate::config::TalkConfig>,
+    /// ⌥Space, held while talking mode is on.
+    hotkey: RefCell<Option<crate::hotkey::HotKey>>,
+    /// Why ⌥Space could not be had, shown until talking mode is turned off
+    /// and on again.
+    hotkey_error: RefCell<Option<String>>,
+    /// "Hold to talk to firstmate ⌥Space", which also starts and sends a
+    /// turn by click for anyone not holding the key.
+    talk_item: RefCell<Option<Retained<NSMenuItem>>>,
+    /// "Speak firstmate's replies", ticked when replies are read aloud.
+    talk_speak_item: RefCell<Option<Retained<NSMenuItem>>>,
+    /// The last reply, or where the current turn has got to.
+    talk_line: RefCell<Option<Retained<NSMenuItem>>>,
 }
 
 define_class!(
@@ -168,6 +185,13 @@ define_class!(
             // Read before the transition: the closure is pure, and the queue
             // is a second thing that can answer a deferred quit.
             let queue_busy = !self.ivars().queue.borrow().is_empty();
+            // A turn is not worth keeping the app for: its note is already
+            // with firstmate, and the reply stays in firstmate's inbox.
+            {
+                let mut talk = self.ivars().talk.borrow_mut();
+                talk.hold = None;
+                talk.stop_all();
+            }
             let reply = self.ivars().phase.transition(|p| p.on_quit(queue_busy));
             self.render();
             match reply {
@@ -324,6 +348,46 @@ define_class!(
             self.render();
         }
 
+        /// The window's talk button going down. ⌥Space comes in through
+        /// [`Delegate::talk_key`] instead.
+        #[unsafe(method(talkPress:))]
+        fn talk_press_action(&self, _sender: Option<&AnyObject>) {
+            self.talk_press();
+        }
+
+        #[unsafe(method(talkRelease:))]
+        fn talk_release_action(&self, _sender: Option<&AnyObject>) {
+            self.talk_release();
+        }
+
+        /// The menu item: a menu cannot be held, so a click starts listening
+        /// and the next click sends.
+        #[unsafe(method(talkToggle:))]
+        fn talk_toggle(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().talk.borrow().listening() {
+                self.talk_release();
+            } else {
+                self.talk_press();
+            }
+        }
+
+        #[unsafe(method(toggleTalkSpeak:))]
+        fn toggle_talk_speak(&self, _sender: Option<&AnyObject>) {
+            let mut cfg = crate::config::Config::load();
+            cfg.talk.speak = !cfg.talk.speak;
+            match cfg.save() {
+                Ok(()) => {
+                    self.log(&format!(
+                        "speaking firstmate's replies turned {} by the user",
+                        if cfg.talk.speak { "on" } else { "off" }
+                    ));
+                    *self.ivars().talk_cfg.borrow_mut() = cfg.talk;
+                }
+                Err(e) => self.fail("could not change the talk setting", &e),
+            }
+            self.render();
+        }
+
         #[unsafe(method(tick:))]
         fn tick(&self, _sender: Option<&AnyObject>) {
             self.refresh();
@@ -394,6 +458,9 @@ impl Delegate {
     /// exists — so the phase knows where the recording is writing rather than
     /// having to go and find it later.
     fn begin_recording(&self, app: Option<String>) {
+        // The microphone is the recording's now, and nothing may be said
+        // into the meeting.
+        self.pause_talk("A recording started, so talking stopped.");
         let dir = match SessionDir::claim(&crate::session::home(), None) {
             Ok(d) => Arc::new(d),
             Err(e) => {
@@ -482,7 +549,10 @@ impl Delegate {
         let mtm = MainThreadMarker::from(self);
         {
             if let Some(button) = self.ivars().status_item.button(mtm) {
-                let name = NSString::from_str(symbol_for(view.kind, queue_line.is_some()));
+                let talk_symbol = self.ivars().talk.borrow().symbol();
+                let name = NSString::from_str(
+                    talk_symbol.unwrap_or_else(|| symbol_for(view.kind, queue_line.is_some())),
+                );
                 let desc = NSString::from_str("Ambient");
                 if let Some(img) =
                     NSImage::imageWithSystemSymbolName_accessibilityDescription(&name, Some(&desc))
@@ -581,12 +651,22 @@ impl Delegate {
                 i.setTitle(&NSString::from_str(&format!("Record {app}")));
             }
         }
+        self.render_talk(view.kind);
         // The window is painted from the same phase in the same pass. It has
         // its own single renderer; this is the only place it is called.
         if let Some(w) = self.ivars().main_window.borrow().as_ref() {
             self.ivars()
                 .phase
                 .with(|p| w.render(p, queue_line.as_deref(), mtm));
+            let talk = self.ivars().talk.borrow().payload(
+                &self.ivars().talk_cfg.borrow(),
+                match self.ivars().hotkey_error.borrow().as_deref() {
+                    Some(e) => Err(e),
+                    None => Ok(()),
+                },
+                view.kind,
+            );
+            w.render_talk(&talk);
         }
     }
 
@@ -608,7 +688,9 @@ impl Delegate {
         }
         if n % 4 == 0 {
             self.read_assistant();
+            self.read_talk();
         }
+        self.tick_talk(view.kind);
 
         // Every tick, through the one renderer: the elapsed line moves while
         // nothing about the phase does, and a control set anywhere but
@@ -705,6 +787,184 @@ impl Delegate {
             .assistant_on
             .set(crate::config::Config::load_from(&config).assistant.enabled);
         *self.ivars().assistant_state.borrow_mut() = crate::assist::listening(&config);
+    }
+
+    /// Refresh the talk settings, and hold ⌥Space exactly while talking mode
+    /// is on.
+    fn read_talk(&self) {
+        let cfg = crate::config::Config::load().talk;
+        let held = self.ivars().hotkey.borrow().is_some();
+        if cfg.enabled && !held && self.ivars().hotkey_error.borrow().is_none() {
+            let me = self.retain();
+            match crate::hotkey::HotKey::register(move |down| me.talk_key(down)) {
+                Ok(k) => {
+                    self.log(&format!("talking mode on — {} held", crate::hotkey::CHORD));
+                    *self.ivars().hotkey.borrow_mut() = Some(k);
+                }
+                Err(e) => {
+                    self.log(&format!("talking mode on, but {e:#}"));
+                    *self.ivars().hotkey_error.borrow_mut() = Some(format!("{e:#}"));
+                }
+            }
+        } else if !cfg.enabled {
+            if self.ivars().hotkey.borrow_mut().take().is_some() {
+                self.log(&format!(
+                    "talking mode off — {} released",
+                    crate::hotkey::CHORD
+                ));
+            }
+            // Turning it off and on again is how to retry a refused chord.
+            *self.ivars().hotkey_error.borrow_mut() = None;
+            self.ivars().talk.borrow_mut().hold = None;
+        }
+        *self.ivars().talk_cfg.borrow_mut() = cfg;
+    }
+
+    /// ⌥Space went down (`true`) or came up.
+    fn talk_key(&self, down: bool) {
+        if down {
+            self.talk_press();
+        } else {
+            self.talk_release();
+        }
+    }
+
+    /// Open the microphone for a turn, unless talking is refused right now.
+    fn talk_press(&self) {
+        // Key repeat, or the window's button and the key at once.
+        if self.ivars().talk.borrow().listening() {
+            return;
+        }
+        let cfg = crate::config::Config::load();
+        *self.ivars().talk_cfg.borrow_mut() = cfg.talk.clone();
+        let kind = self.ivars().phase.snapshot().kind;
+        if let Some(why) = crate::talk::app::refusal(&cfg.talk, kind) {
+            self.log(&format!("talk refused — {why}"));
+            self.ivars().talk.borrow_mut().notice(why);
+            NSBeep();
+            self.render();
+            return;
+        }
+        // Holding the key again interrupts a reply being read out.
+        self.ivars().talk.borrow_mut().barge_in();
+        match crate::capture::MicHold::start(cfg.input_device.as_deref()) {
+            Ok(hold) => self.ivars().talk.borrow_mut().hold = Some(hold),
+            Err(e) => {
+                self.fail("could not open the microphone to talk", &e);
+                self.ivars()
+                    .talk
+                    .borrow_mut()
+                    .notice(format!("Could not open the microphone: {e:#}"));
+            }
+        }
+        self.render();
+    }
+
+    /// Hand what was heard to a talk worker. The samples go down its stdin
+    /// and are dropped here.
+    fn talk_release(&self) {
+        let Some(hold) = self.ivars().talk.borrow_mut().hold.take() else {
+            return;
+        };
+        let rate = hold.rate;
+        let samples = hold.finish();
+        let seconds = samples.len() as f64 / rate;
+        let speak = self.ivars().talk_cfg.borrow().speak;
+        let mut talk = self.ivars().talk.borrow_mut();
+        if seconds < crate::talk::app::MIN_HOLD_S {
+            talk.notice(format!(
+                "Hold {} while you speak, then let go.",
+                crate::hotkey::CHORD
+            ));
+        } else {
+            match talk.spawn(samples, rate, speak) {
+                Ok(id) => self.log(&format!(
+                    "talk turn {id}: {seconds:.1} s handed to the worker"
+                )),
+                Err(e) => {
+                    talk.notice(format!("Could not start talking: {e:#}"));
+                    drop(talk);
+                    self.fail("could not start the talk worker", &e);
+                }
+            }
+        }
+        self.render();
+    }
+
+    /// Drop the hold and silence any reply, saying why.
+    fn pause_talk(&self, why: &str) {
+        let mut talk = self.ivars().talk.borrow_mut();
+        let was_listening = talk.hold.take().is_some();
+        let was_speaking = talk.speaking();
+        talk.barge_in();
+        if was_listening || was_speaking {
+            talk.notice(why);
+            drop(talk);
+            self.log(&format!("talk paused — {why}"));
+        }
+    }
+
+    /// Per tick: take in the workers' news, let go of a hold that has run
+    /// its limit, and pause talking if a call is now waiting to be recorded.
+    fn tick_talk(&self, kind: PhaseKind) {
+        if crate::talk::app::paused(kind).is_some() {
+            let cfg = self.ivars().talk_cfg.borrow().clone();
+            if let Some(why) = crate::talk::app::refusal(&cfg, kind) {
+                self.pause_talk(why);
+            }
+        }
+        let over = self
+            .ivars()
+            .talk
+            .borrow()
+            .hold
+            .as_ref()
+            .is_some_and(|h| h.held().as_secs() as usize >= crate::capture::MicHold::MAX_S);
+        if over {
+            self.talk_release();
+        }
+        self.ivars().talk.borrow_mut().poll();
+    }
+
+    /// The talk items: shown only in talking mode.
+    fn render_talk(&self, kind: PhaseKind) {
+        let cfg = self.ivars().talk_cfg.borrow();
+        let talk = self.ivars().talk.borrow();
+        if let Some(i) = self.ivars().talk_item.borrow().as_ref() {
+            i.setHidden(!cfg.enabled);
+            let title = if talk.listening() {
+                "Send to firstmate".to_string()
+            } else {
+                format!("Hold to talk to firstmate {}", crate::hotkey::CHORD)
+            };
+            i.setTitle(&NSString::from_str(&title));
+            i.setEnabled(crate::talk::app::paused(kind).is_none());
+        }
+        if let Some(i) = self.ivars().talk_speak_item.borrow().as_ref() {
+            i.setHidden(!cfg.enabled);
+            i.setState(if cfg.speak {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
+        }
+        if let Some(i) = self.ivars().talk_line.borrow().as_ref() {
+            let line = match (
+                self.ivars().hotkey_error.borrow().as_deref(),
+                talk.menu_line(),
+            ) {
+                (_, Some(l)) => Some(l),
+                (Some(e), None) => Some(format!("{} unavailable: {e}", crate::hotkey::CHORD)),
+                (None, None) => None,
+            };
+            match line.filter(|_| cfg.enabled) {
+                Some(l) => {
+                    i.setTitle(&NSString::from_str(&l));
+                    i.setHidden(false);
+                }
+                None => i.setHidden(true),
+            }
+        }
     }
 }
 
@@ -811,6 +1071,13 @@ pub fn run() -> anyhow::Result<()> {
         assistant_on: Cell::new(false),
         assistant_state: RefCell::new(None),
         ticks: Cell::new(0),
+        talk: RefCell::new(crate::talk::app::Talk::default()),
+        talk_cfg: RefCell::new(crate::config::TalkConfig::default()),
+        hotkey: RefCell::new(None),
+        hotkey_error: RefCell::new(None),
+        talk_item: RefCell::new(None),
+        talk_speak_item: RefCell::new(None),
+        talk_line: RefCell::new(None),
     });
     let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };
 
@@ -823,6 +1090,19 @@ pub fn run() -> anyhow::Result<()> {
     let queue_line = item(mtm, "", None, "");
     let assistant = item(mtm, "Live Assistant", Some(sel!(toggleAssistant:)), "");
     let assistant_line = item(mtm, "", None, "");
+    let talk_item = item(
+        mtm,
+        &format!("Hold to talk to firstmate {}", crate::hotkey::CHORD),
+        Some(sel!(talkToggle:)),
+        "",
+    );
+    let talk_speak = item(
+        mtm,
+        "Speak firstmate's replies",
+        Some(sel!(toggleTalkSpeak:)),
+        "",
+    );
+    let talk_line = item(mtm, "", None, "");
     let settings = item(mtm, "Settings…", Some(sel!(openSettings:)), ",");
     let open = item(mtm, "Open Ambient", Some(sel!(openWindow:)), "0");
     let quit = item(mtm, "Quit Ambient", Some(sel!(terminate:)), "q");
@@ -835,6 +1115,8 @@ pub fn run() -> anyhow::Result<()> {
         &record_call,
         &decline,
         &assistant,
+        &talk_item,
+        &talk_speak,
     ] {
         unsafe { i.setTarget(Some(&delegate)) };
     }
@@ -845,6 +1127,10 @@ pub fn run() -> anyhow::Result<()> {
         queue_line.setHidden(true);
         assistant_line.setEnabled(false);
         assistant_line.setHidden(true);
+        talk_line.setEnabled(false);
+        for i in [&talk_item, &talk_speak, &talk_line] {
+            i.setHidden(true);
+        }
         // Above Start, because when they are showing they are the decision the
         // menu was opened to make.
         record_call.setHidden(true);
@@ -859,6 +1145,10 @@ pub fn run() -> anyhow::Result<()> {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&assistant);
         menu.addItem(&assistant_line);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        menu.addItem(&talk_item);
+        menu.addItem(&talk_line);
+        menu.addItem(&talk_speak);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&open);
         menu.addItem(&settings);
@@ -875,7 +1165,11 @@ pub fn run() -> anyhow::Result<()> {
     *delegate.ivars().decline_item.borrow_mut() = Some(decline);
     *delegate.ivars().assistant_item.borrow_mut() = Some(assistant);
     *delegate.ivars().assistant_line.borrow_mut() = Some(assistant_line);
+    *delegate.ivars().talk_item.borrow_mut() = Some(talk_item);
+    *delegate.ivars().talk_speak_item.borrow_mut() = Some(talk_speak);
+    *delegate.ivars().talk_line.borrow_mut() = Some(talk_line);
     delegate.read_assistant();
+    delegate.read_talk();
     // Anything a crash left captured but untranscribed goes straight back on
     // the queue: the split means that state can exist, so the app must be
     // able to finish it, and the audio is already on disk waiting.

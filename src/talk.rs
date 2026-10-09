@@ -40,6 +40,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 
+pub mod app;
+
 /// The subcommand the child runs under.
 pub const SUBCOMMAND: &str = "talk";
 
