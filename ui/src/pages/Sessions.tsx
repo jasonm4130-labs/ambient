@@ -76,6 +76,19 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
       }),
     [bridge, refresh, refreshConfig],
   );
+  // Rust sends no event when an input is plugged in or pulled out, so the mic
+  // line re-reads `config.get` whenever the window comes back into view.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshConfig();
+    };
+    window.addEventListener("focus", refreshConfig);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", refreshConfig);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshConfig]);
 
   // The phase payload is the state Rust handed over, and the event fires on
   // a timer rather than on a change — reloading `sessions` on every one of
@@ -110,9 +123,10 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
             (prev.hadQueue && !edge.hadQueue))
         ) {
           void refresh();
+          refreshConfig();
         }
       }),
-    [bridge, refresh],
+    [bridge, refresh, refreshConfig],
   );
 
   // ⌘K opens the search palette from anywhere on the page.

@@ -185,4 +185,26 @@ describe("Sessions", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Add apps" }));
     expect(onSettings).toHaveBeenCalled();
   });
+
+  it("re-reads the mic when the window regains focus and on a phase edge", async () => {
+    const fake = new FakeBridge();
+    fake.answer("sessions", []);
+    fake.answer("config.get", { apps: [], devices: ["USB mic"], input_device: "USB mic" });
+
+    renderSessions(fake);
+    const idle = { kind: "idle", app: null, live: null, queue: null, failure: null };
+    act(() => fake.emit("phase", idle));
+    expect(await screen.findByText("Mic: USB mic")).toBeInTheDocument();
+
+    fake.answer("config.get", { apps: [], devices: [], input_device: "USB mic" });
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(
+      await screen.findByText("Mic: USB mic is not connected, so the system default is used"),
+    ).toBeInTheDocument();
+
+    fake.answer("config.get", { apps: [], devices: ["USB mic"], input_device: "USB mic" });
+    act(() => fake.emit("phase", { ...idle, kind: "armed" }));
+    act(() => fake.emit("phase", idle));
+    expect(await screen.findByText("Mic: USB mic")).toBeInTheDocument();
+  });
 });
