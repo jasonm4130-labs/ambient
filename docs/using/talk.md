@@ -52,8 +52,10 @@ Talking is refused while Ambient is recording or while a call is waiting to
 be recorded (**Record this call?**). The microphone belongs to the meeting
 then: what you said would land in its transcript, and a spoken reply would be
 heard by everyone on the call. Pressing ⌥Space then beeps and the menu says
-why. A recording that starts while you are holding the key drops what was
-heard without sending it, and stops any reply being read out.
+why. A recording that starts, or a call that starts waiting to be recorded,
+while you are holding the key drops what was heard without sending it. It
+also stops any reply being read out, and a reply that arrives while talking
+is paused is shown as text in the window and the menu instead of spoken.
 
 ## What leaves the Mac
 

@@ -870,20 +870,22 @@ impl Delegate {
         let samples = hold.finish();
         let seconds = samples.len() as f64 / rate;
         let speak = self.ivars().talk_cfg.borrow().speak;
-        let mut talk = self.ivars().talk.borrow_mut();
         if seconds < crate::talk::app::MIN_HOLD_S {
-            talk.notice(format!(
+            self.ivars().talk.borrow_mut().notice(format!(
                 "Hold {} while you speak, then let go.",
                 crate::hotkey::CHORD
             ));
         } else {
-            match talk.spawn(samples, rate, speak) {
+            let spawned = self.ivars().talk.borrow_mut().spawn(samples, rate, speak);
+            match spawned {
                 Ok(id) => self.log(&format!(
                     "talk turn {id}: {seconds:.1} s handed to the worker"
                 )),
                 Err(e) => {
-                    talk.notice(format!("Could not start talking: {e:#}"));
-                    drop(talk);
+                    self.ivars()
+                        .talk
+                        .borrow_mut()
+                        .notice(format!("Could not start talking: {e:#}"));
                     self.fail("could not start the talk worker", &e);
                 }
             }
@@ -891,12 +893,12 @@ impl Delegate {
         self.render();
     }
 
-    /// Drop the hold and silence any reply, saying why.
+    /// Drop the hold and keep every open turn quiet, saying why.
     fn pause_talk(&self, why: &str) {
         let mut talk = self.ivars().talk.borrow_mut();
         let was_listening = talk.hold.take().is_some();
         let was_speaking = talk.speaking();
-        talk.barge_in();
+        talk.hush();
         if was_listening || was_speaking {
             talk.notice(why);
             drop(talk);
@@ -907,11 +909,8 @@ impl Delegate {
     /// Per tick: take in the workers' news, let go of a hold that has run
     /// its limit, and pause talking if a call is now waiting to be recorded.
     fn tick_talk(&self, kind: PhaseKind) {
-        if crate::talk::app::paused(kind).is_some() {
-            let cfg = self.ivars().talk_cfg.borrow().clone();
-            if let Some(why) = crate::talk::app::refusal(&cfg, kind) {
-                self.pause_talk(why);
-            }
+        if let Some(why) = crate::talk::app::pause_reason(kind) {
+            self.pause_talk(why);
         }
         let over = self
             .ivars()

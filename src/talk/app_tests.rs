@@ -134,6 +134,11 @@ fn talking_is_refused_while_recording_or_armed_or_unset() {
     assert!(refusal(&cfg(true, false), PhaseKind::Idle)
         .unwrap()
         .contains("home"));
+    assert_eq!(
+        pause_reason(PhaseKind::Armed),
+        refusal(&on, PhaseKind::Armed)
+    );
+    assert_eq!(pause_reason(PhaseKind::Idle), None);
     assert_eq!(paused(PhaseKind::Armed), Some("armed"));
     assert_eq!(paused(PhaseKind::Idle), None);
 }
@@ -215,6 +220,36 @@ while :; do sleep 0.05; done"#;
     assert_eq!(turn.stage, Stage::Stopped, "{turn:?}");
     assert!(!talk.speaking());
     assert_eq!(talk.symbol(), None);
+}
+
+/// D3: a call arming while a turn waits on firstmate keeps the reply from
+/// being said, but not from being shown.
+#[test]
+fn arming_while_a_turn_waits_shows_the_reply_as_text() {
+    let mut talk = Talk::default();
+    // Answers a hush as the real worker does: the reply comes as text only.
+    let script = r#"h=0
+trap 'h=1' USR1
+cat >/dev/null
+echo '{"event":"heard","text":"hi"}'
+echo '{"event":"sent","id":"n1","announced":true}'
+while [ $h = 0 ]; do sleep 0.05; done
+echo '{"event":"reply","id":"n1","text":"PR 12 merged."}'
+echo '{"event":"text_only","reason":"talking is paused"}'"#;
+    talk.start(sh(script), Vec::new(), true).unwrap();
+    settle(&mut talk, |t| {
+        t.turns.back().unwrap().stage == Stage::Waiting
+    });
+    talk.hush();
+    settle(&mut talk, |t| t.pids.is_empty());
+    let turn = talk.turns.back().unwrap();
+    assert_eq!(turn.stage, Stage::Done, "{turn:?}");
+    assert_eq!(turn.reply.as_deref(), Some("PR 12 merged."));
+    assert_eq!(
+        talk.menu_line().as_deref(),
+        Some("firstmate: PR 12 merged.")
+    );
+    assert!(!talk.speaking());
 }
 
 #[test]

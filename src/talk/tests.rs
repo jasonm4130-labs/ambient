@@ -97,14 +97,14 @@ fn turn<'a>(
     target: &'a mut FakeTarget,
     speaker: Option<&'a mut dyn Speaker>,
     lock: &Path,
-    recording: &'a dyn Fn() -> bool,
+    paused: &'a dyn Fn() -> bool,
     out: &'a mut Vec<u8>,
 ) -> Turn<'a> {
     Turn {
         target,
         speaker,
         lock: lock.to_path_buf(),
-        recording,
+        paused,
         poll: Duration::from_millis(1),
         timeout: Duration::from_secs(5),
         out,
@@ -216,12 +216,23 @@ fn the_reply_stays_text_when_the_voice_fails_or_a_recording_starts() {
 
     let mut voice = FakeVoice::default();
     let (mut t, mut out) = (reply(), Vec::new());
+    t.polls_before = 3;
     let got = converse("hi", turn(&mut t, Some(&mut voice), &lock, &yes, &mut out)).unwrap();
     assert!(
         matches!(got, Outcome::TextOnly(ref w) if w.contains("recording")),
         "{got:?}"
     );
     assert!(voice.said.borrow().is_empty());
+    let kinds: Vec<_> = events(&out)
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["sent", "reply", "text_only"],
+        "the reply is still shown"
+    );
+    assert!(!lock.exists(), "the speaking lock is released");
 }
 
 #[test]

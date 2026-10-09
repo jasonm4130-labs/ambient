@@ -29,6 +29,9 @@
 //! SIGTERM or SIGINT stops it at once and silences the voice mid-word, which
 //! is how the parent barges in when the user holds the key again;
 //! `ambient talk --stop` sends that signal to whichever turn is speaking.
+//! SIGUSR1 hushes it, because a recording started or a call is waiting to be
+//! recorded: a reply being said stops as SIGTERM would, and one still to
+//! come is shown as text only.
 
 use crate::assist::{voice, Speaker, MAX_SPEECH_CHARS};
 use crate::config::Config;
@@ -37,7 +40,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 
 pub mod app;
@@ -388,8 +391,9 @@ pub struct Turn<'a> {
     /// `None` is a dry run: the reply is printed, not said.
     pub speaker: Option<&'a mut dyn Speaker>,
     pub lock: PathBuf,
-    /// Whether a recording is in progress, asked again before speaking.
-    pub recording: &'a dyn Fn() -> bool,
+    /// Whether talking is paused for a recording or a call waiting to be
+    /// recorded, asked again just before speaking.
+    pub paused: &'a dyn Fn() -> bool,
     pub poll: Duration,
     pub timeout: Duration,
     pub out: &'a mut dyn Write,
@@ -406,7 +410,7 @@ pub fn converse(text: &str, turn: Turn<'_>) -> Result<Outcome> {
         target,
         mut speaker,
         lock,
-        recording,
+        paused,
         poll,
         timeout,
         out,
@@ -471,14 +475,18 @@ pub fn converse(text: &str, turn: Turn<'_>) -> Result<Outcome> {
     if speech.is_empty() {
         return text_only(out, "the reply has nothing to say aloud".into());
     }
-    if recording() {
-        return text_only(out, "a recording started, so the reply is not said".into());
-    }
     let _held = match voice::SpeakingLock::acquire(&lock, "talk", SPEAKING_WAIT) {
         Ok(l) => l,
         Err(e) => return text_only(out, format!("{e:#}")),
     };
+    // From here a hush stops the process, so this is the last word on it.
     let _unlinked_on_signal = LockOnSignal::arm(&lock);
+    if paused() {
+        return text_only(
+            out,
+            "talking is paused for a recording or a call, so the reply is not said".into(),
+        );
+    }
     match speaker.say(&speech, "neutral") {
         Ok(s) => {
             emit(
@@ -507,6 +515,9 @@ fn request_id() -> String {
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     format!("ambient-{hex}")
 }
+
+/// Set by SIGUSR1: talking is paused, so the reply is not to be said.
+static HUSHED: AtomicBool = AtomicBool::new(false);
 
 /// The running voice helper's process group, for the signal handler.
 static HELPER: AtomicI32 = AtomicI32::new(0);
@@ -553,12 +564,22 @@ extern "C" fn interrupted(_: libc::c_int) {
     }
 }
 
+extern "C" fn hushed(sig: libc::c_int) {
+    HUSHED.store(true, Ordering::SeqCst);
+    if !HELD_LOCK.load(Ordering::SeqCst).is_null() {
+        interrupted(sig);
+    }
+}
+
 fn on_interrupt() {
     let handler = interrupted as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    // SAFETY: installs a handler that only calls async-signal-safe functions.
+    let hush = hushed as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    // SAFETY: installs handlers that only touch atomics and call
+    // async-signal-safe functions.
     unsafe {
         libc::signal(libc::SIGTERM, handler);
         libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGUSR1, hush);
     }
 }
 
@@ -638,10 +659,11 @@ pub fn main(args: Vec<String>) -> Result<()> {
             )
         })?;
     let mut target = Firstmate::new(&home)?;
-    let recording = || crate::session::live_session().is_some();
+    on_interrupt();
+    let paused = || HUSHED.load(Ordering::SeqCst) || crate::session::live_session().is_some();
     // Talking is paused while a recording runs: the mic is shared, so the
     // question would land in the meeting, and the answer would be heard.
-    if recording() {
+    if crate::session::live_session().is_some() {
         bail!("a recording is in progress; talking is paused until it stops");
     }
 
@@ -685,14 +707,13 @@ pub fn main(args: Vec<String>) -> Result<()> {
         let (program, args) = voice::helper_command(&dir, engine, &cfg.voice, &extra);
         voice::Voice::new(program, args, voice::Limits::default()).with_pid_slot(&HELPER)
     });
-    on_interrupt();
     let outcome = converse(
         &heard.text,
         Turn {
             target: &mut target,
             speaker: voice.as_mut().map(|v| v as &mut dyn Speaker),
             lock: voice::SpeakingLock::path(&crate::config::path()),
-            recording: &recording,
+            paused: &paused,
             poll: POLL,
             timeout,
             out: &mut out,

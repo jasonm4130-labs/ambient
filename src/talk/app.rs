@@ -15,6 +15,7 @@ use crate::state::PhaseKind;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -209,19 +210,24 @@ pub fn refusal(cfg: &TalkConfig, phase: PhaseKind) -> Option<&'static str> {
     if !cfg.enabled {
         return Some("Talking mode is off. Turn it on in Settings.");
     }
-    match phase {
-        PhaseKind::Recording | PhaseKind::Stopping => {
-            return Some("Talking is paused while Ambient is recording.")
-        }
-        PhaseKind::Armed => {
-            return Some("Talking is paused while a call is waiting to be recorded.")
-        }
-        PhaseKind::Idle | PhaseKind::Failed => {}
+    if let Some(why) = pause_reason(phase) {
+        return Some(why);
     }
     if cfg.firstmate_home.is_none() {
         return Some("Choose firstmate's home in Settings first.");
     }
     None
+}
+
+/// Why talking is paused in this phase, as the menu and the window say it.
+pub fn pause_reason(phase: PhaseKind) -> Option<&'static str> {
+    match phase {
+        PhaseKind::Recording | PhaseKind::Stopping => {
+            Some("Talking is paused while Ambient is recording.")
+        }
+        PhaseKind::Armed => Some("Talking is paused while a call is waiting to be recorded."),
+        PhaseKind::Idle | PhaseKind::Failed => None,
+    }
 }
 
 /// Why talking is paused right now, for the window's button.
@@ -313,6 +319,15 @@ impl Talk {
         if !speak {
             cmd.arg("--dry-run");
         }
+        // A hush that lands before the worker has its handler is ignored
+        // rather than fatal; the next tick sends it again.
+        // SAFETY: signal is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGUSR1, libc::SIG_IGN);
+                Ok(())
+            });
+        }
         let id = self.start(cmd, pcm_bytes(&samples), speak)?;
         Ok(id)
     }
@@ -393,23 +408,33 @@ impl Talk {
             .map(|t| t.id)
             .collect();
         for id in ids {
-            self.signal(id);
+            self.signal(id, libc::SIGTERM);
         }
     }
 
-    /// Stop every worker: the app is quitting, or a recording started.
+    /// Keep every open turn quiet: a recording started or a call is waiting
+    /// to be recorded. A reply already being said stops; one still to come
+    /// arrives as text only.
+    pub fn hush(&mut self) {
+        let ids: Vec<u64> = self.pids.keys().copied().collect();
+        for id in ids {
+            self.signal(id, libc::SIGUSR1);
+        }
+    }
+
+    /// Stop every worker: the app is quitting.
     pub fn stop_all(&mut self) {
         let ids: Vec<u64> = self.pids.keys().copied().collect();
         for id in ids {
-            self.signal(id);
+            self.signal(id, libc::SIGTERM);
         }
     }
 
-    fn signal(&mut self, id: u64) {
+    fn signal(&mut self, id: u64, sig: libc::c_int) {
         if let Some(&pid) = self.pids.get(&id) {
             // SAFETY: plain syscall to our own child, which has not been
             // reaped yet (its pid leaves the map when the reaper reports).
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            unsafe { libc::kill(pid as libc::pid_t, sig) };
         }
     }
 
