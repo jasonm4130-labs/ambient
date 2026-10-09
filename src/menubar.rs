@@ -690,7 +690,7 @@ impl Delegate {
             self.read_assistant();
             self.read_talk();
         }
-        self.tick_talk(view.kind);
+        self.tick_talk(self.ivars().phase.snapshot().kind);
 
         // Every tick, through the one renderer: the elapsed line moves while
         // nothing about the phase does, and a control set anywhere but
@@ -898,6 +898,7 @@ impl Delegate {
         let mut talk = self.ivars().talk.borrow_mut();
         let was_listening = talk.hold.take().is_some();
         let was_speaking = talk.speaking();
+        crate::talk::set_paused(&crate::session::home(), true);
         talk.hush();
         if was_listening || was_speaking {
             talk.notice(why);
@@ -909,8 +910,9 @@ impl Delegate {
     /// Per tick: take in the workers' news, let go of a hold that has run
     /// its limit, and pause talking if a call is now waiting to be recorded.
     fn tick_talk(&self, kind: PhaseKind) {
-        if let Some(why) = crate::talk::app::pause_reason(kind) {
-            self.pause_talk(why);
+        match crate::talk::app::pause_reason(kind) {
+            Some(why) => self.pause_talk(why),
+            None => crate::talk::set_paused(&crate::session::home(), false),
         }
         let over = self
             .ivars()

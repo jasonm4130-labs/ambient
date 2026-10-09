@@ -222,28 +222,23 @@ while :; do sleep 0.05; done"#;
     assert_eq!(talk.symbol(), None);
 }
 
-/// D3: a call arming while a turn waits on firstmate keeps the reply from
-/// being said, but not from being shown.
+/// D3: a call arming while a reply is being said stops it, but the reply is
+/// still shown.
 #[test]
-fn arming_while_a_turn_waits_shows_the_reply_as_text() {
+fn arming_while_a_reply_is_said_stops_it_and_keeps_the_text() {
     let mut talk = Talk::default();
-    // Answers a hush as the real worker does: the reply comes as text only.
-    let script = r#"h=0
-trap 'h=1' USR1
+    // Exits 130 on SIGUSR1 while speaking, as the real worker's handler does.
+    let script = r#"trap 'exit 130' USR1
 cat >/dev/null
 echo '{"event":"heard","text":"hi"}'
-echo '{"event":"sent","id":"n1","announced":true}'
-while [ $h = 0 ]; do sleep 0.05; done
 echo '{"event":"reply","id":"n1","text":"PR 12 merged."}'
-echo '{"event":"text_only","reason":"talking is paused"}'"#;
+while :; do sleep 0.05; done"#;
     talk.start(sh(script), Vec::new(), true).unwrap();
-    settle(&mut talk, |t| {
-        t.turns.back().unwrap().stage == Stage::Waiting
-    });
+    settle(&mut talk, Talk::speaking);
     talk.hush();
     settle(&mut talk, |t| t.pids.is_empty());
     let turn = talk.turns.back().unwrap();
-    assert_eq!(turn.stage, Stage::Done, "{turn:?}");
+    assert_eq!(turn.stage, Stage::Stopped, "{turn:?}");
     assert_eq!(turn.reply.as_deref(), Some("PR 12 merged."));
     assert_eq!(
         talk.menu_line().as_deref(),

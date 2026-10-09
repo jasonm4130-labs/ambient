@@ -29,9 +29,9 @@
 //! SIGTERM or SIGINT stops it at once and silences the voice mid-word, which
 //! is how the parent barges in when the user holds the key again;
 //! `ambient talk --stop` sends that signal to whichever turn is speaking.
-//! SIGUSR1 hushes it, because a recording started or a call is waiting to be
-//! recorded: a reply being said stops as SIGTERM would, and one still to
-//! come is shown as text only.
+//! SIGUSR1 stops a reply being said, as SIGTERM would, because a recording
+//! started or a call is waiting to be recorded; a turn not yet speaking
+//! ignores it, and checks [`is_paused_in`] just before it would speak.
 
 use crate::assist::{voice, Speaker, MAX_SPEECH_CHARS};
 use crate::config::Config;
@@ -40,7 +40,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 
 pub mod app;
@@ -57,6 +57,29 @@ const POLL: Duration = Duration::from_secs(1);
 /// How long a turn waits for its reply by default. A later reply is still
 /// recorded by the target; it is only not spoken by this turn.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// In the sessions folder, kept fresh by the app while talking is paused for
+/// a call waiting to be recorded or a recording starting.
+const PAUSE_FILE: &str = ".talk-paused";
+
+/// Mark talking as paused, or not, for the workers under `root`. The app
+/// touches the mark every tick while paused, so one left by a crash goes
+/// stale within seconds.
+pub fn set_paused(root: &Path, on: bool) {
+    let mark = root.join(PAUSE_FILE);
+    if on {
+        let _ = std::fs::write(mark, "");
+    } else {
+        let _ = std::fs::remove_file(mark);
+    }
+}
+
+/// Whether a reply may not be said now: a recording is in progress under
+/// `root`, or the app has marked talking as paused.
+pub fn is_paused_in(root: &Path) -> bool {
+    crate::session::live_session_in(root).is_some()
+        || crate::session::is_growing(&root.join(PAUSE_FILE))
+}
 
 /// How long a reply waits for the live assistant to finish speaking before
 /// it stays text.
@@ -516,9 +539,6 @@ fn request_id() -> String {
     format!("ambient-{hex}")
 }
 
-/// Set by SIGUSR1: talking is paused, so the reply is not to be said.
-static HUSHED: AtomicBool = AtomicBool::new(false);
-
 /// The running voice helper's process group, for the signal handler.
 static HELPER: AtomicI32 = AtomicI32::new(0);
 
@@ -565,7 +585,6 @@ extern "C" fn interrupted(_: libc::c_int) {
 }
 
 extern "C" fn hushed(sig: libc::c_int) {
-    HUSHED.store(true, Ordering::SeqCst);
     if !HELD_LOCK.load(Ordering::SeqCst).is_null() {
         interrupted(sig);
     }
@@ -574,7 +593,7 @@ extern "C" fn hushed(sig: libc::c_int) {
 fn on_interrupt() {
     let handler = interrupted as extern "C" fn(libc::c_int) as libc::sighandler_t;
     let hush = hushed as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    // SAFETY: installs handlers that only touch atomics and call
+    // SAFETY: installs handlers that only read atomics and call
     // async-signal-safe functions.
     unsafe {
         libc::signal(libc::SIGTERM, handler);
@@ -660,7 +679,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
         })?;
     let mut target = Firstmate::new(&home)?;
     on_interrupt();
-    let paused = || HUSHED.load(Ordering::SeqCst) || crate::session::live_session().is_some();
+    let paused = || is_paused_in(&crate::session::home());
     // Talking is paused while a recording runs: the mic is shared, so the
     // question would land in the meeting, and the answer would be heard.
     if crate::session::live_session().is_some() {
