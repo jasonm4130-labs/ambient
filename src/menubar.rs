@@ -160,6 +160,9 @@ struct Ivars {
     talk_speak_item: RefCell<Option<Retained<NSMenuItem>>>,
     /// The last reply, or where the current turn has got to.
     talk_line: RefCell<Option<Retained<NSMenuItem>>>,
+    /// The last failure to set or clear the talk pause mark, so it is
+    /// logged once rather than every tick.
+    pause_mark_error: RefCell<Option<String>>,
 }
 
 define_class!(
@@ -893,11 +896,29 @@ impl Delegate {
         self.render();
     }
 
+    /// Set or clear the mark the talk workers read before speaking, logging
+    /// a failure when it first happens or changes.
+    fn mark_talk_paused(&self, on: bool) {
+        let error = crate::talk::set_paused(&crate::session::home(), on)
+            .err()
+            .map(|e| {
+                if on {
+                    format!("could not mark talking as paused: {e}")
+                } else {
+                    format!("could not clear the talk pause mark: {e}")
+                }
+            });
+        if *self.ivars().pause_mark_error.borrow() != error {
+            if let Some(e) = &error {
+                self.log(e);
+            }
+            *self.ivars().pause_mark_error.borrow_mut() = error;
+        }
+    }
+
     /// Drop the hold and keep every open turn quiet, saying why.
     fn pause_talk(&self, why: &str) {
-        if let Err(e) = crate::talk::set_paused(&crate::session::home(), true) {
-            self.log(&format!("could not mark talking as paused: {e}"));
-        }
+        self.mark_talk_paused(true);
         let mut talk = self.ivars().talk.borrow_mut();
         let was_listening = talk.hold.take().is_some();
         let was_speaking = talk.speaking();
@@ -914,11 +935,7 @@ impl Delegate {
     fn tick_talk(&self, kind: PhaseKind) {
         match crate::talk::app::pause_reason(kind) {
             Some(why) => self.pause_talk(why),
-            None => {
-                if let Err(e) = crate::talk::set_paused(&crate::session::home(), false) {
-                    self.log(&format!("could not clear the talk pause mark: {e}"));
-                }
-            }
+            None => self.mark_talk_paused(false),
         }
         let over = self
             .ivars()
@@ -1085,6 +1102,7 @@ pub fn run() -> anyhow::Result<()> {
         talk_item: RefCell::new(None),
         talk_speak_item: RefCell::new(None),
         talk_line: RefCell::new(None),
+        pause_mark_error: RefCell::new(None),
     });
     let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };
 
