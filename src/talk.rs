@@ -65,12 +65,16 @@ const PAUSE_FILE: &str = ".talk-paused";
 /// Mark talking as paused, or not, for the workers under `root`. The app
 /// touches the mark every tick while paused, so one left by a crash goes
 /// stale within seconds.
-pub fn set_paused(root: &Path, on: bool) {
+pub fn set_paused(root: &Path, on: bool) -> std::io::Result<()> {
     let mark = root.join(PAUSE_FILE);
     if on {
-        let _ = std::fs::write(mark, "");
+        std::fs::create_dir_all(root)?;
+        std::fs::write(mark, "")
     } else {
-        let _ = std::fs::remove_file(mark);
+        match std::fs::remove_file(mark) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 }
 

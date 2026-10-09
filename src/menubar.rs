@@ -895,10 +895,12 @@ impl Delegate {
 
     /// Drop the hold and keep every open turn quiet, saying why.
     fn pause_talk(&self, why: &str) {
+        if let Err(e) = crate::talk::set_paused(&crate::session::home(), true) {
+            self.log(&format!("could not mark talking as paused: {e}"));
+        }
         let mut talk = self.ivars().talk.borrow_mut();
         let was_listening = talk.hold.take().is_some();
         let was_speaking = talk.speaking();
-        crate::talk::set_paused(&crate::session::home(), true);
         talk.hush();
         if was_listening || was_speaking {
             talk.notice(why);
@@ -912,7 +914,11 @@ impl Delegate {
     fn tick_talk(&self, kind: PhaseKind) {
         match crate::talk::app::pause_reason(kind) {
             Some(why) => self.pause_talk(why),
-            None => crate::talk::set_paused(&crate::session::home(), false),
+            None => {
+                if let Err(e) = crate::talk::set_paused(&crate::session::home(), false) {
+                    self.log(&format!("could not clear the talk pause mark: {e}"));
+                }
+            }
         }
         let over = self
             .ivars()

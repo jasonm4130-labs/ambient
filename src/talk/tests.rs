@@ -212,8 +212,8 @@ fn a_reply_is_said_after_a_call_arms_and_disarms_but_not_while_armed() {
             polls_before: 3,
             reply: Some("Merged.".into()),
             on_poll: Some(Box::new(move |n| match n {
-                1 => set_paused(&root, true),
-                2 if disarm => set_paused(&root, false),
+                1 => set_paused(&root, true).unwrap(),
+                2 if disarm => set_paused(&root, false).unwrap(),
                 _ => {}
             })),
             ..Default::default()
@@ -244,8 +244,21 @@ fn a_reply_is_said_after_a_call_arms_and_disarms_but_not_while_armed() {
         .map(|e| e["event"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(kinds, ["sent", "reply", "text_only"]);
-    set_paused(&root, false);
+    set_paused(&root, false).unwrap();
     assert!(!is_paused_in(&root));
+    set_paused(&root, false).unwrap();
+}
+
+/// A fresh install has no sessions folder until its first recording; a call
+/// arming before then must still keep a reply from being said.
+#[test]
+fn pausing_works_before_the_sessions_folder_exists() {
+    let root = temp("no-sessions").join("not-yet");
+    assert!(!root.exists());
+    set_paused(&root, false).unwrap();
+    assert!(!is_paused_in(&root));
+    set_paused(&root, true).unwrap();
+    assert!(is_paused_in(&root));
 }
 
 #[test]
