@@ -21,6 +21,7 @@ the app does not keep, so the struct in `src/config.rs` and the key list in
 | `audio_retention_days` | How long the track wavs are kept. `0` deletes them as soon as the transcript exists. | Unsigned integer, or `forever` / `never` to keep them indefinitely | `7` |
 | `assistant` | The live assistant's on/off switch, also in the status menu as **Live Assistant**. | Boolean, as above | `false` |
 | `assistant.*`, `voice.*` | The assistant's name, limits on speaking, and voice. | See [the live assistant](assistant.md#settings) | |
+| `talk.firstmate_home` | The firstmate home that [`ambient talk`](commands.md#talk) sends notes to, through its `bin/fm-inbox.sh`. Unset, talking is refused. | Path; `default` or the empty string clears it | unset |
 
 Booleans accept nothing outside those eight words: `ambient config diarize maybe`
 is refused and leaves the setting as it was, rather than reading an unrecognised

@@ -48,7 +48,7 @@ const DEFAULT_WAIT: Duration = Duration::from_secs(30);
 
 /// The longest an utterance may be. The assistant speaks in a meeting; a
 /// paragraph is a monologue.
-const MAX_SPEECH_CHARS: usize = 600;
+pub const MAX_SPEECH_CHARS: usize = 600;
 
 /// How long after the agent's last call the menu bar still says the
 /// assistant is listening. A wait plus a slow turn fits well inside it; an
@@ -79,11 +79,18 @@ pub fn consent_notice(name: &str) -> String {
 pub trait Speaker {
     fn say(&mut self, text: &str, emotion: &str) -> Result<voice::Spoken>;
     fn stop(&mut self) {}
+    /// Load the voice now, so the first reply does not wait for it.
+    fn warm(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl Speaker for voice::Voice {
     fn say(&mut self, text: &str, emotion: &str) -> Result<voice::Spoken> {
         voice::Voice::say(self, text, emotion)
+    }
+    fn warm(&mut self) -> Result<()> {
+        voice::Voice::warm(self)
     }
     fn stop(&mut self) {
         voice::Voice::stop(self)
@@ -118,6 +125,9 @@ pub struct Pacing {
     pub poll: Duration,
     pub settle: Duration,
     pub longest: Duration,
+    /// How long `speak` waits for another voice (`ambient talk`) to finish
+    /// before the remark is not said.
+    pub speaking_wait: Duration,
 }
 
 impl Default for Pacing {
@@ -126,6 +136,7 @@ impl Default for Pacing {
             poll: Duration::from_millis(500),
             settle: Duration::from_secs(3),
             longest: Duration::from_secs(20),
+            speaking_wait: Duration::from_secs(5),
         }
     }
 }
@@ -344,10 +355,14 @@ impl Watch {
             });
             self.attend("listening");
             log(&dir, json!({"event": "joined", "notice": notice}));
-            let speaker = self
-                .speaker
-                .get_or_insert_with(|| (self.make_speaker)(&cfg));
-            if let Err(e) = speaker.say(&notice, "warm") {
+            let lock = voice::SpeakingLock::path(&self.paths.config_file);
+            let said = voice::SpeakingLock::acquire(&lock, "assistant", self.pacing.speaking_wait)
+                .and_then(|_voice| {
+                    self.speaker
+                        .get_or_insert_with(|| (self.make_speaker)(&cfg))
+                        .say(&notice, "warm")
+                });
+            if let Err(e) = said {
                 // The menu bar's notice still stands, but a spoken notice is
                 // the one everyone in the room hears: without it, no watching.
                 log(
@@ -502,6 +517,12 @@ impl Watch {
         if let Err(hold) = m.gate.may_speak(Instant::now()) {
             return Err(format!("Not said: {hold}. Keep listening."));
         }
+        // `ambient talk` may be answering the user out loud; talking over it
+        // would garble both, so a reply that cannot get the voice soon is
+        // not said rather than counted.
+        let lock = voice::SpeakingLock::path(&self.paths.config_file);
+        let _voice = voice::SpeakingLock::acquire(&lock, "assistant", self.pacing.speaking_wait)
+            .map_err(|e| format!("Not said: {e:#}. Keep listening."))?;
         self.attend("speaking");
         let started = Instant::now();
         let spoken = self

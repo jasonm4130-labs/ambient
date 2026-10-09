@@ -62,9 +62,9 @@ holds their state, `Watch`, one per server process.
 
 | Tool | What it does |
 | --- | --- |
-| `watch_meeting` | Refuses unless `assistant` is on and a session is being recorded. Otherwise speaks the consent notice, starts the heartbeat, and returns the last 40 lines as context, the assistant's name and the limits. Calling it again for the same meeting does not repeat the notice. |
+| `watch_meeting` | Refuses unless `assistant` is on and a session is being recorded. Otherwise speaks the consent notice, waiting up to five seconds for an `ambient talk` reply holding `speaking.lock` and refusing after that, starts the heartbeat, and returns the last 40 lines as context, the assistant's name and the limits. Calling it again for the same meeting does not repeat the notice. |
 | `wait_for_transcript` | Blocks until new lines arrive, then returns them as `[mm:ss] who: text`. It also returns `status` (`live`, `ended` or `off`), whether speaking is allowed now, and how many lines were left out as the assistant's own voice. |
-| `speak` | Says up to 600 characters in one of six tones, through the voice helper. Refused while off, before `watch_meeting`, during the cooldown and past the cap. Returns once the line has been said. |
+| `speak` | Says up to 600 characters in one of six tones, through the voice helper. Refused while off, before `watch_meeting`, during the cooldown and past the cap, and, without counting it, when an `ambient talk` reply still holds `speaking.lock` after five seconds. Returns once the line has been said. |
 | `stop_watching` | Ends the watch: the heartbeat goes and the voice is unloaded. |
 
 A refusal is a tool result with `isError`, worded for the agent: what happened
