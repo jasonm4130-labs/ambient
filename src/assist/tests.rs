@@ -329,6 +329,19 @@ fn a_remark_is_not_said_over_a_talk_reply_and_not_counted() {
 }
 
 #[test]
+fn the_notice_is_not_said_over_a_talk_reply() {
+    let room = Room::new("talking-notice", true);
+    room.live("m1");
+    let lock = voice::SpeakingLock::path(&room.config_file);
+    let talk = voice::SpeakingLock::acquire(&lock, "talk", Duration::ZERO).unwrap();
+    let mut w = room.watch();
+    let e = w.watch(None).unwrap_err();
+    assert!(e.contains("talk") && e.contains("speaking"), "{e}");
+    assert!(room.said().is_empty(), "nothing was said over the reply");
+    drop(talk);
+}
+
+#[test]
 fn the_cap_holds_even_without_a_cooldown() {
     let room = Room::new("cap", true);
     room.set("assistant.cooldown_s", "0");

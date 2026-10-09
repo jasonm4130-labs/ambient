@@ -355,10 +355,14 @@ impl Watch {
             });
             self.attend("listening");
             log(&dir, json!({"event": "joined", "notice": notice}));
-            let speaker = self
-                .speaker
-                .get_or_insert_with(|| (self.make_speaker)(&cfg));
-            if let Err(e) = speaker.say(&notice, "warm") {
+            let lock = voice::SpeakingLock::path(&self.paths.config_file);
+            let said = voice::SpeakingLock::acquire(&lock, "assistant", self.pacing.speaking_wait)
+                .and_then(|_voice| {
+                    self.speaker
+                        .get_or_insert_with(|| (self.make_speaker)(&cfg))
+                        .say(&notice, "warm")
+                });
+            if let Err(e) = said {
                 // The menu bar's notice still stands, but a spoken notice is
                 // the one everyone in the room hears: without it, no watching.
                 log(

@@ -16,7 +16,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -514,29 +514,32 @@ impl SpeakingLock {
     /// finish.
     pub fn acquire(path: &Path, who: &str, wait: Duration) -> Result<SpeakingLock> {
         let mine = json!({"pid": std::process::id(), "who": who}).to_string();
+        // Written aside and linked into place, so the lock never exists
+        // without its holder in it.
+        static STAGED: AtomicU64 = AtomicU64::new(0);
+        let n = STAGED.fetch_add(1, Ordering::Relaxed);
+        let staged = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
+        std::fs::write(&staged, &mine)
+            .with_context(|| format!("could not stage {}", staged.display()))?;
         let deadline = Instant::now() + wait;
-        loop {
-            let created = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path);
-            match created {
-                Ok(mut f) => {
-                    f.write_all(mine.as_bytes())?;
-                    return Ok(SpeakingLock {
-                        path: path.to_path_buf(),
-                        mine,
-                    });
-                }
+        let taken = loop {
+            match std::fs::hard_link(&staged, path) {
+                Ok(()) => break Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => {
-                    return Err(anyhow!(e).context(format!("could not take {}", path.display())))
+                    break Err(anyhow!(e).context(format!("could not take {}", path.display())))
                 }
             }
             let held = std::fs::read_to_string(path).unwrap_or_default();
-            let live = serde_json::from_str::<Holder>(&held)
-                .ok()
-                .filter(|h| pid_alive(h.pid));
+            let live = match serde_json::from_str::<Holder>(&held) {
+                Ok(h) => pid_alive(h.pid).then_some(h),
+                // Unreadable but just written: held, not a leftover.
+                Err(_) if fresh(path) => Some(Holder {
+                    pid: 0,
+                    who: "voice".into(),
+                }),
+                Err(_) => None,
+            };
             match live {
                 // Only the leftover just read is removed, so a lock another
                 // process took over meanwhile survives.
@@ -546,12 +549,24 @@ impl SpeakingLock {
                     }
                 }
                 Some(h) if Instant::now() >= deadline => {
-                    bail!("the {} (pid {}) is speaking", h.who, h.pid)
+                    break Err(anyhow!("the {} (pid {}) is speaking", h.who, h.pid))
                 }
                 Some(_) => std::thread::sleep(Duration::from_millis(50)),
             }
-        }
+        };
+        let _ = std::fs::remove_file(&staged);
+        taken.map(|()| SpeakingLock {
+            path: path.to_path_buf(),
+            mine,
+        })
     }
+}
+
+/// Written within the last two seconds.
+fn fresh(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < Duration::from_secs(2)))
 }
 
 impl Drop for SpeakingLock {

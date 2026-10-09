@@ -243,10 +243,31 @@ fn a_held_speaking_lock_is_waited_for_and_a_dead_holders_is_taken_over() {
     let _l = SpeakingLock::acquire(&path, "talk", Duration::ZERO).unwrap();
 }
 
+#[test]
+fn a_lock_caught_mid_write_is_held_until_it_is_stale() {
+    let dir = temp("lock-empty");
+    let path = dir.join("speaking.lock");
+    std::fs::write(&path, "").unwrap();
+    assert!(SpeakingLock::acquire(&path, "talk", Duration::from_millis(100)).is_err());
+    assert!(path.exists(), "a fresh unreadable lock is not removed");
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+    let l = SpeakingLock::acquire(&path, "talk", Duration::ZERO).unwrap();
+    assert_eq!(SpeakingLock::holder(&path).unwrap().who, "talk");
+    drop(l);
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+    assert!(left.is_empty(), "nothing staged is left behind: {left:?}");
+}
+
 /// A stand-in `fm-inbox.sh` that keeps its state in files: `note` records
 /// the body and exits 3 (saved, not announced) the first time, `announce`
-/// marks it, and `receipts` shows a reply once `reply` exists, plus an older
-/// reply to another note that must not be taken for this one.
+/// marks it, and `receipts` pages two older replies to other notes, then
+/// this note's reply once `reply` exists, one at a time unless asked for
+/// all, oldest first, as firstmate's bounded receipts do.
 const FAKE_INBOX: &str = r#"#!/bin/sh
 S="$FM_HOME/state"; mkdir -p "$S"
 case "$1" in
@@ -259,11 +280,29 @@ case "$1" in
   announce) touch "$S/announced"; echo '{"id":"77-abc","announced":true}' ;;
   receipts)
     echo "$*" >> "$S/receipts-args"
-    if [ -e "$S/reply" ] && [ "$3" = 000000000001 ]; then
-      echo '{"replies":[{"id":"77-abc","body":"It is done.","cursor":"000000000002"}],"reply_cursor":"000000000002"}'
-    else
-      echo '{"replies":[],"reply_cursor":"000000000001"}'
-    fi ;;
+    shift; after=0; all=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --after) after=$(expr "$2" + 0); shift 2 ;;
+        --all-replies) all=1; shift ;;
+        *) exit 1 ;;
+      esac
+    done
+    rows="1 old-1 Earlier.
+2 old-2 Earlier again."
+    [ -e "$S/reply" ] && rows="$rows
+3 77-abc It is done."
+    out=; last=$after
+    while read -r c id body; do
+      [ "$c" -gt "$after" ] || continue
+      [ -n "$out" ] && { [ -n "$all" ] || break; out="$out,"; }
+      out="$out{\"id\":\"$id\",\"body\":\"$body\",\"cursor\":\"$(printf %012d "$c")\"}"
+      last=$c
+    done <<ROWS
+$rows
+ROWS
+    cursor=; [ "$last" -gt 0 ] && cursor=$(printf %012d "$last")
+    echo "{\"replies\":[$out],\"reply_cursor\":\"$cursor\"}" ;;
   *) exit 1 ;;
 esac
 "#;
@@ -320,11 +359,11 @@ fn firstmate_replies_are_read_after_the_note_and_matched_by_id() {
     assert_eq!(
         args.lines().collect::<Vec<_>>(),
         [
-            "receipts",
-            "receipts --after 000000000001",
-            "receipts --after 000000000001"
+            "receipts --all-replies",
+            "receipts --after 000000000002 --all-replies",
+            "receipts --after 000000000002 --all-replies"
         ],
-        "the cursor is taken before sending and carried forward"
+        "the cursor is the newest reply before sending, carried forward"
     );
 }
 

@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 
 /// The subcommand the child runs under.
@@ -155,11 +155,14 @@ impl Firstmate {
         Ok((code, v))
     }
 
+    /// Every reply after the cursor: receipts pages its replies oldest
+    /// first, so a bounded page would trail the newest ones.
     fn receipts(&self) -> Result<Value> {
         let mut args = vec!["receipts"];
         if !self.cursor.is_empty() {
             args.extend(["--after", &self.cursor]);
         }
+        args.push("--all-replies");
         Ok(self.json(&args, None)?.1)
     }
 }
@@ -473,6 +476,7 @@ pub fn converse(text: &str, turn: Turn<'_>) -> Result<Outcome> {
         Ok(l) => l,
         Err(e) => return text_only(out, format!("{e:#}")),
     };
+    let _unlinked_on_signal = LockOnSignal::arm(&lock);
     match speaker.say(&speech, "neutral") {
         Ok(s) => {
             emit(
@@ -505,13 +509,43 @@ fn request_id() -> String {
 /// The running voice helper's process group, for the signal handler.
 static HELPER: AtomicI32 = AtomicI32::new(0);
 
+/// The speaking lock this process holds, as a C path, or null; the signal
+/// handler removes it so a stop never leaves it naming a pid that could be
+/// reused.
+static HELD_LOCK: AtomicPtr<libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Publishes the held lock's path to the signal handler until dropped,
+/// which must happen before the lock itself is released.
+struct LockOnSignal;
+
+impl LockOnSignal {
+    fn arm(lock: &Path) -> Option<LockOnSignal> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(lock.as_os_str().as_bytes()).ok()?;
+        // Leaked: the handler may read it at any moment, and a turn holds
+        // the lock once.
+        HELD_LOCK.store(path.into_raw(), Ordering::SeqCst);
+        Some(LockOnSignal)
+    }
+}
+
+impl Drop for LockOnSignal {
+    fn drop(&mut self) {
+        HELD_LOCK.store(std::ptr::null_mut(), Ordering::SeqCst);
+    }
+}
+
 extern "C" fn interrupted(_: libc::c_int) {
     let pg = HELPER.load(Ordering::SeqCst);
-    // SAFETY: killpg and _exit are async-signal-safe. The speaking lock is
-    // left naming this pid, which reads as free once the process is gone.
+    let lock = HELD_LOCK.load(Ordering::SeqCst);
+    // SAFETY: killpg, unlink and _exit are async-signal-safe, and a non-null
+    // lock path is a leaked, NUL-terminated CString.
     unsafe {
         if pg > 0 {
             libc::killpg(pg, libc::SIGKILL);
+        }
+        if !lock.is_null() {
+            libc::unlink(lock);
         }
         libc::_exit(130);
     }
