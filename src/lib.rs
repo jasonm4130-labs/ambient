@@ -11,6 +11,7 @@ pub mod export;
 pub mod fbank;
 pub mod features;
 pub mod finalize;
+pub mod hotkey;
 pub mod live;
 pub mod mcp;
 pub mod menubar;

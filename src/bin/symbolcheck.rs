@@ -13,7 +13,13 @@ fn main() {
     // Walked from `PhaseKind::ALL` rather than listed here. A list in this file
     // is a second source of truth, and it had already drifted once: `Failed`
     // was added with a fifth symbol and this check went on validating four.
-    for name in PhaseKind::ALL.map(PhaseKind::symbol) {
+    // The talk states draw over the phase's icon, so they are checked too.
+    let talk = ambient::talk::app::SYMBOLS;
+    for name in PhaseKind::ALL
+        .map(PhaseKind::symbol)
+        .into_iter()
+        .chain(talk)
+    {
         let n = NSString::from_str(name);
         let desc = NSString::from_str("Ambient");
         let found =

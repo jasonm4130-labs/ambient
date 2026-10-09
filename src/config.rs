@@ -45,12 +45,28 @@ pub struct Config {
 
 /// Where `ambient talk` sends what the user says. Only firstmate today, as an
 /// adapter, so another target can be added beside it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TalkConfig {
+    /// Talking mode: the app holds ⌥Space and shows the talk controls. Off
+    /// unless turned on, because a held system hotkey takes ⌥Space away from
+    /// every other app.
+    pub enabled: bool,
+    /// Read firstmate's replies aloud. Off, a reply is shown as text only.
+    pub speak: bool,
     /// The firstmate home whose `bin/fm-inbox.sh` takes the note and records
     /// the reply. `None` means talking has nowhere to go and is refused.
     pub firstmate_home: Option<PathBuf>,
+}
+
+impl Default for TalkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            speak: true,
+            firstmate_home: None,
+        }
+    }
 }
 
 /// Whether the live assistant may watch a meeting, and how often it may
@@ -231,6 +247,8 @@ impl Config {
             "voice.description" => self.voice.description = optional(value),
             "voice.cue" => self.voice.cue = optional(value),
             "voice.reference" => self.voice.reference = optional(value).map(PathBuf::from),
+            "talk" => self.talk.enabled = flag(value)?,
+            "talk.speak" => self.talk.speak = flag(value)?,
             "talk.firstmate_home" => self.talk.firstmate_home = optional(value).map(PathBuf::from),
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
@@ -238,7 +256,8 @@ impl Config {
                  assistant, assistant.name, assistant.cooldown_s, \
                  assistant.max_per_meeting, \
                  voice.engine, voice.speaker, voice.style, voice.helper_dir, \
-                 voice.description, voice.cue, voice.reference, talk.firstmate_home"
+                 voice.description, voice.cue, voice.reference, talk, talk.speak, \
+                 talk.firstmate_home"
             ),
         }
         Ok(())
@@ -450,6 +469,23 @@ mod tests {
         assert_eq!(Config::load_from(&p), c);
         c.set("talk.firstmate_home", "default").unwrap();
         assert_eq!(c.talk.firstmate_home, None);
+        std::fs::remove_file(&p).ok();
+    }
+
+    /// Talking mode is off until turned on, and replies are spoken once it is.
+    #[test]
+    fn talking_mode_is_off_and_speaking_on_by_default() {
+        let p = temp("talk-mode");
+        let mut c = Config::default();
+        assert!(!c.talk.enabled);
+        assert!(c.talk.speak);
+        c.set("talk", "on").unwrap();
+        c.set("talk.speak", "off").unwrap();
+        c.save_to(&p).unwrap();
+        let back = Config::load_from(&p);
+        assert!(back.talk.enabled);
+        assert!(!back.talk.speak);
+        assert!(c.set("talk.speak", "maybe").is_err());
         std::fs::remove_file(&p).ok();
     }
 

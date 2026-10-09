@@ -16,6 +16,15 @@ export interface SettingsConfig {
   audio_retention: string;
   roster: string[];
   latest_session: string | null;
+  /// Optional only so a config.get from an older build still renders.
+  talk?: TalkSettings;
+}
+
+/// Talking to firstmate: `talk`, `talk.speak` and `talk.firstmate_home`.
+export interface TalkSettings {
+  enabled: boolean;
+  speak: boolean;
+  firstmate_home: string | null;
 }
 
 export interface UnnamedSpeaker {
