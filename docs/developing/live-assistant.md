@@ -64,7 +64,7 @@ holds their state, `Watch`, one per server process.
 | --- | --- |
 | `watch_meeting` | Refuses unless `assistant` is on and a session is being recorded. Otherwise speaks the consent notice, waiting up to five seconds for an `ambient talk` reply holding `speaking.lock` and refusing after that, starts the heartbeat, and returns the last 40 lines as context, the assistant's name and the limits. Calling it again for the same meeting does not repeat the notice. |
 | `wait_for_transcript` | Blocks until new lines arrive, then returns them as `[mm:ss] who: text`. It also returns `status` (`live`, `ended` or `off`), whether speaking is allowed now, and how many lines were left out as the assistant's own voice. |
-| `speak` | Says up to 600 characters in one of six tones, through the voice helper. Refused while off, before `watch_meeting`, during the cooldown and past the cap, and, without counting it, when an `ambient talk` reply still holds `speaking.lock` after five seconds. Returns once the line has been said. |
+| `speak` | Says up to 600 characters in one of six tones, through the voice helper. Refused while off, before `watch_meeting`, during the cooldown and past the cap, and, without counting it, when another voice (an `ambient talk` reply or another watch) still holds `speaking.lock` after five seconds. Returns once the line has been said. |
 | `stop_watching` | Ends the watch: the heartbeat goes and the voice is unloaded. |
 
 A refusal is a tool result with `isError`, worded for the agent: what happened
@@ -123,7 +123,10 @@ stops claiming to listen.
 
 An utterance whose voice failed still counts, since retrying a stale remark
 later would be worse than missing it. Each utterance is appended to the
-session's `assistant.jsonl` with its text, tone and timings.
+session's `assistant.jsonl` twice: a `speaking` event as the voice starts, and
+a `spoke` event with its text, tone and timings, or a voice `error`, once it
+ends. An utterance counts from its `speaking` event, so one cut off by a crash
+still counts.
 
 The limits belong to the meeting, not to one watch. `watch_meeting`,
 `wait_for_transcript` and `speak` each read the session's `assistant.jsonl`
@@ -131,6 +134,12 @@ and catch up the count and the cooldown with the utterances logged there, so
 `stop_watching` and watching again, an off/on toggle, or a second
 `ambient mcp` process on the same meeting, even one watching at the same time,
 does not reset them. The consent notice is still spoken on each new watch.
+
+Two watches on one meeting never talk over each other. While one speaks, its
+`speaking` event holds the other's cooldown, so `wait_for_transcript` reports
+`may_speak` as `not now` and `speak` is refused. A `speak` that passed its
+check just before still waits for `speaking.lock`, then checks the limits
+again and is refused if the remark it waited for started the cooldown.
 
 ### Its own voice
 
