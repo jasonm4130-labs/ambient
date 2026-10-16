@@ -369,6 +369,39 @@ arguments and the cursor for following a session as it records are in
 [reading sessions from an assistant](mcp.md), and the reasoning is
 [ADR 0016](../adr/0016-mcp-verb-for-live-reading.md).
 
+## talk
+
+```sh
+ambient talk --wav <a.wav> [--dry-run] [--no-play] [--home <dir>] [--timeout <s>]
+ambient talk --pcm [--rate <hz>] [...]       audio on stdin
+ambient talk --stop
+```
+
+One spoken turn with firstmate. It trims the audio with the VAD and
+transcribes it with Parakeet on this Mac; less than 0.4 s of speech is "didn't
+catch that" and nothing is sent. The text goes to firstmate as a note through
+`fm-inbox.sh note --request-id ambient-<id>`, in the home named by
+`talk.firstmate_home` or `--home`, and the turn polls `fm-inbox.sh receipts`
+about once a second for the reply to that note's id, for up to `--timeout`
+seconds (300 by default). The reply is read aloud through the assistant's
+voice helper with its markdown stripped and cut to 600 characters, while
+holding `speaking.lock` beside the config file so the live assistant never
+talks over it. A voice that fails, a lock still held after ten seconds, or a
+recording that started meanwhile leaves the reply as text.
+
+The audio is never written to disk or sent anywhere: only the transcript
+leaves the process. Talking is refused while a recording is in progress,
+because the microphone is shared. `--dry-run` sends the note and waits for
+the reply but prints what it would say instead of starting the voice, so the
+whole loop runs headless against a stand-in `fm-inbox.sh`. `--pcm` reads raw
+32-bit float little-endian mono until end of file, which is how the app hands
+over a push-to-talk hold. `--stop`, or SIGTERM to the turn, silences a reply
+mid-word.
+
+Stdout is one JSON event per line for the program that started it (`heard`,
+`nothing`, `queued`, `sent`, `reply`, `spoken`, `text_only`, `dry_run`,
+`no_reply`); `src/talk.rs` documents each.
+
 ## Environment
 
 | Variable | Read by | Effect |

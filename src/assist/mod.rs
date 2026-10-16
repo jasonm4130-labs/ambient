@@ -48,7 +48,7 @@ const DEFAULT_WAIT: Duration = Duration::from_secs(30);
 
 /// The longest an utterance may be. The assistant speaks in a meeting; a
 /// paragraph is a monologue.
-const MAX_SPEECH_CHARS: usize = 600;
+pub const MAX_SPEECH_CHARS: usize = 600;
 
 /// How long after the agent's last call the menu bar still says the
 /// assistant is listening. A wait plus a slow turn fits well inside it; an
@@ -79,11 +79,18 @@ pub fn consent_notice(name: &str) -> String {
 pub trait Speaker {
     fn say(&mut self, text: &str, emotion: &str) -> Result<voice::Spoken>;
     fn stop(&mut self) {}
+    /// Load the voice now, so the first reply does not wait for it.
+    fn warm(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl Speaker for voice::Voice {
     fn say(&mut self, text: &str, emotion: &str) -> Result<voice::Spoken> {
         voice::Voice::say(self, text, emotion)
+    }
+    fn warm(&mut self) -> Result<()> {
+        voice::Voice::warm(self)
     }
     fn stop(&mut self) {
         voice::Voice::stop(self)
@@ -118,6 +125,9 @@ pub struct Pacing {
     pub poll: Duration,
     pub settle: Duration,
     pub longest: Duration,
+    /// How long `speak` waits for another voice (`ambient talk`) to finish
+    /// before the remark is not said.
+    pub speaking_wait: Duration,
 }
 
 impl Default for Pacing {
@@ -126,6 +136,7 @@ impl Default for Pacing {
             poll: Duration::from_millis(500),
             settle: Duration::from_secs(3),
             longest: Duration::from_secs(20),
+            speaking_wait: Duration::from_secs(5),
         }
     }
 }
@@ -344,10 +355,14 @@ impl Watch {
             });
             self.attend("listening");
             log(&dir, json!({"event": "joined", "notice": notice}));
-            let speaker = self
-                .speaker
-                .get_or_insert_with(|| (self.make_speaker)(&cfg));
-            if let Err(e) = speaker.say(&notice, "warm") {
+            let lock = voice::SpeakingLock::path(&self.paths.config_file);
+            let said = voice::SpeakingLock::acquire(&lock, "assistant", self.pacing.speaking_wait)
+                .and_then(|_voice| {
+                    self.speaker
+                        .get_or_insert_with(|| (self.make_speaker)(&cfg))
+                        .say(&notice, "warm")
+                });
+            if let Err(e) = said {
                 // The menu bar's notice still stands, but a spoken notice is
                 // the one everyone in the room hears: without it, no watching.
                 log(
@@ -502,6 +517,22 @@ impl Watch {
         if let Err(hold) = m.gate.may_speak(Instant::now()) {
             return Err(format!("Not said: {hold}. Keep listening."));
         }
+        // `ambient talk` or another watch may be speaking; talking over it
+        // would garble both, so a reply that cannot get the voice soon is
+        // not said rather than counted.
+        let lock = voice::SpeakingLock::path(&self.paths.config_file);
+        let _voice = voice::SpeakingLock::acquire(&lock, "assistant", self.pacing.speaking_wait)
+            .map_err(|e| format!("Not said: {e:#}. Keep listening."))?;
+        // The voice it waited for may have been another watch's remark, which
+        // starts the cooldown again.
+        m.catch_up();
+        if let Err(hold) = m.gate.may_speak(Instant::now()) {
+            return Err(format!("Not said: {hold}. Keep listening."));
+        }
+        // Logged before the voice starts, so another watch on this meeting
+        // is held from the first word, and a remark cut off by a crash still
+        // counts.
+        log(&m.dir, json!({"event": "speaking", "text": text}));
         self.attend("speaking");
         let started = Instant::now();
         let spoken = self
@@ -671,22 +702,33 @@ fn mentions(text: &str, name: &str) -> bool {
 }
 
 /// How often the assistant has already spoken in the meeting at `dir`, and
-/// when it last did, from its `assistant.jsonl`. A failed voice counts, as it
+/// when it last did, from its `assistant.jsonl`. An utterance counts from its
+/// `speaking` event, so one still being said holds every watch; its `spoke`
+/// or voice `error` then only moves the time on. A failed voice counts, as it
 /// does in `speak`, so the limits hold across watches and processes.
 fn spoken_before(dir: &Path) -> (u32, Option<Instant>) {
     let text = std::fs::read_to_string(dir.join("assistant.jsonl")).unwrap_or_default();
     let mut spoken = 0;
+    // `speaking` events not yet ended by a `spoke` or voice `error`. A log
+    // written before `speaking` existed has none, so each end counts.
+    let mut started = 0u32;
     let mut last: Option<chrono::DateTime<chrono::FixedOffset>> = None;
     for event in text
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
     {
-        let counts =
+        let ended =
             event["event"] == "spoke" || (event["event"] == "error" && event["stage"] == "voice");
-        if !counts {
+        if event["event"] == "speaking" {
+            started += 1;
+            spoken += 1;
+        } else if ended && started > 0 {
+            started -= 1;
+        } else if ended {
+            spoken += 1;
+        } else {
             continue;
         }
-        spoken += 1;
         if let Some(at) = event["at"]
             .as_str()
             .and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok())

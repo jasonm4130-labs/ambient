@@ -60,6 +60,17 @@ rest. Long names and tags truncate within the fixed row. Text and tag filters
 reset the scroll position; arrow keys move selection and focus across virtual
 rows. The live card sits above the scrolling list.
 
+The live card is never empty. Idle, it offers **Record** (⌘R), names the
+microphone a recording would use, and says when the saved device is unplugged,
+since capture then falls back to the system default. Rust sends no event for a
+device change, so the window re-reads `config.get` on focus, on becoming
+visible and on each phase edge. When `apps` is empty it
+says no call apps are watched and links to Settings, because an empty list
+never arms (ADR 0009). Armed, it asks "Record this call?". Recording, it shows a
+red dot, the clock and the live session's name, which opens its live
+transcript. A recording that starts selects its session once, on the phase
+edge, so choosing another session mid-recording sticks.
+
 ## Appearance and shortcuts
 
 The page uses system fonts, the neutral theme, a 0.5 rem radius, 13 px body
