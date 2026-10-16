@@ -22,6 +22,46 @@ v3-int8, synthesised speech via `say`.
 Peak memory on the 127 s file is flat at the 30 s-chunk level rather than the
 ~3.7 GB an unchunked 120 s run needed, which is the chunking working.
 
+## Memory gate
+
+Measured 2026-10-08 on the M5 Max with `scripts/memory --budget 99999`, which
+runs `src/bin/memrun.rs` under `/usr/bin/time -l`: AMI TS3003a Mix-Headset, all
+1505.6 s, resampled to 48 kHz and streamed in 200 ms drains into
+`LiveTranscriber` on both tracks at 15× realtime, then Stop and
+`session::transcribe_session`, with finalize in-process. These runs predate
+disabling prepacking on the Parakeet sessions (#103) and streaming
+`live::repair_from_native` (#100), both now on main.
+
+| Run | Peak footprint | Peak RSS | Wall |
+| ---: | ---: | ---: | ---: |
+| 1 | 2204 MiB | 2570 MiB | 180 s |
+| 2 | 2012 MiB | 2359 MiB | 307 s |
+
+Run 2 shared the machine with another replay, which is the wall-time
+difference; the footprint spread is the run-to-run noise the budget has to
+clear. A third run against `--budget 1434`, also from before #100 and #103
+landed, failed with `ERROR peak footprint 2144 MiB is over the 1434 MiB budget`.
+
+The same replay on main after #100 and #103 landed, before #107 moved the
+app's finalize into a child process:
+
+| Run | Peak footprint | Peak RSS | Wall |
+| ---: | ---: | ---: | ---: |
+| 1 | 859 MiB | 1312 MiB | 525 s |
+| 2 | 1116 MiB | 1471 MiB | 418 s |
+
+Run 2 ran under heavy load from other work (load average 12 to 27), so the
+257 MiB spread may be wider than on a quiet machine. `scripts/memory` fails
+above 1320 MiB, about 200 MiB over the higher run (`--budget` or
+`AMBIENT_MEMORY_BUDGET_MIB` overrides it). That is already under the 1434 MiB
+(1.4 GiB) target. Lower the default to a fresh
+measurement on current main, never raise it to make a change pass. The menu
+bar app now finalizes in a child process (#107; see
+[Idle memory after finalize](#idle-memory-after-finalize-in-process-and-in-a-child)),
+but the replay still finalizes in process: the gate measures one process that
+records and then finalizes. It does not measure the peak of the app's finalize
+child on its own.
+
 ## Phase 0: provider comparison, CPU against CoreML
 
 Parakeet TDT 0.6b encoder, 60 s of audio, via
@@ -171,11 +211,17 @@ still builds without them. A machine missing either is told so on the first
 line and gets the WER set only — the DER harness then reports the missing
 manifest and names this script.
 
-| Meeting | Seconds | Reference turns |
-| --- | ---: | ---: |
-| ES2004a | 300 | 41 |
-| IS1009a | 300 | 47 |
-| TS3003a | 300 | 36 |
+| Meeting | Seconds | Reference turns | Full seconds | Full turns |
+| --- | ---: | ---: | ---: | ---: |
+| ES2004a | 300 | 41 | 1049.35 | 260 |
+| IS1009a | 300 | 47 | 838.83 | 195 |
+| TS3003a | 300 | 36 | 1505.64 | 242 |
+
+The same run writes `~/.cache/ambient/fixtures/der-full/manifest.json`, which
+names the cached recordings and their uncut references directly — nothing is
+decoded or cut, and the digests above already vouch for both. Five minutes is
+too short to show what clustering does to a real meeting: see
+[DER on whole meetings](#der-on-whole-meetings).
 
 ## Word error rate on the fixture
 
@@ -268,83 +314,9 @@ first; the table says which way it should then go.
 [--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
 `ambient record` runs for a finished session — the model resolution of
 `session::diarize_session`, the same pyannote segmentation and WeSpeaker
-embedding, `Diarizer::diarize` at the shipped 0.5 threshold — so these are the
-numbers a user gets. Scored at the conventional 0.25 s collar; `--collar 0`
-scores every frame instead.
-
-| Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER | Run |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| ES2004a | 300.00 | 3 | 6 | 9.65 s | 4.49 s | 2.61 s | 0.1279 | 1.90 s |
-| IS1009a | 300.00 | 4 | 7 | 4.80 s | 8.21 s | 17.23 s | 0.2058 | 2.21 s |
-| TS3003a | 300.00 | 4 | 6 | 15.69 s | 2.27 s | 7.08 s | 0.1116 | 2.67 s |
-| **total** | 900.00 | 11 | 19 | 30.14 s | 14.97 s | 26.92 s | **0.1434** | 6.77 s |
-
-The total is computed over the summed error seconds rather than averaged over
-the rows, so a meeting with less speech in it cannot outvote a talkative one.
-Speaker counts sum rather than dedupe: speaker 0 of one meeting is not speaker
-0 of the next.
-
-Every meeting over-clusters: 19 hypothesis speakers against 11 in the
-reference, and IS1009a pays for it with 17.23 s of confusion and a DER nearly
-double the other two. Missed speech is still the largest component at 30.14 s
-across the three, ahead of confusion at 26.92 s, so the shipped threshold is
-not the only thing between this fixture and a lower number. What the threshold
-alone can reach is the next task's sweep, scored on this same harness.
-
-`--json` writes the same rows, the total among them with
-`speaker` reading `total`.
-
-## The two shipped models on the same fixture
-
-Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the
-only difference — on 2026-09-05, this machine. Three runs of each, interleaved
-so both models see the same machine load; the table is each model's median run
-by total decode.
-
-| Model | Speaker | Seconds | Ref words | S | I | D | WER | Decode | Realtime |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| v3 int8 | 1089 | 302.11 | 721 | 3 | 0 | 0 | 0.0042 | 7.73 s | 39x |
-| v3 int8 | 1188 | 522.73 | 1296 | 29 | 2 | 4 | 0.0270 | 12.69 s | 41x |
-| v3 int8 | 121 | 88.89 | 135 | 7 | 1 | 1 | 0.0667 | 2.16 s | 41x |
-| **v3 int8** | **total** | 913.74 | 2152 | 39 | 3 | 5 | **0.0218** | **22.58 s** | **40x** |
-| v2 fp16 | 1089 | 302.11 | 721 | 1 | 0 | 0 | 0.0014 | 6.50 s | 46x |
-| v2 fp16 | 1188 | 522.73 | 1296 | 26 | 1 | 1 | 0.0216 | 14.84 s | 35x |
-| v2 fp16 | 121 | 88.89 | 135 | 4 | 1 | 1 | 0.0444 | 3.50 s | 25x |
-| **v2 fp16** | **total** | 913.74 | 2152 | 31 | 2 | 2 | **0.0163** | **24.84 s** | **37x** |
-
-The two columns are not equally trustworthy, and the runs say which is which.
-Every run of a model returned the same counts to the last substitution — v3 at
-39/3/5 and v2 at 31/2/2, v3's reproducing `quality/wer.json` exactly — so the
-accuracy gap is a property of the models: 0.0163 against 0.0218, half a point
-of word error rate, and v2 fp16 wins on each speaker individually rather than
-on one fixture carrying it.
-
-Decode seconds are the opposite. Across the three runs the total moved between
-21.59 s and 27.44 s for v3 and between 20.80 s and 26.15 s for v2 — ranges that
-overlap for most of their length, on a machine with other work on it. The
-19.77 s recorded for v3 in the section above is a further run of the same
-binary on the same fixture, and it sits below all three here. So this fixture
-on this machine does not separate the two models on speed at all, and any
-decode figure quoted from a single run, including the ones in the table above,
-is worth roughly ±3 s. That is why `scripts/quality` gates the counts and not
-the timings.
-
-Accuracy and speed are not the whole decision, and here only accuracy is
-measured well. The Phase 0 table above puts v2 fp16 at 3745 MB peak against v3
-int8's 2594 MB for the same 60 s of audio, and the 16 GB target is still
-[unmeasured](porting.md). The default stays v3 int8 — `session::model_paths`
-with no `--model` — because switching spends 1.1 GB of headroom on a machine
-nobody has run this on to buy half a point of word error rate. Measure the port
-first; the table says which way it should then go.
-
-## Diarization error rate on the fixture
-
-`cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
-[--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
-`ambient record` runs for a finished session — the model resolution of
-`session::diarize_session`, the same pyannote segmentation and WeSpeaker
-embedding, `Diarizer::diarize` at the shipped 0.5 threshold — so these are the
-numbers a user gets. Scored at the conventional 0.25 s collar; `--collar 0`
+embedding, `Diarizer::diarize` at the shipped 0.5 threshold, before the
+small-cluster fold in [DER on whole meetings](#der-on-whole-meetings) existed —
+so these were the numbers a user got then. Scored at the conventional 0.25 s collar; `--collar 0`
 scores every frame instead.
 
 | Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER | Run |
@@ -448,6 +420,109 @@ three speakers 10.25 s between them. Calling the whole meeting one person is
 almost right there and would be badly wrong anywhere else. IS1009a is the
 honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
 meeting with four real ones — and it is not enough on its own.
+
+## DER on whole meetings
+
+`cargo run --release --bin der -- --manifest
+~/.cache/ambient/fixtures/der-full/manifest.json --json <tmp>`, on 2026-10-08,
+M5 Max: the same three meetings uncut, 3393.83 s in all, at the same 0.25 s
+collar. `scripts/quality` now gates this set against `quality/der-full.json`
+beside the clips.
+
+The 300 s clips hid the real failure. At 0.5 with clustering alone, the whole
+meetings, each with four real speakers, came out at 36, 28 and 31:
+
+| Meeting | Seconds | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 1049.35 | 4 | 36 | 74.92 s | 13.27 s | 30.89 s | 0.1794 |
+| IS1009a | 838.83 | 4 | 28 | 45.40 s | 13.23 s | 49.30 s | 0.2101 |
+| TS3003a | 1505.64 | 4 | 31 | 60.91 s | 24.46 s | 33.81 s | 0.1395 |
+| **total** | 3393.83 | 12 | 95 | 181.23 s | 50.96 s | 114.00 s | **0.1704** |
+
+`AMBIENT_DEBUG_DIAR=1` prints how much speech each cluster ends up holding, and
+it shows the shape: four clusters of 77-800 s, then a tail of thirty-odd
+holding 0-9 s each. That tail is one voice drifting — distance from the
+microphone, laughter, crosstalk — far enough to clear the threshold for a few
+seconds. Raising the threshold cuts the tail, but by 0.7 it also starts
+merging real people on the clips (IS1009a 4 → 3).
+
+So `Diarizer::diarize` now folds a cluster into a bigger one when two things
+hold: it owns less than `MIN_CLUSTER` of speech, and the cosine distance
+between its mean embedding and the nearest cluster that owns more is at most
+`FOLD_DISTANCE`. Neither test works alone.
+
+- **Time alone** erases brief real speakers. ES2004a's clip has participants
+  with 9 s and 17 s of reference speech; a 10 s floor with no distance test
+  folds that clip into one speaker and raises its DER by 0.0425, past the
+  gate's 0.01. A floor set as a share of the track (1.5% at threshold 0.6)
+  did the same to TS3003a's clip, 4 reference speakers to 1, and dropped one of
+  TS3003a's four on the whole meeting.
+- **Distance** is what tells the two apart. At 0.6 with a 10 s floor, the small
+  clusters on ES2004a's clip, which are its real quiet participants, sit
+  0.78-0.94 from the nearest big cluster; the excursions on the whole
+  meetings mostly sit 0.43-0.78. A drifted voice is still that voice.
+
+Swept at thresholds 0.50-0.65, floors 5-30 s and fold distances 0.65-0.90.
+Speaker counts are ES2004a/IS1009a/TS3003a; *spk err* is |hyp − ref| summed
+over the three; *clip Δ* is the worst clip meeting against the clip baseline
+before this change (0.5, no fold: 6/7/6 speakers, spk err 8, DER 0.1434), where
+the gate allows +0.01. Rows at 0.50 unless marked:
+
+| Floor | Distance | Full spk | Full DER | Full spk err | Clip spk | Clip DER | Clip spk err | Clip Δ |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| none | — | 36/28/31 | 0.1704 | 83 | 6/7/6 | 0.1434 | 8 | +0.0000 |
+| 5 s | 0.80 | 4/10/7 | 0.1474 | 9 | 3/5/3 | 0.1323 | 2 | −0.0072 |
+| 8 s | 0.80 | 4/7/4 | 0.1419 | 3 | 4/5/3 | 0.1341 | 3 | −0.0050 |
+| 10 s | 0.65 | 7/7/7 | 0.1345 | 9 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.70 | 5/6/7 | 0.1343 | 6 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.75 | 4/6/6 | 0.1337 | 4 | 6/4/2 | 0.1160 | 5 | +0.0000 |
+| 10 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s | 0.85 | 4/5/3 | 0.1356 | 2 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s | 0.90 | 4/5/3 | 0.1356 | 2 | 2/4/2 | 0.1182 | 3 | +0.0086 |
+| **12 s** | **0.80** | **4/5/4** | **0.1336** | **1** | **4/4/2** | **0.1147** | **3** | **−0.0050** |
+| 15 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 20 s | 0.80 | 4/5/4 | 0.1336 | 1 | 4/3/2 | 0.1393 | 4 | +0.0385 |
+| 30 s | 0.80 | 4/4/4 | 0.1507 | 0 | 4/3/2 | 0.1521 | 4 | +0.0824 |
+| 10 s @ 0.55 | 0.80 | 4/5/4 | 0.1335 | 1 | 4/4/2 | 0.1147 | 3 | −0.0050 |
+| 10 s @ 0.60 | 0.80 | 4/5/3 | 0.1362 | 2 | 3/4/2 | 0.1131 | 2 | −0.0112 |
+| 10 s @ 0.65 | 0.80 | 4/5/4 | 0.1323 | 1 | 3/3/2 | 0.1377 | 3 | +0.0385 |
+
+The shipped rule is a 12 s floor and a 0.8 fold distance, with the threshold
+left at 0.5. Floors of 10, 12 and 15 s give identical rows, so 12 s sits
+mid-plateau. Distance is the more sensitive knob: 0.75 leaves 4/6/6 on the
+meetings and 0.85 drops one of TS3003a's four, so 0.8 is the best point
+rather than a flat one, though both neighbours still pass the gate. The
+threshold stays where it was because 0.55 moves the full DER by 0.0001
+and 0.6 costs a speaker on TS3003a, so nothing here argues for a new default,
+and leaving it means a config file saved with 0.5 gets exactly these numbers.
+The lowest full DER in the sweep, 0.1323 at 0.65, merges two of IS1009a's
+clip speakers and fails the gate by 0.0385.
+
+At the shipped rule, every clip meeting improves or holds and the clip speaker
+error falls from 8 to 3:
+
+| Meeting | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 3 | 4 | 9.65 s | 4.49 s | 1.96 s | 0.1230 |
+| IS1009a | 4 | 4 | 4.80 s | 8.21 s | 10.54 s | 0.1602 |
+| TS3003a | 4 | 2 | 15.69 s | 2.27 s | 0.00 s | 0.0800 |
+| **total** | 11 | 10 | 30.14 s | 14.97 s | 12.50 s | **0.1147** |
+
+and on the whole meetings:
+
+| Meeting | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ES2004a | 4 | 4 | 74.92 s | 13.27 s | 6.93 s | 0.1433 |
+| IS1009a | 4 | 5 | 45.40 s | 13.23 s | 20.17 s | 0.1534 |
+| TS3003a | 4 | 4 | 60.91 s | 24.46 s | 12.21 s | 0.1142 |
+| **total** | 12 | 13 | 181.23 s | 50.96 s | 39.31 s | **0.1336** |
+
+TS3003a's clip at two speakers is the near-monologue described under
+[DER by minimum embedding length](#der-by-minimum-embedding-length): its other
+two reference speakers hold 0.3 s and 2.0 s, too little to embed at all, and
+the clip it scored before this change found six. Missed speech and false
+alarm do not move anywhere in this section: folding relabels spans, so every
+gain is confusion, 114.00 s → 39.31 s on the meetings.
 
 ## Live transcription: cost per block
 
@@ -695,6 +770,89 @@ which is the RSS half of the keep rule doing nothing useful when the WER half
 already fails. **The default holds.** `src/session.rs`'s shipped chunk
 length stays at 30 and `quality/wer.json` does not change with it, because no
 shipped constant moved.
+
+## Weight prepacking
+
+`cargo build --release` then `/usr/bin/time -l ./target/release/wer --json
+<path>` and the same with `--manifest
+~/.cache/ambient/fixtures/calls/manifest.json`, on 2026-10-08, once on the
+parent commit and once with `session.disable_prepacking=1` on the three
+Parakeet sessions (`with_prepacking(false)` in `src/asr.rs`). ONNX Runtime's
+prepacking copies each weight matrix into a kernel-friendly layout and keeps
+both; disabling it keeps one. Peak RSS is `maximum resident set size` from
+`/usr/bin/time -l`, divided by 1,048,576. Both runs reproduce
+`quality/wer.json` and `quality/calls.json` exactly, so neither baseline
+changes.
+
+| Fixture | Prepacking | S | I | D | WER | Decode | Realtime | Peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| clean | on | 39 | 3 | 5 | 0.0218 | 23.06 s | 39.6× | 2301 MB |
+| clean | off | 39 | 3 | 5 | 0.0218 | 41.63 s | 21.9× | 1337 MB |
+| calls | on | 134 | 83 | 12 | 0.1000 | 29.12 s | 30.9× | 2118 MB |
+| calls | off | 134 | 83 | 12 | 0.1000 | 31.09 s | 28.9× | 1114 MB |
+
+Peak RSS falls by ~1 GB on both fixtures with the transcript unchanged. The
+decode column is not a clean comparison: a repeat of the prepacking-on clean
+run on the same busy machine came in at 37.86 s (24.1×), so the decode cost
+of disabling prepacking is somewhere between ~7% (calls) and the clean row's
+spread, and still well above realtime either way.
+
+## Talk: release to text, and the worker's footprint
+
+M5 Max, 128 GB, on 2026-10-09: `ambient talk --wav q.wav --dry-run`, release
+build, the installed app's models, against a stand-in `fm-inbox.sh`. `q.wav`
+is a 2.8 s macOS `say` rendering of "What is the status of the ambient talk
+pull request?", transcribed word for word. "Release to text" runs from the
+audio being in hand to the transcript; the process is new for every turn, so
+it includes loading the VAD and Parakeet. Peak footprint and resident size are
+`/usr/bin/time -l`'s, for the whole worker process.
+
+| Run | Release to text | Of which model load | Peak footprint | Max RSS |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 640 ms | 513 ms | 906 MiB | 924 MiB |
+| 2 | 603 ms | 473 ms | 904 MiB | 921 MiB |
+| 3 | 714 ms | 586 ms | 904 MiB | 922 MiB |
+
+Loading the models is most of the wait; the VAD and decode of 2.3 s of speech
+take about 130 ms. A slip of the key (`say "uh"`, no speech found) exits in
+20 ms at 12 MiB of footprint, because the recogniser is never loaded. The
+voice helper is its own process and is not in these figures: with the v1-gravel
+Qwen3-TTS voice and `--no-play`, the reply's first audio came 84 ms after the
+request, once the helper had warmed while the reply was awaited.
+
+## Idle memory after finalize: in process and in a child
+
+M5 Max, 128 GB, macOS 26.6.2, on 2026-10-08, shipped model settings. A scratch
+replay harness streamed AMI `TS3003a` (1505.6 s, four speakers, resampled to
+48 kHz) from disk in 200 ms drains into `live::LiveTranscriber` on both tracks
+at 15× realtime, wrote the session's audio as `capture_into` does, then
+finalized it either in process (`session::transcribe_session`) or through
+`finalize::run`, the menu bar queue's path. The figures are the harness
+process's own `proc_pid_rusage` physical footprint and resident size, in MiB,
+3 s after each step. Every completed run wrote the same 650 lines and 638 speaker
+labels. Other work held the machine's load average between 13 and 50, so the
+wall times are noisy; the default-QoS pair ran side by side under the same
+load and is the fair timing comparison.
+
+| Run | After the live pass | After finalize | Finalize wall |
+| --- | ---: | ---: | ---: |
+| In process, default QoS | 32 fp / 388 rss | **450 fp / 1078 rss** | 48.2 s |
+| Child, default QoS | 32 fp / 388 rss | **32 fp / 388 rss** | 49.6 s |
+
+The live pass already gives its memory back when it stops: the process falls
+from ~1.45 GiB of footprint while recording to ~30 MiB. What stayed was
+finalize's: 430–690 MiB of footprint and over 1 GiB resident in process across
+five in-process runs, and nothing in the child across five child runs. The
+child peaked at 1.97–2.15 GiB sampled RSS of its own and returned all of it on
+exit.
+
+Wall time under the queue's background QoS is not comparable from these runs.
+A background-QoS thread that another thread `pthread_join`s inherits the
+joiner's QoS, so an in-process harness that joins its worker measured default
+QoS (80–98 s here); the same run polling instead of joining was still
+transcribing after 420 s, as was the child (473–2330 s). The app's queue
+thread is never joined, so it has always run at true background QoS, and on a
+machine this loaded that starves finalize in either arrangement.
 
 ---
 

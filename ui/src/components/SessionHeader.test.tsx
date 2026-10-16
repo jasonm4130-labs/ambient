@@ -67,17 +67,77 @@ describe("SessionHeader", () => {
 
     const name = await screen.findByRole("textbox", { name: "Session name" });
     await userEvent.clear(name);
-    await userEvent.type(name, "Standup{Enter}");
+    await userEvent.type(name, "Standup v2{Enter}");
 
     await waitFor(() => {
       const call = fake.calls.filter((c) => c.method === "session.update").at(-1);
-      expect(call?.params).toEqual({ session: "a", name: "Standup" });
+      expect(call?.params).toEqual({ session: "a", name: "Standup v2" });
     });
 
     // The refetch triggered by `onChanged` returns a *different* name than
     // what was typed — only a component that re-renders from the reply
     // shows it.
     await screen.findByDisplayValue("Standup (renamed)");
+  });
+
+  it("renames on blur, and Enter followed by blur sends one update", async () => {
+    const fake = new FakeBridge();
+    fake.answer("sessions", [summary()]);
+    fake.answer("session.update", { id: "a" });
+
+    renderHeader(fake);
+
+    const name = await screen.findByRole("textbox", { name: "Session name" });
+    await userEvent.clear(name);
+    await userEvent.type(name, "Retro");
+    await userEvent.tab();
+
+    await waitFor(() => {
+      const call = fake.calls.filter((c) => c.method === "session.update").at(-1);
+      expect(call?.params).toEqual({ session: "a", name: "Retro" });
+    });
+
+    await userEvent.clear(name);
+    await userEvent.type(name, "Planning{Enter}");
+    await userEvent.tab();
+    await waitFor(() => {
+      expect(fake.calls.filter((c) => c.method === "session.update")).toHaveLength(2);
+    });
+  });
+
+  it("a cleared name reverts on blur and on Enter without calling session.update", async () => {
+    const fake = new FakeBridge();
+    fake.answer("sessions", [summary()]);
+
+    renderHeader(fake);
+
+    const name = await screen.findByRole("textbox", { name: "Session name" });
+    await userEvent.clear(name);
+    await userEvent.tab();
+    await screen.findByDisplayValue("Standup");
+
+    await userEvent.clear(name);
+    await userEvent.type(name, "   {Enter}");
+    await screen.findByDisplayValue("Standup");
+
+    expect(fake.calls.some((c) => c.method === "session.update")).toBe(false);
+  });
+
+  it("the … menu closes on Escape and on an outside click", async () => {
+    const fake = new FakeBridge();
+    fake.answer("sessions", [summary()]);
+
+    renderHeader(fake);
+
+    await userEvent.click(await screen.findByTestId("session-header-menu"));
+    expect(screen.getByTestId("session-header-reveal")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("session-header-reveal")).toBeNull();
+
+    await userEvent.click(screen.getByTestId("session-header-menu"));
+    expect(screen.getByTestId("session-header-reveal")).toBeInTheDocument();
+    await userEvent.click(document.body);
+    expect(screen.queryByTestId("session-header-reveal")).toBeNull();
   });
 
   it("cancels an edit on Escape without calling session.update", async () => {

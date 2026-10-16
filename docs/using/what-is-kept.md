@@ -11,6 +11,23 @@ tool is allowed to keep, and for how long. Consent decides whether a recording
 starts at all, retention decides how long the audio outlives the transcript,
 and the roster decides what is stored about the people in it.
 
+## Where the data goes
+
+Sessions are ordinary files in `~/Documents/Ambient` unless you choose another
+folder. Ambient does not encrypt them separately from your Mac's storage.
+Cloud folder sync and backups can copy them elsewhere. Exports and MCP clients
+can also share transcript text beyond this Mac; see [MCP access](mcp.md#access-and-privacy).
+The [live assistant](assistant.md#what-leaves-this-mac), when you turn it on,
+hands the transcript to the agent you run in Claude Code, which sends it to
+that agent's model, and keeps a log of what it said in the session's
+`assistant.jsonl`.
+
+The recording prompt asks you, not the other participants. Obtain appropriate
+permission before recording. Ambient does not join the call or announce the
+recording to the people in it.
+
+## Recording states
+
 The menu bar is the consent surface — the window can be closed, and answering
 about a call never needs it open — and it is a state machine:
 
@@ -23,7 +40,7 @@ stateDiagram-v2
     Armed --> Idle: the app it armed for goes quiet
     Armed --> Idle: Not this one, remembered until that app is quiet
     Armed --> Recording: Start Recording, from the menu
-    Idle --> Recording: Start Recording, from the menu
+    Idle --> Recording: Start Recording, from the menu or the window
     Idle --> Recording: a watched app starts audio<br/>and ask_before_recording is off
     Recording --> Stopping: Stop
     Recording --> Recording: Stop failed
@@ -46,11 +63,10 @@ phase at `Recording`, because that is the honest state — the worker really is
 still recording, so Stop stays enabled and Start stays disabled rather than the
 app advancing past a capture it never stopped. `Failed` is watched exactly
 like `Idle`: a failure nobody has dismissed does not stop the next call being
-noticed. And **transcription is not a state at all**. `Stopping` lasts the
-seconds it takes to write the audio; the transcript is then written by a
-queue, one session at a time, while the app sits at `Idle` — so the next call
-can be recorded while the last is still being transcribed, which is what
-back-to-back meetings need. The menu shows what the queue is doing and how
+noticed. Transcription runs beside these recording states: completed turns
+appear during capture, and the queue finishes remaining text and speaker labels
+after Stop. A new recording can start while the previous session finishes.
+The menu shows what the queue is doing and how
 many sessions are waiting, and the icon is an hourglass until it is empty
 ([ADR-0015](../adr/0015-capture-and-transcription-are-separate.md)).
 
@@ -73,8 +89,8 @@ The check runs on the existing refresh timer, every eighth tick — roughly ever
 four seconds. Enumerating audio processes twice a second would be waste for
 something that changes when a human joins a call.
 
-There is deliberately **no notification**. The bundle carries no entitlements,
-and the menu bar is already the consent surface: an unmistakable state you can
+There is no system notification for the armed state. The menu bar is the
+recording control: an unmistakable state you can
 see without clicking. A real `UNUserNotificationCenter` prompt is additive and
 should be scoped on its own rather than smuggled in here.
 
@@ -89,6 +105,11 @@ ever removes audio. The sweep runs at the end of every
 recording — the app is running whenever a recording happens, so no launchd
 agent is needed — and it never touches `raw.jsonl`, `edits.jsonl`,
 `session.json` or `transcript.md`.
+
+Live transcription temporarily keeps an additional native-rate PCM copy of
+each track under `audio/`. Those working copies are removed after the finished
+transcript is written. A small `live-asr.json` checkpoint remains so retries
+preserve lines already read by the window or an MCP client.
 
 Two guards matter. A session with no `transcript.md` is never swept: it is
 still being written, and its audio is the only copy of what was said. That guard
@@ -112,11 +133,9 @@ carrying the first thing that voice said, and a dropdown of roster names puts a
 name on every line of that speaker. It is any session and not only the most
 recent one: the naming strip follows the selection.
 
-It stores **no voiceprints**, so it never guesses. An embedding kept to
-recognise someone later is biometric data under Article 9, a different
-compliance regime from a text file of names — and a confidently misattributed
-turn is a lie in your notes, which is worse than an honest `call-2`. The roster
-removes the retyping, not the choosing.
+The roster stores names, not voiceprints. Ambient does not use it to recognize
+a person across sessions. You choose which name belongs to a speaker; check the
+result before sharing the transcript.
 
 Naming from the window writes the same edit `ambient name` does, so it is
 recorded as the user's and survives a re-diarize.

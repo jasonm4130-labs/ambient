@@ -1,6 +1,7 @@
 // Root /llms.txt — sectioned index for AI agents.
 import { getIndexedTopLevel } from "@cloudflare/nimbus-docs";
 import { config } from "virtual:nimbus/config";
+import { withBase } from "../lib/urls";
 
 export const prerender = true;
 
@@ -12,7 +13,7 @@ export async function GET() {
     "",
     config.description ?? "Documentation index for AI agents.",
     "",
-    `Full corpus (all pages, one document): ${new URL("/llms-full.txt", config.site).href}`,
+    `Full corpus (all pages, one document): ${new URL(withBase("/llms-full.txt"), config.site).href}`,
     "",
     "## Pages",
     "",
@@ -26,7 +27,7 @@ export async function GET() {
     const description = leaf.description ? ` — ${leaf.description}` : "";
     rows.push({
       key: leaf.url,
-      line: `- [${leaf.title}](${new URL(leaf.markdownUrl, config.site).href})${description}`,
+      line: `- [${leaf.title}](${new URL(withBase(leaf.markdownUrl), config.site).href})${description}`,
     });
   }
 
@@ -35,7 +36,7 @@ export async function GET() {
     if (group.kind === "version") continue;
     rows.push({
       key: `/${group.slug}`,
-      line: `- [${group.label}](${new URL(`/${group.slug}/llms.txt`, config.site).href})`,
+      line: `- [${group.label}](${new URL(withBase(`/${group.slug}/llms.txt`), config.site).href})`,
     });
   }
 

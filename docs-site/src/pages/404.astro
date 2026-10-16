@@ -2,6 +2,7 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import Header from "../components/Header.astro";
 import { config } from "virtual:nimbus/config";
+import { withBase } from "../lib/urls";
 ---
 
 <BaseLayout title={`Page not found · ${config.title}`} description="The page you're looking for doesn't exist.">
@@ -19,7 +20,7 @@ import { config } from "virtual:nimbus/config";
         The page you're looking for doesn't exist or has moved.
       </p>
       <a
-        href="/"
+        href={withBase("/")}
         class="mt-8 inline-block rounded-lg border border-border px-4 py-2 font-medium text-foreground no-underline transition-colors hover:border-border-strong"
       >
         Back home

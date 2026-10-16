@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Check the actual payload before signing or resuming a release. No execution
+# of the app, credential access, notarization or publication happens here.
+set -euo pipefail
+repo_root=$(cd "$(dirname "$0")/.." && pwd -P)
+app="${1:?usage: scripts/check-bundle <Ambient.app> [--models]}"
+resources="$app/Contents/Resources"
+test -x "$app/Contents/MacOS/ambient"
+for notice in LICENSE THIRD_PARTY_NOTICES.md; do
+  cmp "$repo_root/$notice" "$resources/$notice" || {
+    echo "bundle $notice differs from reviewed source; rebuild before releasing" >&2
+    exit 1
+  }
+done
+diff -rq "$repo_root/licenses" "$resources/licenses"
+"$repo_root/scripts/check-build-paths" "$app/Contents/MacOS/ambient"
+if [ "${2:-}" = --models ]; then
+  (cd "$resources" && shasum -a 256 -c licenses/model-sha256.txt)
+  # Exact inventory also excludes upstream samples and stray model downloads.
+  actual=$(cd "$resources" && find models -type f | LC_ALL=C sort)
+  expected=$(sed -n 's/^[0-9a-f]*  //p' "$repo_root/licenses/model-sha256.txt" | LC_ALL=C sort)
+  [ "$actual" = "$expected" ] || {
+    echo "bundle model inventory differs from the reviewed seven runtime files" >&2
+    exit 1
+  }
+fi
+echo "bundle payload: verified"
