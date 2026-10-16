@@ -35,7 +35,7 @@ Reply:
 ```json
 [
   {
-    "id": "2026-09-05-1200",
+    "id": "2026-09-05T1200",
     "name": null,
     "started_at": "2026-09-05T12:00:00+01:00",
     "duration_s": 612.5,
@@ -59,7 +59,7 @@ The lines of one session, including one being recorded now.
 Request:
 
 ```json
-{"session": "2026-09-05-1200", "since": 4, "verbatim": false}
+{"session": "2026-09-05T1200", "since": 4, "verbatim": false}
 ```
 
 `since` and `verbatim` are optional; `since` defaults to `0` and `verbatim` to
@@ -69,7 +69,7 @@ Reply:
 
 ```json
 {
-  "session": "2026-09-05-1200",
+  "session": "2026-09-05T1200",
   "state": "done",
   "next": 6,
   "lines": [{"track": "room", "start_ms": 5000, "end_ms": 6000, "text": "…"}]
@@ -94,7 +94,7 @@ Reply:
 ```json
 [
   {
-    "session": "2026-09-05-1200",
+    "session": "2026-09-05T1200",
     "index": 3,
     "track": "room",
     "start_ms": 5000,
@@ -117,7 +117,7 @@ whichever fields are present in the request. Rewrites `session.json` only;
 Request:
 
 ```json
-{"session": "2026-09-05-1200", "name": "Standup", "add_tag": "1:1", "pinned": true}
+{"session": "2026-09-05T1200", "name": "Standup", "add_tag": "1:1", "pinned": true}
 ```
 
 `name`, `notes`, `pinned`, `add_tag` and `remove_tag` are all optional; only
@@ -129,7 +129,7 @@ Reply, the session's full metadata after the change:
 
 ```json
 {
-  "id": "2026-09-05-1200",
+  "id": "2026-09-05T1200",
   "name": "Standup",
   "started_at": "2026-09-05T12:00:00+01:00",
   "ended_at": "2026-09-05T12:10:12+01:00",
@@ -159,13 +159,13 @@ confirm dialog before calling this; the API does not ask again.
 Request:
 
 ```json
-{"session": "2026-09-05-1200"}
+{"session": "2026-09-05T1200"}
 ```
 
 Reply:
 
 ```json
-{"session": "2026-09-05-1200", "deleted": true}
+{"session": "2026-09-05T1200", "deleted": true}
 ```
 
 Refuses a live capture — the session recording now, or either native scratch
@@ -183,7 +183,7 @@ posture as `search`.
 Request:
 
 ```json
-{"session": "2026-09-05-1200", "format": "srt"}
+{"session": "2026-09-05T1200", "format": "srt"}
 ```
 
 `format` is optional and defaults to `"markdown"`; a name it does not
@@ -193,7 +193,7 @@ Reply:
 
 ```json
 {
-  "session": "2026-09-05-1200",
+  "session": "2026-09-05T1200",
   "format": "srt",
   "text": "1\n00:00:05,000 --> 00:00:06,000\nthe budget review is at noon\n"
 }
@@ -230,7 +230,7 @@ Reply:
   "ask_before_recording": true,
   "audio_retention": "7",
   "roster": ["Ana"],
-  "latest_session": "2026-09-05-1200"
+  "latest_session": "2026-09-05T1200"
 }
 ```
 
@@ -314,7 +314,7 @@ Give every line labelled `label` in one session the name `name`. Appends to
 Request:
 
 ```json
-{"session": "2026-09-05-1200", "label": "SPEAKER_00", "name": "Ana"}
+{"session": "2026-09-05T1200", "label": "SPEAKER_00", "name": "Ana"}
 ```
 
 Reply:
@@ -330,7 +330,7 @@ Take back the newest batch of names a person typed for one session.
 Request:
 
 ```json
-{"session": "2026-09-05-1200"}
+{"session": "2026-09-05T1200"}
 ```
 
 Reply:
@@ -347,7 +347,7 @@ that voice said.
 Request:
 
 ```json
-{"session": "2026-09-05-1200"}
+{"session": "2026-09-05T1200"}
 ```
 
 Reply:

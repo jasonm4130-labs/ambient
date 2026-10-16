@@ -13,7 +13,7 @@
 //! GUI wants.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Instant;
@@ -24,8 +24,8 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSApplicationTerminateReply, NSControlStateValueOff, NSControlStateValueOn, NSImage, NSMenu,
+    NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{
     MainThreadMarker, NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString,
@@ -131,6 +131,15 @@ struct Ivars {
     queue_item: RefCell<Option<Retained<NSMenuItem>>>,
     record_call_item: RefCell<Option<Retained<NSMenuItem>>>,
     decline_item: RefCell<Option<Retained<NSMenuItem>>>,
+    /// The live assistant's on/off switch, ticked when it is on.
+    assistant_item: RefCell<Option<Retained<NSMenuItem>>>,
+    /// "AI assistant listening", shown while an agent is watching a meeting
+    /// through `ambient mcp`: the on-screen half of its consent notice.
+    assistant_line: RefCell<Option<Retained<NSMenuItem>>>,
+    /// The assistant setting and heartbeat as last read. Both are files, so
+    /// they are read every fourth tick rather than on every repaint.
+    assistant_on: Cell<bool>,
+    assistant_state: RefCell<Option<String>>,
     /// The refresh timer runs at 2 Hz for the level meter; watching for calls
     /// needs nothing like that rate, so it happens every eighth tick.
     ticks: Cell<u64>,
@@ -295,6 +304,26 @@ define_class!(
             self.present_window(false);
         }
 
+        /// Turn the live assistant on or off. The switch is the setting
+        /// itself: `ambient mcp` reads it on every watching call, so turning
+        /// it off here silences an assistant mid-meeting.
+        #[unsafe(method(toggleAssistant:))]
+        fn toggle_assistant(&self, _sender: Option<&AnyObject>) {
+            let mut cfg = crate::config::Config::load();
+            cfg.assistant.enabled = !cfg.assistant.enabled;
+            match cfg.save() {
+                Ok(()) => {
+                    self.log(&format!(
+                        "live assistant turned {} by the user",
+                        if cfg.assistant.enabled { "on" } else { "off" }
+                    ));
+                    self.ivars().assistant_on.set(cfg.assistant.enabled);
+                }
+                Err(e) => self.fail("could not change the assistant setting", &e),
+            }
+            self.render();
+        }
+
         #[unsafe(method(tick:))]
         fn tick(&self, _sender: Option<&AnyObject>) {
             self.refresh();
@@ -304,19 +333,7 @@ define_class!(
 
 impl Delegate {
     fn log(&self, msg: &str) {
-        eprintln!("{msg}");
-        let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
-        if let Some(parent) = self.ivars().log.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.ivars().log)
-        {
-            use std::io::Write;
-            let _ = f.write_all(line.as_bytes());
-        }
+        append_log(&self.ivars().log, msg);
     }
 
     /// The one place a failure is recorded: the log line, and the words the
@@ -514,6 +531,27 @@ impl Delegate {
                 i.setTitle(&NSString::from_str(&text));
             }
         }
+        if let Some(i) = self.ivars().assistant_item.borrow().as_ref() {
+            i.setState(if self.ivars().assistant_on.get() {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
+        }
+        if let Some(i) = self.ivars().assistant_line.borrow().as_ref() {
+            match self.ivars().assistant_state.borrow().as_deref() {
+                Some(state) => {
+                    let text = if state == "speaking" {
+                        "AI assistant speaking"
+                    } else {
+                        "AI assistant listening — it may speak"
+                    };
+                    i.setTitle(&NSString::from_str(text));
+                    i.setHidden(false);
+                }
+                None => i.setHidden(true),
+            }
+        }
         if let Some(i) = self.ivars().queue_item.borrow().as_ref() {
             match &queue_line {
                 Some(text) => {
@@ -567,6 +605,9 @@ impl Delegate {
         // has been asked to leave.
         if n % 8 == 0 && view.kind.is_watching() && !self.ivars().quitting.get() {
             self.poll_for_calls();
+        }
+        if n % 4 == 0 {
+            self.read_assistant();
         }
 
         // Every tick, through the one renderer: the elapsed line moves while
@@ -656,6 +697,34 @@ impl Delegate {
     }
 }
 
+impl Delegate {
+    /// Refresh the assistant setting and heartbeat the menu shows.
+    fn read_assistant(&self) {
+        let config = crate::config::path();
+        self.ivars()
+            .assistant_on
+            .set(crate::config::Config::load_from(&config).assistant.enabled);
+        *self.ivars().assistant_state.borrow_mut() = crate::assist::listening(&config);
+    }
+}
+
+/// One line to stderr and to the app log at `path`.
+fn append_log(path: &Path, msg: &str) {
+    eprintln!("{msg}");
+    let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
 /// `~/Library/Logs/Ambient/app.log`. Out of the sessions folder on purpose:
 /// `app.log` sorts after every `2…` session id, so any walk that forgets to
 /// filter picks the log up as the newest session — and the sessions folder
@@ -699,15 +768,32 @@ pub fn run() -> anyhow::Result<()> {
     let status_item =
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
 
+    // One decoder lane across this process and the finalize children it
+    // starts, so the live pass and the queue's transcriber stay one worker.
+    crate::live::share_decoder(std::env::temp_dir().join("ambient-decoder.lock"));
+
     let delegate = Delegate::alloc(mtm).set_ivars(Ivars {
         status_item: status_item.clone(),
         phase: PhaseCell::new(Phase::idle()),
         banner: RefCell::new(None),
         quitting: Cell::new(false),
-        // One worker thread for the life of the app. The default model, as
-        // the CLI's `record` uses; there is no flag to pass here.
-        queue: RefCell::new(Queue::spawn(|dir, meter| {
-            crate::session::transcribe_session(dir, None, Some(meter.clone()))
+        // One worker thread for the life of the app, each job a child
+        // process of this same executable, so what finalizing allocates goes
+        // back to the system when the job ends rather than staying resident
+        // in a menu bar app that runs all day. The default model, as the
+        // CLI's `record` uses; there is no flag to pass here.
+        queue: RefCell::new(Queue::spawn(|dir, meter| match std::env::current_exe() {
+            Ok(exe) => crate::finalize::run(crate::finalize::command(&exe, dir), dir, meter),
+            Err(e) => {
+                append_log(
+                    &log_path(),
+                    &format!(
+                        "warning: cannot locate own executable ({e}); finalizing in-process, \
+                         which keeps its memory resident after the job"
+                    ),
+                );
+                crate::session::transcribe_session(dir, None, Some(meter.clone()))
+            }
         })),
         pending_failure: RefCell::new(None),
         // Launched from Finder there is nowhere for stderr to go, so keep our
@@ -720,6 +806,10 @@ pub fn run() -> anyhow::Result<()> {
         queue_item: RefCell::new(None),
         record_call_item: RefCell::new(None),
         decline_item: RefCell::new(None),
+        assistant_item: RefCell::new(None),
+        assistant_line: RefCell::new(None),
+        assistant_on: Cell::new(false),
+        assistant_state: RefCell::new(None),
         ticks: Cell::new(0),
     });
     let delegate: Retained<Delegate> = unsafe { msg_send![super(delegate), init] };
@@ -731,11 +821,21 @@ pub fn run() -> anyhow::Result<()> {
     let stop = item(mtm, "Stop Recording", Some(sel!(stopRecording:)), "s");
     let level = item(mtm, "", None, "");
     let queue_line = item(mtm, "", None, "");
+    let assistant = item(mtm, "Live Assistant", Some(sel!(toggleAssistant:)), "");
+    let assistant_line = item(mtm, "", None, "");
     let settings = item(mtm, "Settings…", Some(sel!(openSettings:)), ",");
     let open = item(mtm, "Open Ambient", Some(sel!(openWindow:)), "0");
     let quit = item(mtm, "Quit Ambient", Some(sel!(terminate:)), "q");
 
-    for i in [&start, &stop, &settings, &open, &record_call, &decline] {
+    for i in [
+        &start,
+        &stop,
+        &settings,
+        &open,
+        &record_call,
+        &decline,
+        &assistant,
+    ] {
         unsafe { i.setTarget(Some(&delegate)) };
     }
     {
@@ -743,6 +843,8 @@ pub fn run() -> anyhow::Result<()> {
         level.setHidden(true);
         queue_line.setEnabled(false);
         queue_line.setHidden(true);
+        assistant_line.setEnabled(false);
+        assistant_line.setHidden(true);
         // Above Start, because when they are showing they are the decision the
         // menu was opened to make.
         record_call.setHidden(true);
@@ -754,6 +856,9 @@ pub fn run() -> anyhow::Result<()> {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&level);
         menu.addItem(&queue_line);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        menu.addItem(&assistant);
+        menu.addItem(&assistant_line);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&open);
         menu.addItem(&settings);
@@ -768,6 +873,9 @@ pub fn run() -> anyhow::Result<()> {
     *delegate.ivars().queue_item.borrow_mut() = Some(queue_line);
     *delegate.ivars().record_call_item.borrow_mut() = Some(record_call);
     *delegate.ivars().decline_item.borrow_mut() = Some(decline);
+    *delegate.ivars().assistant_item.borrow_mut() = Some(assistant);
+    *delegate.ivars().assistant_line.borrow_mut() = Some(assistant_line);
+    delegate.read_assistant();
     // Anything a crash left captured but untranscribed goes straight back on
     // the queue: the split means that state can exist, so the app must be
     // able to finish it, and the audio is already on disk waiting.

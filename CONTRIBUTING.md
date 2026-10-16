@@ -59,6 +59,18 @@ Edit canonical Markdown in `docs/`. Keep its relative links working on both
 GitHub and the built site. [Building these docs](docs/developing/docs.md) explains
 the renderer and link checks.
 
+For voice helper changes, in `voice/`:
+
+```sh
+uv run ruff format --check .
+uv run ruff check .
+uv run pytest
+```
+
+The tests use a fake engine; a change to an engine itself needs a run with the
+real model, as [the live assistant design note](docs/developing/live-assistant.md)
+describes.
+
 For packaging changes, run `node --test scripts/packaging.test.mjs`, then build
 a local bundle and verify its signature, notices and model layout. Do not run
 `release.sh` as a routine check: the normal path

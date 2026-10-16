@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useBridge } from "@/lib/bridge-context";
+import { useDismiss } from "@/lib/dismiss";
 import { ExportMenu } from "./ExportMenu";
 import { sessionState, type SessionSummary } from "./SessionList";
 
@@ -26,9 +27,11 @@ function formatDuration(seconds: number | null): string | null {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/// The inline-editable name: `Enter` commits with `session.update {name}`,
-/// `Escape` reverts to the prop. Draft state is resynced from `summary.name`
-/// whenever it changes underneath — the only way the load-bearing "renders
+/// The inline-editable name: `Enter` or blur commits with
+/// `session.update {name}`; `Escape`, or committing a blank draft, reverts to
+/// the last committed name. A draft equal to the last committed name is never
+/// re-sent, so Enter-then-blur is one call. Draft state is resynced from
+/// `summary.name` whenever it changes underneath — the only way the load-bearing "renders
 /// from the `sessions` reply" test can pass.
 function NameField({
   summary,
@@ -43,10 +46,28 @@ function NameField({
 }) {
   const bridge = useBridge();
   const [draft, setDraft] = useState(summary.name ?? "");
+  const committed = useRef(summary.name ?? "");
 
   useEffect(() => {
     setDraft(summary.name ?? "");
+    committed.current = summary.name ?? "";
   }, [summary.name]);
+
+  const commit = () => {
+    if (draft.trim() === "") {
+      setDraft(committed.current);
+      return;
+    }
+    if (draft === committed.current) return;
+    committed.current = draft;
+    void bridge
+      .call("session.update", { session: summary.id, name: draft })
+      .then(onChanged)
+      .catch((e: unknown) => {
+        committed.current = summary.name ?? "";
+        onError(e);
+      });
+  };
 
   return (
     <Input
@@ -55,16 +76,14 @@ function NameField({
       disabled={disabled}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          void bridge
-            .call("session.update", { session: summary.id, name: draft })
-            .then(onChanged)
-            .catch(onError);
+          commit();
         } else if (e.key === "Escape") {
           e.preventDefault();
-          setDraft(summary.name ?? "");
+          setDraft(committed.current);
         }
       }}
     />
@@ -255,6 +274,9 @@ function DeleteMenu({
   const bridge = useBridge();
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useDismiss(open, root, close);
 
   if (confirming) {
     return (
@@ -267,7 +289,7 @@ function DeleteMenu({
   }
 
   return (
-    <div className="relative">
+    <div className="relative" ref={root}>
       <Button
         type="button"
         variant="ghost"

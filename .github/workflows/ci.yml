@@ -22,13 +22,14 @@ jobs:
   # the commit before the push.
   changes:
     timeout-minutes: 5
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
     permissions:
       contents: read
       pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
       ui: ${{ steps.filter.outputs.ui }}
+      voice: ${{ steps.filter.outputs.voice }}
       docs: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.docs == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +63,9 @@ jobs:
               - 'ui/**'
               - 'assets/settings.html'
               - '.github/workflows/ci.yml'
+            voice:
+              - 'voice/**'
+              - '.github/workflows/ci.yml'
             docs:
               - 'docs/**'
               - 'docs-site/**'
@@ -79,7 +83,7 @@ jobs:
   # rustc, so the macOS-only dependencies are read rather than built.
   hygiene:
     timeout-minutes: 10
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,7 +94,7 @@ jobs:
       # The PreToolUse guards the landing loop runs under; see docs/developing/landing.md.
       - run: node --test ".claude/hooks/*.test.mjs"
       - run: node --test scripts/packaging.test.mjs
-      - uses: crate-ci/typos@4d9c206a77c041268485162b8e2579ad7a5cb9a3 # v1.50.0
+      - uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
@@ -99,14 +103,14 @@ jobs:
     timeout-minutes: 10
     needs: changes
     if: needs.changes.outputs.ui == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # `version` is not optional here: it may only be omitted when a
       # `packageManager` field is present, and the repo root has no package.json.
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -127,6 +131,25 @@ jobs:
       # assets/settings.html is committed but generated. This catches a bundle
       # that no longer matches the TypeScript it was built from.
       - run: git diff --exit-code assets/settings.html
+
+  # The live assistant's voice helper. Its tests use a fake engine, so no
+  # model runtime (MLX is macOS-only) is installed here: only the base package.
+  voice:
+    timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.voice == 'true'
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - run: uv run --locked ruff format --check .
+        working-directory: voice
+      - run: uv run --locked ruff check .
+        working-directory: voice
+      - run: uv run --locked pytest
+        working-directory: voice
 
   # The crate does not compile anywhere but macOS: process taps, objc2-app-kit
   # and objc2-web-kit have no other target.
@@ -182,7 +205,7 @@ jobs:
     timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.docs == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -310,7 +333,9 @@ jobs:
 
   pages:
     needs: [gate, docs]
-    if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    # Path-filtered Rust/UI jobs may be skipped upstream of gate. Evaluate
+    # our explicit acceptance conditions even when those ancestors skipped.
+    if: always() && !cancelled() && needs.gate.result == 'success' && needs.docs.result == 'success' && github.ref == 'refs/heads/main' && !github.event.repository.private
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -334,14 +359,14 @@ jobs:
   # registered" failure: a job that does not run is a skip, and a skip passes.
   gate:
     timeout-minutes: 5
-    needs: [changes, hygiene, ui, rust, docs]
+    needs: [changes, hygiene, ui, voice, rust, docs]
     if: always()
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
     steps:
       - run: |
           set -euo pipefail
           ok=1
-          for pair in "changes=${{ needs.changes.result }}" "hygiene=${{ needs.hygiene.result }}" "ui=${{ needs.ui.result }}" "rust=${{ needs.rust.result }}" "docs=${{ needs.docs.result }}"; do
+          for pair in "changes=${{ needs.changes.result }}" "hygiene=${{ needs.hygiene.result }}" "ui=${{ needs.ui.result }}" "voice=${{ needs.voice.result }}" "rust=${{ needs.rust.result }}" "docs=${{ needs.docs.result }}"; do
             echo "$pair"
             case "${pair#*=}" in
               success) ;;

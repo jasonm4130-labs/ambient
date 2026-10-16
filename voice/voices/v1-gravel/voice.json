@@ -1,0 +1,9 @@
+{
+  "text": "Well, that's the third meeting this week about having fewer meetings.",
+  "audio": "reference.wav",
+  "description": "An older Scottish man in his late sixties with a deep, gravelly baritone and a broad, rolling Scottish accent. Warm and self-assured, with dry wit, an unhurried, measured delivery and the gravitas of a seasoned adventurer.",
+  "cue": "He delivers this deadpan, with dry, understated wit and a hint of a smile.",
+  "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+  "seed": 1234,
+  "note": "The first 3.8 s (one sentence) of the 1.7B VoiceDesign render of this description and cue, streamed at 0.32 s chunks."
+}

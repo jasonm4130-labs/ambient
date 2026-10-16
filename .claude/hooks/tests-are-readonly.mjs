@@ -26,6 +26,25 @@ const MARKERS = [
   /^\s*(async\s+)?def\s+test_/,
   /^\s*func\s+Test[A-Z_]/,
 ];
+// The git-invocation pattern from no-route-around-ci.mjs, with its global
+// options captured: `git -C dir commit` and `git --git-dir=x commit` are
+// commits too, and the diff must be read from the repo they name.
+const GIT = String.raw`(?:^|[\s;&|(\`{])(?:(?:command|exec|builtin)\s+(?:-\w+\s+)*|env\s+(?:\w+=\S*\s+)*|\\|[^\s;&|"']*/)?["']?git["']?\s+((?:(?:-[A-Za-z]|--[\w-]+)(?:[=\s]+[^\s;&|]+)?\s+)*)`;
+const COMMIT = new RegExp(GIT + String.raw`commit\b([^\n;&|]*)`);
+
+// The global options that choose the repo, as argv for the diff calls.
+export function repoArgs(opts) {
+  const toks = String(opts || "").trim().split(/\s+/).filter(Boolean).map((t) => t.replace(/^["']|["']$/g, ""));
+  const out = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === "-C" && toks[i + 1]) out.push("-C", toks[++i]);
+    else if (/^--(git-dir|work-tree)=/.test(t)) out.push(t);
+    else if (/^--(git-dir|work-tree)$/.test(t) && toks[i + 1]) out.push(`${t}=${toks[++i]}`);
+  }
+  return out;
+}
+
 const TEST_PATH = /(^|\/)(tests?|__tests__|spec)\/|[._-]test\.[a-z]+$|_test\.(rs|go|py)$|\.spec\.[a-z]+$/;
 
 function readStdin() {
@@ -77,14 +96,16 @@ function main() {
   }
   if (payload.tool_name !== "Bash") return;
   const command = String((payload.tool_input && payload.tool_input.command) || "");
-  if (!/\bgit\s+commit\b/.test(command)) return;
+  const m = command.match(COMMIT);
+  if (!m) return;
   const cwd = payload.cwd || process.cwd();
-  const all = /\bgit\s+commit\b[^\n]*\s(-a|--all|-am|-a\w+)(\s|$)/.test(command);
-  let diff = gitDiff(cwd, ["diff", "--cached"]);
-  let status = gitDiff(cwd, ["diff", "--cached", "--name-status"]);
+  const pre = repoArgs(m[1]);
+  const all = /(^|\s)(-a|--all|-am|-a\w+)(\s|$)/.test(m[2]);
+  let diff = gitDiff(cwd, [...pre, "diff", "--cached"]);
+  let status = gitDiff(cwd, [...pre, "diff", "--cached", "--name-status"]);
   if (all) {
-    diff += gitDiff(cwd, ["diff"]);
-    status += gitDiff(cwd, ["diff", "--name-status"]);
+    diff += gitDiff(cwd, [...pre, "diff"]);
+    status += gitDiff(cwd, [...pre, "diff", "--name-status"]);
   }
   const deleted = status.split("\n").filter((l) => l.startsWith("D\t")).map((l) => l.split("\t")[1]);
   const reasons = judge(diff, deleted);

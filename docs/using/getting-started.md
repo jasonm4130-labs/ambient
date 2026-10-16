@@ -30,14 +30,17 @@ is missing or a track is silent, use [troubleshooting](troubleshooting.md).
 
 ## Make a test recording
 
-1. Choose **Start Recording** from the menu bar or welcome page.
+1. Choose **Start Recording** from the menu bar, or **Record** (⌘R) at the top of
+   the window's sidebar.
 2. Speak a short sentence and play a short piece of audio on the Mac.
-3. Check that the microphone and system-audio levels respond.
+3. Check that the Room and Call levels respond.
 4. Choose **Stop** and wait for transcription to finish.
 5. Select the session in the window and check the transcript.
 
-Capture stops before transcription finishes. The menu shows queued work, so a
-new recording can start while the previous one is being transcribed.
+You can open the session during recording to read completed speech turns. Text
+arrives in blocks, with additional delay for model loading or ongoing speech.
+After Stop, Ambient finishes the remaining text and speaker labels. The menu
+shows queued work, so a new recording can start while the previous one finishes.
 
 Use **Reveal in Finder** to inspect the session files. The `audio/` directory
 contains separate room and call tracks. Verify both if the transcript is missing

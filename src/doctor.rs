@@ -112,23 +112,10 @@ pub fn run(models: anyhow::Result<PathBuf>, config_file: &Path, sessions: &Path)
 
     // `doctor` writes nothing at all, so this infers writability from the
     // permission bit rather than probing with a touch-file — a weaker check,
-    // and a deliberate one.
-    checks.push(if !sessions.is_dir() {
-        check(
-            "sessions/writable",
-            false,
-            format!("{} does not exist", sessions.display()),
-        )
-    } else {
-        match fs::metadata(sessions) {
-            Ok(meta) if meta.permissions().readonly() => check(
-                "sessions/writable",
-                false,
-                format!("{} is not writable", sessions.display()),
-            ),
-            _ => check("sessions/writable", true, sessions.display().to_string()),
-        }
-    });
+    // and a deliberate one. A folder that does not exist yet is fine on a
+    // fresh install: the first recording creates it (`create_dir_all`), so the
+    // check falls back to the nearest ancestor that does exist.
+    checks.push(sessions_writable(sessions));
 
     let awaiting = session::captured_awaiting_transcript(sessions).len();
     let awaiting_detail = match awaiting {
@@ -159,6 +146,44 @@ pub fn run(models: anyhow::Result<PathBuf>, config_file: &Path, sessions: &Path)
     });
 
     checks
+}
+
+fn sessions_writable(sessions: &Path) -> Check {
+    let name = "sessions/writable";
+    if sessions.exists() && !sessions.is_dir() {
+        return check(
+            name,
+            false,
+            format!("{} is not a folder", sessions.display()),
+        );
+    }
+    let Some(existing) = sessions.ancestors().find(|p| p.exists()) else {
+        return check(
+            name,
+            false,
+            format!("{} does not exist", sessions.display()),
+        );
+    };
+    if !existing.is_dir() {
+        return check(
+            name,
+            false,
+            format!("{} is not a folder", existing.display()),
+        );
+    }
+    match fs::metadata(existing) {
+        Ok(meta) if meta.permissions().readonly() => check(
+            name,
+            false,
+            format!("{} is not writable", existing.display()),
+        ),
+        _ if existing == sessions => check(name, true, sessions.display().to_string()),
+        _ => check(
+            name,
+            true,
+            format!("{} (created on first recording)", sessions.display()),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +335,35 @@ mod tests {
             "detail was: {}",
             config.detail
         );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn d_fresh_install_without_a_sessions_folder_passes() {
+        let root = temp_root("d_fresh_install_without_a_sessions_folder_passes");
+        let config_file = root.join("config.json");
+        let sessions = root.join("Documents").join("Ambient");
+
+        let checks = run(Ok(root.join("models")), &config_file, &sessions);
+
+        let writable = find(&checks, "sessions/writable");
+        assert!(writable.ok, "detail was: {}", writable.detail);
+        assert!(writable.detail.contains("created on first recording"));
+        assert!(!sessions.exists(), "doctor must not create the folder");
+        assert!(find(&checks, "sessions/awaiting-transcript").ok);
+        assert!(find(&checks, "sessions/live").ok);
+        assert!(find(&checks, "sessions/stale-lock").ok);
+
+        // A file where the folder should be cannot become a sessions folder.
+        let blocked = root.join("blocker");
+        fs::write(&blocked, "").unwrap();
+        let checks = run(
+            Ok(root.join("models")),
+            &config_file,
+            &blocked.join("Ambient"),
+        );
+        assert!(!find(&checks, "sessions/writable").ok);
 
         fs::remove_dir_all(&root).unwrap();
     }

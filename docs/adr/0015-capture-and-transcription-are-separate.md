@@ -8,6 +8,11 @@ sidebar:
 
 **Status:** accepted · **Date:** 2026-09-02 · **Supersedes:** —
 
+**Update, 2026-09-21:** recordings now publish completed turns during capture.
+The [live transcription plan](../plans/2026-09-21-realtime-transcription.md)
+extends this decision with bounded background processing and stable append
+cursors. The original rationale and measurements below are retained as history.
+
 ## Context and Problem Statement
 
 Back-to-back meetings lost the start of the second one. `session::record_into`
