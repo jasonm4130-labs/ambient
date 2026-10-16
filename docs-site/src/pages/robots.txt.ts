@@ -1,4 +1,5 @@
 import { config } from "virtual:nimbus/config";
+import { withBase } from "../lib/urls";
 
 export const prerender = true;
 
@@ -7,7 +8,7 @@ export function GET() {
     "User-agent: *",
     "Allow: /",
     "",
-    `Sitemap: ${new URL("/sitemap-index.xml", config.site).href}`,
+    `Sitemap: ${new URL(withBase("/sitemap-index.xml"), config.site).href}`,
     "",
   ].join("\n");
 

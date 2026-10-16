@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Reject builder home paths while allowing the exact generic upstream CI path
+# embedded in the precompiled ONNX Runtime archive. Rust remapping cannot alter
+# that archive. An optional prefix supports focused tests without changing HOME.
+set -euo pipefail
+binary="${1:?usage: scripts/check-build-paths <binary> [home-prefix]}"
+home_prefix="${2:-${HOME:-}}"
+test -f "$binary"
+if [ -z "$home_prefix" ] || [ "$home_prefix" = / ]; then
+  exit 0
+fi
+if ! LC_ALL=C strings -a "$binary" | LC_ALL=C awk -v home="$home_prefix/" '
+  {
+    gsub("/Users/runner/work/ort-artifacts/ort-artifacts/", "/upstream/ort-artifacts/")
+    if (index($0, home)) leak = 1
+  }
+  END { exit leak ? 1 : 0 }
+'; then
+  echo "release binary contains the build user's home path; refusing to package" >&2
+  exit 1
+fi

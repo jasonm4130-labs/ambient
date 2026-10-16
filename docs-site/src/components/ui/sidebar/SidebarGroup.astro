@@ -21,6 +21,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import SidebarLink from "./SidebarLink.astro";
 import { Badge } from "@/components/ui/badge";
 import type { SidebarItem, SidebarBadge } from "@cloudflare/nimbus-docs/types";
+import { withBase } from "@/lib/urls";
 
 interface Props extends HTMLAttributes<"div"> {
   label: string;
@@ -95,7 +96,7 @@ const caretClass =
       data-nb-sidebar-group-label
     >
       <a
-        href={indexHref}
+        href={withBase(indexHref)}
         aria-current={indexIsCurrent ? "page" : undefined}
         target={indexIsExternal ? "_blank" : undefined}
         rel={indexIsExternal ? "noopener" : undefined}

@@ -1,0 +1,1 @@
+"""Ambient voice helper."""
