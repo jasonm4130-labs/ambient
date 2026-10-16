@@ -39,6 +39,18 @@ pub struct Config {
     /// The assistant's voice. Per machine, because the right engine depends on
     /// how much memory this Mac has.
     pub voice: VoiceConfig,
+    /// Talking to an agent out loud (`ambient talk`).
+    pub talk: TalkConfig,
+}
+
+/// Where `ambient talk` sends what the user says. Only firstmate today, as an
+/// adapter, so another target can be added beside it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TalkConfig {
+    /// The firstmate home whose `bin/fm-inbox.sh` takes the note and records
+    /// the reply. `None` means talking has nowhere to go and is refused.
+    pub firstmate_home: Option<PathBuf>,
 }
 
 /// Whether the live assistant may watch a meeting, and how often it may
@@ -107,6 +119,7 @@ impl Default for Config {
             audio_retention_days: Some(7),
             assistant: AssistantConfig::default(),
             voice: VoiceConfig::default(),
+            talk: TalkConfig::default(),
         }
     }
 }
@@ -218,13 +231,14 @@ impl Config {
             "voice.description" => self.voice.description = optional(value),
             "voice.cue" => self.voice.cue = optional(value),
             "voice.reference" => self.voice.reference = optional(value).map(PathBuf::from),
+            "talk.firstmate_home" => self.talk.firstmate_home = optional(value).map(PathBuf::from),
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
                  threshold, sessions_dir, ask_before_recording, audio_retention_days, \
                  assistant, assistant.name, assistant.cooldown_s, \
                  assistant.max_per_meeting, \
                  voice.engine, voice.speaker, voice.style, voice.helper_dir, \
-                 voice.description, voice.cue, voice.reference"
+                 voice.description, voice.cue, voice.reference, talk.firstmate_home"
             ),
         }
         Ok(())
@@ -423,6 +437,19 @@ mod tests {
         let c = Config::load_from(&p);
         assert_eq!(c.assistant, AssistantConfig::default());
         assert_eq!(c.voice, VoiceConfig::default());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn the_firstmate_home_is_unset_until_given_and_round_trips() {
+        let p = temp("talk");
+        let mut c = Config::default();
+        assert_eq!(c.talk.firstmate_home, None);
+        c.set("talk.firstmate_home", "/Users/me/firstmate").unwrap();
+        c.save_to(&p).unwrap();
+        assert_eq!(Config::load_from(&p), c);
+        c.set("talk.firstmate_home", "default").unwrap();
+        assert_eq!(c.talk.firstmate_home, None);
         std::fs::remove_file(&p).ok();
     }
 

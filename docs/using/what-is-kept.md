@@ -40,7 +40,7 @@ stateDiagram-v2
     Armed --> Idle: the app it armed for goes quiet
     Armed --> Idle: Not this one, remembered until that app is quiet
     Armed --> Recording: Start Recording, from the menu
-    Idle --> Recording: Start Recording, from the menu
+    Idle --> Recording: Start Recording, from the menu or the window
     Idle --> Recording: a watched app starts audio<br/>and ask_before_recording is off
     Recording --> Stopping: Stop
     Recording --> Recording: Stop failed

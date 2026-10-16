@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LivePane, type PhasePayload } from "@/components/LivePane";
+import { LivePane, type CaptureConfig, type PhasePayload } from "@/components/LivePane";
 import { LiveTranscript } from "@/components/LiveTranscript";
 import { NamingStrip } from "@/components/NamingStrip";
 import { SearchPalette } from "@/components/SearchPalette";
@@ -32,6 +32,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
   const [transcriptRevision, setTranscriptRevision] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string>();
+  const [capture, setCapture] = useState<CaptureConfig>();
 
   const loadSessions = useLatest(
     useCallback(() => bridge.call<SessionSummary[]>("sessions"), [bridge]),
@@ -50,16 +51,44 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
     }
   }, [loadSessions]);
 
+  // The idle card's mic and call-watch lines. A failed read leaves them off
+  // rather than blocking Record, which needs none of it.
+  const loadConfig = useLatest(
+    useCallback(() => bridge.call<CaptureConfig | undefined>("config.get"), [bridge]),
+  );
+  const refreshConfig = useCallback(() => {
+    void loadConfig()
+      .then((next) => {
+        if (next !== undefined) setCapture(next);
+      })
+      .catch(() => setCapture(undefined));
+  }, [loadConfig]);
+
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    refreshConfig();
+  }, [refresh, refreshConfig]);
   useEffect(
     () =>
       bridge.on("config", () => {
         void refresh();
+        refreshConfig();
       }),
-    [bridge, refresh],
+    [bridge, refresh, refreshConfig],
   );
+  // Rust sends no event when an input is plugged in or pulled out, so the mic
+  // line re-reads `config.get` whenever the window comes back into view.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshConfig();
+    };
+    window.addEventListener("focus", refreshConfig);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", refreshConfig);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshConfig]);
 
   // The phase payload is the state Rust handed over, and the event fires on
   // a timer rather than on a change — reloading `sessions` on every one of
@@ -79,6 +108,14 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
         };
         const prev = lastEdge.current;
         lastEdge.current = edge;
+        // A recording that has just started (or is already running when the
+        // window first hears about it) is what the person wants to watch, so
+        // it takes the selection once — on the edge, never on every event, so
+        // choosing another session mid-recording sticks.
+        if (edge.liveId !== null && prev?.liveId !== edge.liveId) {
+          setSelected(edge.liveId);
+          setHighlightIndex(undefined);
+        }
         if (
           prev !== null &&
           (prev.kind !== edge.kind ||
@@ -86,9 +123,10 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
             (prev.hadQueue && !edge.hadQueue))
         ) {
           void refresh();
+          refreshConfig();
         }
       }),
-    [bridge, refresh],
+    [bridge, refresh, refreshConfig],
   );
 
   // ⌘K opens the search palette from anywhere on the page.
@@ -123,6 +161,14 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
   }, [refresh]);
 
   const selectedSummary = sessions.find((s) => s.id === selected) ?? null;
+  const liveId = phase?.live?.id ?? null;
+  // The live session is selected on the phase edge, which can land before the
+  // `sessions` refresh that lists it; until then it is still live.
+  const selectedIsLive =
+    selectedSummary === null
+      ? selected !== null && selected === liveId
+      : sessionState(selectedSummary) === "live" ||
+        sessionState(selectedSummary) === "transcribing";
 
   useEffect(
     () =>
@@ -148,7 +194,15 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
             Search
           </button>
         </div>
-        <LivePane payload={phase} />
+        <LivePane
+          payload={phase}
+          config={capture}
+          liveName={sessions.find((s) => s.id === liveId)?.name ?? null}
+          onOpenLive={() => {
+            if (liveId !== null) selectSession(liveId);
+          }}
+          onAddApps={onSettings}
+        />
         <div className="flex min-h-0 flex-1 flex-col">
           <SessionList sessions={sessions} selectedId={selected} onSelect={selectSession} />
         </div>
@@ -216,9 +270,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
                 onDeleted={onDeleted}
               />
             )}
-            {selectedSummary !== null &&
-            (sessionState(selectedSummary) === "live" ||
-              sessionState(selectedSummary) === "transcribing") ? (
+            {selectedIsLive ? (
               <LiveTranscript key={`live-${selected}`} session={selected} onDone={refresh} />
             ) : (
               <Transcript

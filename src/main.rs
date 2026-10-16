@@ -29,6 +29,9 @@ USAGE
                                        serve sessions, and the live assistant's
                                        tools, over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
+  ambient talk --wav <a.wav> [--dry-run]
+                                       say one thing to firstmate and hear
+                                       its reply (see `ambient talk --help`)
   ambient doctor [--json]              say which of ten things is missing
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
@@ -402,6 +405,14 @@ fn main() -> Result<()> {
                 &ambient::session::home(),
                 ambient::assist::real_voice(voice_args),
             )
+        }
+        Some(ambient::talk::SUBCOMMAND) => {
+            let rest: Vec<String> = args.collect();
+            if rest.iter().any(|a| a == "--help" || a == "-h") {
+                print!("{}", ambient::talk::USAGE);
+                return Ok(());
+            }
+            ambient::talk::main(rest)
         }
         Some("doctor") => {
             let flags: Vec<String> = args.collect();
@@ -777,6 +788,14 @@ fn main() -> Result<()> {
                             .clone()
                             .unwrap_or_else(ambient::assist::voice::default_helper_dir)
                             .display()
+                    );
+                    println!(
+                        "{:<14} {}",
+                        "talk.firstmate_home",
+                        cfg.talk
+                            .firstmate_home
+                            .as_ref()
+                            .map_or_else(|| "(none)".into(), |p| p.display().to_string())
                     );
                     println!();
                     println!(
