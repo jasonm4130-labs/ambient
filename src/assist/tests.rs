@@ -15,12 +15,18 @@ struct Heard {
     built: u32,
     /// Fail every `say` from now on.
     broken: bool,
+    /// Run once, mid-utterance, by the next `say`.
+    during: Option<Box<dyn FnOnce()>>,
 }
 
 struct Recorder(Rc<RefCell<Heard>>);
 
 impl Speaker for Recorder {
     fn say(&mut self, text: &str, emotion: &str) -> Result<voice::Spoken> {
+        let during = self.0.borrow_mut().during.take();
+        if let Some(f) = during {
+            f();
+        }
         let mut h = self.0.borrow_mut();
         if h.broken {
             anyhow::bail!("the helper died");
@@ -412,6 +418,83 @@ fn two_watches_on_one_meeting_share_the_cooldown_while_both_watch() {
         "{v}"
     );
     assert_eq!(v["spoken"], 1, "{v}");
+}
+
+#[test]
+fn another_watch_mid_utterance_holds_this_one_from_its_start() {
+    let room = Room::new("midutterance", true);
+    room.set("assistant.cooldown_s", "1");
+    room.live("m1");
+    let mut a = room.watch();
+    let mut b = room.watch();
+    a.watch(None).unwrap();
+    b.watch(None).unwrap();
+    // What the other watch was told while the first was speaking.
+    type Seen = Option<(Value, Refused)>;
+    let seen: Rc<RefCell<Seen>> = Rc::default();
+    let out = Rc::clone(&seen);
+    room.heard.borrow_mut().during = Some(Box::new(move || {
+        let v = b.wait(SHORT).unwrap();
+        let held = b.speak("Also, the build is green.", None).unwrap_err();
+        *out.borrow_mut() = Some((v, held));
+    }));
+    a.speak("It closed on Tuesday.", None).unwrap();
+    let (waited, held) = seen.borrow_mut().take().unwrap();
+    assert!(
+        waited["may_speak"].as_str().unwrap().starts_with("not now"),
+        "{waited}"
+    );
+    assert_eq!(waited["spoken"], 1, "{waited}");
+    assert!(held.contains("cooling down"), "{held}");
+    let v = a.wait(SHORT).unwrap();
+    assert_eq!(v["spoken"], 1, "one utterance counted once: {v}");
+}
+
+#[test]
+fn a_remark_that_waited_for_another_watchs_voice_is_held_by_its_cooldown() {
+    let room = Room::new("waitedvoice", true);
+    room.live("m1");
+    let mut b = room.watch().with_pacing(Pacing {
+        poll: Duration::from_millis(10),
+        settle: Duration::from_millis(60),
+        longest: Duration::from_millis(400),
+        speaking_wait: Duration::from_secs(5),
+    });
+    b.watch(None).unwrap();
+    // Another `ambient mcp` holds the voice and logs its remark as it ends.
+    let lock = voice::SpeakingLock::path(&room.config_file);
+    let other = voice::SpeakingLock::acquire(&lock, "assistant", Duration::ZERO).unwrap();
+    let dir = room.root.join("m1");
+    let speaking = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        log(
+            &dir,
+            json!({"event": "spoke", "text": "It closed on Tuesday."}),
+        );
+        drop(other);
+    });
+    let held = b.speak("Also, the build is green.", None).unwrap_err();
+    speaking.join().unwrap();
+    assert!(held.contains("cooling down"), "{held}");
+    assert_eq!(room.said().len(), 1, "only the notice");
+    assert!(!lock.exists(), "the voice was let go");
+}
+
+#[test]
+fn an_utterance_cut_off_mid_speech_still_counts() {
+    let room = Room::new("cutoff", true);
+    room.set("assistant.cooldown_s", "0");
+    room.live("m1");
+    let mut a = room.watch();
+    a.watch(None).unwrap();
+    a.speak("One.", None).unwrap();
+    // A process that died mid-utterance logged only that it started.
+    log(
+        &room.root.join("m1"),
+        json!({"event": "speaking", "text": "Two."}),
+    );
+    let held = a.speak("Three.", None).unwrap_err();
+    assert!(held.contains("as often as one meeting allows"), "{held}");
 }
 
 #[test]
