@@ -9,9 +9,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -28,8 +29,74 @@ const CALL_SPOOL: &str = "call.live.pcm";
 /// Live acquisition can be cancelled while another session owns this lane.
 static DECODER: Mutex<()> = Mutex::new(());
 
-pub fn decoder() -> MutexGuard<'static, ()> {
-    DECODER.lock().unwrap_or_else(|e| e.into_inner())
+/// The file that extends [`DECODER`] across processes, once
+/// [`share_decoder`] names one. The menu bar app finalizes in a child
+/// process, and the live pass and the queue's transcriber are still one
+/// worker: holding the mutex then `flock`ing this file is what keeps a child's
+/// recogniser off the CPU while the app's live worker holds the lane, and the
+/// other way round.
+static SHARED: OnceLock<PathBuf> = OnceLock::new();
+
+/// The environment variable that hands [`share_decoder`]'s file to a child.
+pub const DECODER_ENV: &str = "AMBIENT_DECODER_LOCK";
+
+/// Extend the decoder lane to every process given the same `path`. The first
+/// call wins; later ones are ignored, so a process has exactly one lane.
+pub fn share_decoder(path: PathBuf) {
+    let _ = SHARED.set(path);
+}
+
+/// The lane's file, if this process shares one.
+pub fn shared_decoder() -> Option<&'static Path> {
+    SHARED.get().map(PathBuf::as_path)
+}
+
+/// Held for as long as one recogniser owns the lane. The `flock` is released
+/// when its file closes, which a crashed holder's kernel does for it.
+pub struct DecoderGuard {
+    _shared: Option<File>,
+    _local: MutexGuard<'static, ()>,
+}
+
+pub fn decoder() -> DecoderGuard {
+    let local = DECODER.lock().unwrap_or_else(|e| e.into_inner());
+    DecoderGuard {
+        _shared: lock_shared(true).unwrap_or(None),
+        _local: local,
+    }
+}
+
+/// `Ok(None)` when no lane is shared, or when the lock is held elsewhere and
+/// `wait` is false; an error opening the file degrades to the local mutex
+/// rather than refusing to transcribe.
+fn lock_shared(wait: bool) -> Result<Option<File>, ()> {
+    let Some(path) = shared_decoder() else {
+        return Ok(None);
+    };
+    let Ok(file) = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+    else {
+        return Ok(None);
+    };
+    let op = if wait {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    loop {
+        // Safe: the fd is open for the duration of the call.
+        if unsafe { libc::flock(file.as_raw_fd(), op) } == 0 {
+            return Ok(Some(file));
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::EWOULDBLOCK) => return Err(()),
+            _ => return Ok(None),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -352,21 +419,28 @@ fn transcribe_block(
     ))
 }
 
-fn decoder_for(stop: &Receiver<()>, cancellable: bool) -> Option<MutexGuard<'static, ()>> {
+fn decoder_for(stop: &Receiver<()>, cancellable: bool) -> Option<DecoderGuard> {
     if !cancellable {
         return Some(decoder());
     }
     loop {
-        match DECODER.try_lock() {
-            Ok(guard) => return Some(guard),
-            Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
-            Err(TryLockError::WouldBlock) => {
-                if stop_requested(stop) {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+        let local = match DECODER.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        if let Some(local) = local {
+            if let Ok(shared) = lock_shared(false) {
+                return Some(DecoderGuard {
+                    _shared: shared,
+                    _local: local,
+                });
             }
         }
+        if stop_requested(stop) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -511,35 +585,111 @@ pub fn finish_existing(dir: &Path, asr_dir: &Path, vad: &Path) -> Result<()> {
 /// Fill a missing spool tail from finalized native audio. The prefix is left
 /// untouched because its offsets are already named by the durable checkpoint.
 pub fn repair_spool(dir: &Path, track: Track, samples: &[f32]) -> Result<()> {
-    if !dir.join(STATE_FILE).exists() {
+    let Some((file, path, written)) = open_spool_tail(dir, track)? else {
         return Ok(());
+    };
+    if written > samples.len() as u64 {
+        bail!("{} is longer than finalized capture audio", path.display());
+    }
+    write_tail(file, samples[written as usize..].iter().map(|s| Ok(*s)))
+}
+
+/// Open a live spool for tail repair, dropping an orphan byte. `None` means
+/// the session never used the live pipeline.
+fn open_spool_tail(dir: &Path, track: Track) -> Result<Option<(File, PathBuf, u64)>> {
+    if !dir.join(STATE_FILE).exists() {
+        return Ok(None);
     }
     let path = dir.join("audio").join(match track {
         Track::Room => ROOM_SPOOL,
         Track::Call => CALL_SPOOL,
     });
-    let mut file = append_file(&path)?;
+    let file = append_file(&path)?;
     let bytes_on_disk = file.metadata()?.len();
     if bytes_on_disk % 2 != 0 {
         // A failed two-byte sample write is not a published transcript byte;
         // discard only its orphan byte before rebuilding the spool tail.
         file.set_len(bytes_on_disk - 1)?;
     }
-    let written = (file.metadata()?.len() / 2) as usize;
-    if written > samples.len() {
-        bail!("{} is longer than finalized capture audio", path.display());
-    }
-    let mut bytes = Vec::with_capacity((samples.len() - written) * 2);
-    for sample in &samples[written..] {
+    let written = file.metadata()?.len() / 2;
+    Ok(Some((file, path, written)))
+}
+
+fn write_tail(file: File, samples: impl Iterator<Item = Result<f32>>) -> Result<()> {
+    let mut out = std::io::BufWriter::with_capacity(1 << 16, file);
+    for sample in samples {
         // `read_wav_any` divided the authoritative i16 by 32768; invert that
         // exactly instead of applying capture's original float quantizer a
         // second time and losing an LSB.
-        let pcm = ((*sample * 32768.0).clamp(i16::MIN as f32, i16::MAX as f32)) as i16;
-        bytes.extend_from_slice(&pcm.to_le_bytes());
+        let pcm = ((sample? * 32768.0).clamp(i16::MIN as f32, i16::MAX as f32)) as i16;
+        out.write_all(&pcm.to_le_bytes())?;
     }
-    file.write_all(&bytes)?;
-    file.flush()?;
+    out.into_inner().map_err(|e| e.into_error())?.flush()?;
     Ok(())
+}
+
+/// Stream a native WAV's tail into the spool. Samples match
+/// `resample::read_wav_any` exactly without holding the whole track.
+fn repair_spool_from_wav(dir: &Path, track: Track, native: &Path) -> Result<()> {
+    let Some((file, path, written)) = open_spool_tail(dir, track)? else {
+        return Ok(());
+    };
+    let mut r =
+        hound::WavReader::open(native).map_err(|e| anyhow!("opening {}: {e}", native.display()))?;
+    let spec = r.spec();
+    let channels = spec.channels.max(1) as u64;
+    let total = (r.len() as u64).div_ceil(channels);
+    if written > total {
+        bail!("{} is longer than finalized capture audio", path.display());
+    }
+    if written == total {
+        return Ok(());
+    }
+    // The skipped prefix ends on a whole frame, so the seek is exact.
+    r.seek(u32::try_from(written)?)?;
+    let raw: Box<dyn Iterator<Item = Result<f32>>> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            Box::new(r.into_samples::<i16>().map(|s| Ok(s? as f32 / 32768.0)))
+        }
+        hound::SampleFormat::Float => Box::new(r.into_samples::<f32>().map(|s| Ok(s?))),
+    };
+    if channels == 1 {
+        return write_tail(file, raw);
+    }
+    write_tail(
+        file,
+        Downmix {
+            raw,
+            channels: channels as usize,
+            frame: Vec::new(),
+        },
+    )
+}
+
+/// Average interleaved frames exactly as `read_wav_any` does, including a
+/// short trailing frame.
+struct Downmix<I> {
+    raw: I,
+    channels: usize,
+    frame: Vec<f32>,
+}
+
+impl<I: Iterator<Item = Result<f32>>> Iterator for Downmix<I> {
+    type Item = Result<f32>;
+    fn next(&mut self) -> Option<Result<f32>> {
+        self.frame.clear();
+        while self.frame.len() < self.channels {
+            match self.raw.next() {
+                Some(Ok(s)) => self.frame.push(s),
+                Some(Err(e)) => return Some(Err(e)),
+                None => break,
+            }
+        }
+        if self.frame.is_empty() {
+            return None;
+        }
+        Some(Ok(self.frame.iter().sum::<f32>() / self.frame.len() as f32))
+    }
 }
 
 /// Retry spool repair from native WAVs retained after a live write failure.
@@ -552,8 +702,7 @@ pub fn repair_from_native(dir: &Path) -> Result<()> {
         for name in names {
             let native = audio.join(name);
             if native.exists() {
-                let (samples, _) = crate::resample::read_wav_any(&native)?;
-                repair_spool(dir, track, &samples)?;
+                repair_spool_from_wav(dir, track, &native)?;
                 break;
             }
         }
@@ -697,6 +846,62 @@ mod tests {
             "authoritative native PCM replaces only the incomplete tail"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn native_repair_streams_the_same_tail_as_a_whole_track_read() {
+        for (name, channels, float) in [
+            ("stream-mono", 1u16, false),
+            ("stream-stereo", 2, false),
+            ("stream-float", 2, true),
+        ] {
+            let dir = fixture(name);
+            write_state(&dir.join(STATE_FILE), &State::new([48_000, 48_000], 0)).unwrap();
+            let native = dir.join("audio").join("room.source.wav");
+            let spec = hound::WavSpec {
+                channels,
+                sample_rate: 48_000,
+                bits_per_sample: if float { 32 } else { 16 },
+                sample_format: if float {
+                    hound::SampleFormat::Float
+                } else {
+                    hound::SampleFormat::Int
+                },
+            };
+            let mut w = hound::WavWriter::create(&native, spec).unwrap();
+            for i in 0..150_001u32 * channels as u32 {
+                let v = ((i * 7919) % 65_536) as i32 - 32_768;
+                if float {
+                    w.write_sample(v as f32 / 40_000.0).unwrap();
+                } else {
+                    w.write_sample(v as i16).unwrap();
+                }
+            }
+            w.finalize().unwrap();
+
+            let spool = dir.join("audio").join(ROOM_SPOOL);
+            let (samples, _) = crate::resample::read_wav_any(&native).unwrap();
+            let mut prefix = Vec::new();
+            for s in &samples[..70_001] {
+                prefix.extend_from_slice(&((s * 32768.0) as i16).to_le_bytes());
+            }
+            prefix.push(0xab); // orphan byte from a failed write
+            std::fs::write(&spool, &prefix).unwrap();
+            repair_spool(&dir, Track::Room, &samples).unwrap();
+            let expected = std::fs::read(&spool).unwrap();
+
+            std::fs::write(&spool, &prefix).unwrap();
+            repair_from_native(&dir).unwrap();
+            assert_eq!(std::fs::read(&spool).unwrap(), expected, "{name}");
+            assert_eq!(expected.len(), samples.len() * 2, "{name}");
+            repair_from_native(&dir).unwrap();
+            assert_eq!(
+                std::fs::read(&spool).unwrap(),
+                expected,
+                "{name} idempotent"
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 
     #[test]

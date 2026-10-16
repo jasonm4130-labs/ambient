@@ -13,10 +13,16 @@ of scraping `transcript.md`. It speaks newline-delimited JSON-RPC 2.0 over
 stdio: no port, no token, no daemon. The client starts the process, and the
 process exits when the client closes its stdin.
 
-It exposes three tools and **nothing writes**. There is no verb here to start a
-recording, name a speaker or delete a session; a reader can read, and that is
-the whole surface. Ambient supplies the ears and nothing else: no lookups, no
-summaries, no prompting built in. The assistant on the other end brings its own.
+It exposes three session tools and **none of them writes**. There is no verb
+here to start a recording, name a speaker or delete a session; a reader can
+read, and that is the whole surface for sessions. Ambient supplies the ears and
+nothing else: no lookups, no summaries. The assistant on the other end brings
+its own.
+
+The same server also carries [the live assistant](assistant.md): four tools
+that let an agent watch the meeting being recorded and speak in it, and a
+`watch` prompt that tells it how. Those tools do nothing while the assistant is
+turned off; see that page for what they write and say.
 
 ## Access and privacy
 
@@ -43,7 +49,7 @@ The signed bundle is the same binary, so if you launch Ambient as an app and
 never installed a copy on `PATH`, point at the executable inside it:
 
 ```sh
-claude mcp add ambient -- "$PWD/build/Ambient.app/Contents/MacOS/ambient" mcp
+claude mcp add ambient -- /Applications/Ambient.app/Contents/MacOS/ambient mcp
 ```
 
 Either path works: the MCP verb reads files and needs no microphone, so it
@@ -64,11 +70,14 @@ To check the registration without a client, pipe a request in yourself. The
 server answers one line per request:
 
 ```sh
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ambient mcp
-{"id":1,"jsonrpc":"2.0","result":{"tools":[{"description":"Every recorded session on this machine, newest first.","inputSchema":{"properties":{},"type":"object"},"name":"sessions"},{"description":"The lines of one session, including one being recorded now.","inputSchema":{"properties":{"session":{"description":"The session id, as `sessions` reports it.","type":"string"},"since":{"description":"Skip this many lines; pass back the previous reply's `next`.","type":"integer"},"verbatim":{"description":"Return the words as recognised, before any naming edits.","type":"boolean"}},"required":["session"],"type":"object"},"name":"transcript"},{"description":"What Ambient is doing right now: the live session, if any, and what is waiting.","inputSchema":{"properties":{},"type":"object"},"name":"status"}]}}
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ambient mcp | jq -c '[.result.tools[].name]'
+["sessions","transcript","status","watch_meeting","wait_for_transcript","speak","stop_watching"]
 ```
 
-## The three tools
+Without `jq`, the answer is one JSON-RPC line holding each tool's name,
+description and input schema.
+
+## The three session tools
 
 Every tool answers in the MCP shape — `{"content":[{"type":"text","text":"…"}],"isError":false}`
 — where the text is the tool's JSON, serialised compactly on one line. The
@@ -86,7 +95,7 @@ No arguments. What Ambient is doing this second — cheap enough to call on ever
 turn.
 
 ```json
-{"awaiting_transcript":0,"live":{"id":"2026-09-05-1608"},"sessions":2}
+{"awaiting_transcript":0,"live":{"id":"2026-09-05T1608"},"sessions":2}
 ```
 
 `live` is `null` when nothing is recording. `awaiting_transcript` counts
@@ -101,10 +110,10 @@ No arguments. Every session on this machine, newest first — the same rows
 ```json
 [
   {
-    "dir": "/Users/…/Documents/Ambient/2026-09-05-1608",
+    "dir": "/Users/…/Documents/Ambient/2026-09-05T1608",
     "duration_s": null,
     "error": null,
-    "id": "2026-09-05-1608",
+    "id": "2026-09-05T1608",
     "live": true,
     "name": null,
     "started_at": null,
@@ -112,10 +121,10 @@ No arguments. Every session on this machine, newest first — the same rows
     "transcribing": false
   },
   {
-    "dir": "/Users/…/Documents/Ambient/2026-09-05-1412",
+    "dir": "/Users/…/Documents/Ambient/2026-09-05T1412",
     "duration_s": 1184.0,
     "error": null,
-    "id": "2026-09-05-1412",
+    "id": "2026-09-05T1412",
     "live": false,
     "name": "Roadmap sync",
     "started_at": "2026-09-05T14:12:03Z",
@@ -146,7 +155,7 @@ heard).
     {"end_ms": 7980, "speaker": "Priya", "start_ms": 3400, "text": "Yes. I pushed the schema change on Friday.", "track": "call"}
   ],
   "next": 3,
-  "session": "2026-09-05-1412",
+  "session": "2026-09-05T1412",
   "state": "done"
 }
 ```
@@ -164,7 +173,7 @@ have an earlier `start_ms`; sort on `start_ms` if you want the clock.
 with the previous reply's `next`.
 
 ```json
-{"lines":[],"next":3,"session":"2026-09-05-1412","state":"done"}
+{"lines":[],"next":3,"session":"2026-09-05T1412","state":"done"}
 ```
 
 `state` says whether asking again is worth it:
@@ -186,7 +195,7 @@ appends completed speech turns to `raw.jsonl`. A `live` reply can therefore
 contain new lines. An empty reply means no new completed turn is available yet:
 
 ```json
-{"lines":[],"next":0,"session":"2026-09-05-1608","state":"live"}
+{"lines":[],"next":0,"session":"2026-09-05T1608","state":"live"}
 ```
 
 This is completed-turn transcription, not word-by-word streaming. Model loading,

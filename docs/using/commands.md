@@ -42,7 +42,9 @@ ambient doctor [--json]
 Runs ten checks, always in the same order: the four model files under the
 models root, the config file, and four checks against the sessions
 directory (writable, sessions awaiting transcription, a live session, a
-stale lock). Prints `ok` or `FAIL` with a detail for each, exits non-zero
+stale lock). A sessions directory that does not exist yet passes the
+writable check when its nearest existing parent is writable, since the
+first recording creates it. Prints `ok` or `FAIL` with a detail for each, exits non-zero
 when any check failed so a script can branch on it, and `--json` prints the
 same ten checks as one array of `{name, ok, detail}` objects.
 
@@ -343,12 +345,15 @@ holds names and nothing else; see [what is kept](what-is-kept.md).
 ## mcp
 
 ```sh
-ambient mcp
+ambient mcp [--no-play] [--save-audio <dir>]
 ```
 
 Serves the Model Context Protocol on stdin and stdout so another program can
 read sessions as data: three read-only tools, `sessions`, `transcript` and
-`status`, and newline-delimited JSON-RPC 2.0 with one reply per request. It is
+`status`, and newline-delimited JSON-RPC 2.0 with one reply per request. It
+also serves [the live assistant](assistant.md)'s tools and its `watch` prompt.
+`--no-play` runs the assistant's voice without playing it, and
+`--save-audio <dir>` writes each utterance to `<dir>/reply-<n>.wav`. It is
 not meant to be typed at — a client starts it, and it exits when that client
 closes its stdin — but a piped request answers on stdout, which is how you
 check a registration:
@@ -357,11 +362,45 @@ check a registration:
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"ping"}' | ambient mcp
 ```
 
-Nothing but protocol goes to stdout; diagnostics go to stderr. Nothing writes:
-there is no tool here to record, name or delete. Registration, the tool
+Nothing but protocol goes to stdout; diagnostics go to stderr. The session
+tools never write: there is no tool here to record, name or delete. The
+assistant's tools write only its heartbeat and the session's `assistant.jsonl`. Registration, the tool
 arguments and the cursor for following a session as it records are in
 [reading sessions from an assistant](mcp.md), and the reasoning is
 [ADR 0016](../adr/0016-mcp-verb-for-live-reading.md).
+
+## talk
+
+```sh
+ambient talk --wav <a.wav> [--dry-run] [--no-play] [--home <dir>] [--timeout <s>]
+ambient talk --pcm [--rate <hz>] [...]       audio on stdin
+ambient talk --stop
+```
+
+One spoken turn with firstmate. It trims the audio with the VAD and
+transcribes it with Parakeet on this Mac; less than 0.4 s of speech is "didn't
+catch that" and nothing is sent. The text goes to firstmate as a note through
+`fm-inbox.sh note --request-id ambient-<id>`, in the home named by
+`talk.firstmate_home` or `--home`, and the turn polls `fm-inbox.sh receipts`
+about once a second for the reply to that note's id, for up to `--timeout`
+seconds (300 by default). The reply is read aloud through the assistant's
+voice helper with its markdown stripped and cut to 600 characters, while
+holding `speaking.lock` beside the config file so the live assistant never
+talks over it. A voice that fails, a lock still held after ten seconds, or a
+recording that started meanwhile leaves the reply as text.
+
+The audio is never written to disk or sent anywhere: only the transcript
+leaves the process. Talking is refused while a recording is in progress,
+because the microphone is shared. `--dry-run` sends the note and waits for
+the reply but prints what it would say instead of starting the voice, so the
+whole loop runs headless against a stand-in `fm-inbox.sh`. `--pcm` reads raw
+32-bit float little-endian mono until end of file, which is how the app hands
+over a push-to-talk hold. `--stop`, or SIGTERM to the turn, silences a reply
+mid-word.
+
+Stdout is one JSON event per line for the program that started it (`heard`,
+`nothing`, `queued`, `sent`, `reply`, `spoken`, `text_only`, `dry_run`,
+`no_reply`); `src/talk.rs` documents each.
 
 ## Environment
 
@@ -371,6 +410,7 @@ arguments and the cursor for following a session as it records are in
 | `AMBIENT_CONFIG` | `config::path` | Path to the config file, so a test can point somewhere harmless. |
 | `AMBIENT_ROSTER` | `roster::path` | Path to `roster.json`, which otherwise sits beside the config. |
 | `AMBIENT_MODELS` | `session::models_root` | Models directory. Otherwise `models/` relative to the working directory, then searched upward from the executable. |
+| `AMBIENT_VOICE_CACHE` | voice helper | Where the helper downloads Kokoro and caches designed voices. Default `~/Library/Caches/Ambient/voice`. |
 | `AMBIENT_DEBUG_DIAR` | `diarize` | Set to anything: adds the per-window powerset class histogram. |
 | `AMBIENT_DEBUG_TAP` | `capture` | Set to anything: extra tap-level diagnostics during capture. |
 | `HOME` | `config::path`, `session::home`, `settings` | Falls back to `.` if unset, so both paths become relative. |

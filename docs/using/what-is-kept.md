@@ -17,6 +17,10 @@ Sessions are ordinary files in `~/Documents/Ambient` unless you choose another
 folder. Ambient does not encrypt them separately from your Mac's storage.
 Cloud folder sync and backups can copy them elsewhere. Exports and MCP clients
 can also share transcript text beyond this Mac; see [MCP access](mcp.md#access-and-privacy).
+The [live assistant](assistant.md#what-leaves-this-mac), when you turn it on,
+hands the transcript to the agent you run in Claude Code, which sends it to
+that agent's model, and keeps a log of what it said in the session's
+`assistant.jsonl`.
 
 The recording prompt asks you, not the other participants. Obtain appropriate
 permission before recording. Ambient does not join the call or announce the
@@ -36,7 +40,7 @@ stateDiagram-v2
     Armed --> Idle: the app it armed for goes quiet
     Armed --> Idle: Not this one, remembered until that app is quiet
     Armed --> Recording: Start Recording, from the menu
-    Idle --> Recording: Start Recording, from the menu
+    Idle --> Recording: Start Recording, from the menu or the window
     Idle --> Recording: a watched app starts audio<br/>and ask_before_recording is off
     Recording --> Stopping: Stop
     Recording --> Recording: Stop failed

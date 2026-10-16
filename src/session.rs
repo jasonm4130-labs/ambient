@@ -247,7 +247,7 @@ pub enum MeterPhase {
 }
 
 impl MeterPhase {
-    fn from_u8(v: u8) -> MeterPhase {
+    pub(crate) fn from_u8(v: u8) -> MeterPhase {
         match v {
             1 => MeterPhase::Transcribing,
             2 => MeterPhase::Diarizing,
