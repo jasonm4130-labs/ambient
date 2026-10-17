@@ -15,7 +15,7 @@ libc = "0.2.189"
 objc2-app-kit = "0.3"
 objc2-core-foundation = "0.3.2"
 objc2-web-kit = "0.3"
-ort = { version = "=2.0.0-rc.13", features = ["coreml"] }
+ort = { version = "=2.0.0-rc.14", features = ["coreml"] }
 rubato = "5"
 rustfft = "6.4.1"
 serde = { version = "1", features = ["derive"] }
