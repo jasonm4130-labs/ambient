@@ -31,5 +31,10 @@
     "pagefind": "^1.5.2",
     "tailwindcss": "^4.1.4",
     "typescript": "^5.8.3"
+  },
+  "overrides": {
+    "@jasonm4130/cirrus": {
+      "@cloudflare/nimbus-docs": "$@cloudflare/nimbus-docs"
+    }
   }
 }
