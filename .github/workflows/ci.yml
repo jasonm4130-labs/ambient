@@ -94,7 +94,7 @@ jobs:
       # The PreToolUse guards the landing loop runs under; see docs/developing/landing.md.
       - run: node --test ".claude/hooks/*.test.mjs"
       - run: node --test scripts/packaging.test.mjs
-      - uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+      - uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
