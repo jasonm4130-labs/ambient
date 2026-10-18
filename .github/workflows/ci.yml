@@ -293,6 +293,8 @@ jobs:
       # other guard here green, so source-side checking demonstrably does not
       # cover it. Proven both directions: removing rewrite-md-links.ts from
       # astro.config.ts makes this step report exactly those 111 links.
+      # It also checks the head metadata URLs (Markdown alternate, og:image) and
+      # that each redirected legacy URL is still emitted.
       - name: Every built link resolves to a built route
         run: node .github/scripts/check-routes.mjs
 

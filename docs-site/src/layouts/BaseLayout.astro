@@ -10,7 +10,7 @@ import AgentDirective from "@/components/AgentDirective.astro";
 import { SearchDialog } from "@/components/ui/search";
 import NimbusHead from "@cloudflare/nimbus-docs/components/NimbusHead.astro";
 import type { BasePageProps } from "@cloudflare/nimbus-docs/types";
-import { withBase } from "../lib/urls";
+import { withBase, withoutBase } from "../lib/urls";
 
 type Props = BasePageProps;
 
@@ -39,6 +39,10 @@ const llmsIndexPath = collection
   ? await getCollectionLlmsUrl(collection)
   : "/llms.txt";
 const llmsUrl = llmsIndexPath ? withBase(llmsIndexPath) : null;
+// Pages pass based URLs, which their own links use as they are. NimbusHead
+// adds the base itself, so it gets the logical path.
+const headMarkdownUrl = markdownUrl && withoutBase(markdownUrl);
+const headSocialImage = socialImage && withoutBase(socialImage);
 ---
 
 <!doctype html>
@@ -91,8 +95,8 @@ const llmsUrl = llmsIndexPath ? withBase(llmsIndexPath) : null;
       title={title}
       description={description}
       noindex={noindex}
-      markdownUrl={markdownUrl}
-      socialImage={socialImage}
+      markdownUrl={headMarkdownUrl}
+      socialImage={headSocialImage}
       lastUpdated={lastUpdated}
       head={pageHead}
       collection={collection}

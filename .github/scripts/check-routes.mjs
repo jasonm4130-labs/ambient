@@ -23,11 +23,22 @@
 //   2. Every internal href resolves to a built file, or a directory holding an
 //      index.html. This is what holds the plugin's slug rule to the routes
 //      Nimbus actually generates rather than to the rule as documented.
+//      Absolute URLs on this site count as internal, and so do the head's
+//      `content` URLs (og:image, meta refresh): Nimbus 0.18 began prefixing the
+//      base onto markdownUrl and socialImage itself, and a doubled
+//      `/ambient/ambient/` there only shows up in absolute metadata URLs.
+//
+// It also asserts that each published URL now served by a redirect is still
+// emitted, pointing where it should. Nothing on the site links to those URLs
+// any more, so rule 2 would not notice one disappearing.
 import { readdirSync, statSync, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const DIST = process.argv[2] ?? "docs-site/dist";
 const BASE = "/ambient";
+const SITE = "https://jasonm4130-labs.github.io";
+// Old published route → where it now redirects (astro.config.ts `redirects`).
+const REDIRECTS = { "/ambient/index/": "/ambient/overview/" };
 
 if (!existsSync(DIST)) {
 	console.error(`check-routes: no build at ${DIST} — run the site build first`);
@@ -58,15 +69,29 @@ const resolves = (route) => {
 };
 
 const EXTERNAL = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+// 404.html names itself /404/ in these two tags. GitHub Pages serves it for any
+// miss, never by that route, so only these exact tags are exempt.
+const NOT_FOUND_SELF_TAGS = [
+	`<link rel="canonical" href="${SITE}${BASE}/404/">`,
+	`<meta property="og:url" content="${SITE}${BASE}/404/">`,
+];
 const failures = [];
 
 for (const page of pages) {
 	// The page's own route directory, which relative hrefs resolve against.
 	const routeDir = BASE + "/" + path.relative(DIST, path.dirname(page)).split(path.sep).join("/");
-	const html = readFileSync(page, "utf8");
+	let html = readFileSync(page, "utf8");
+	if (path.relative(DIST, page) === "404.html") {
+		for (const tag of NOT_FOUND_SELF_TAGS) html = html.replace(tag, "");
+	}
 
-	for (const m of html.matchAll(/\shref="([^"]*)"/g)) {
-		const href = m[1];
+	const contentUrls = [...html.matchAll(/\scontent="(?:\d+;\s*url=)?([^"]*)"/gi)]
+		.map((m) => m[1])
+		.filter((url) => url.startsWith("/") || url.startsWith(`${SITE}/`));
+	const hrefs = [...html.matchAll(/\shref="([^"]*)"/g)].map((m) => m[1]);
+
+	for (const url of [...hrefs, ...contentUrls]) {
+		const href = url.startsWith(`${SITE}/`) ? url.slice(SITE.length) : url;
 		if (!href || EXTERNAL.test(href) || href.startsWith("#")) continue;
 
 		const target = href.split(/[#?]/)[0];
@@ -89,10 +114,23 @@ for (const page of pages) {
 	}
 }
 
+for (const [from, to] of Object.entries(REDIRECTS)) {
+	const page = path.join(DIST, from.slice(BASE.length), "index.html");
+	if (!existsSync(page)) {
+		failures.push(`${from}: redirect to ${to} was not emitted`);
+		continue;
+	}
+	const html = readFileSync(page, "utf8");
+	const refresh = html.match(/http-equiv="refresh" content="\d+;\s*url=([^"]*)"/i)?.[1];
+	const canonical = html.match(/rel="canonical" href="([^"]*)"/)?.[1];
+	if (refresh !== to) failures.push(`${page}: refresh goes to "${refresh}", expected "${to}"`);
+	if (canonical !== SITE + to) failures.push(`${page}: canonical is "${canonical}", expected "${SITE + to}"`);
+}
+
 if (failures.length) {
-	console.error(`check-routes: ${failures.length} broken link(s) in ${pages.length} page(s)\n`);
+	console.error(`check-routes: ${failures.length} failure(s) in ${pages.length} page(s)\n`);
 	for (const f of failures) console.error(`  ${f}`);
 	process.exit(1);
 }
 
-console.log(`check-routes: ${pages.length} pages, every internal link resolves`);
+console.log(`check-routes: ${pages.length} pages, every internal link resolves, ${Object.keys(REDIRECTS).length} redirect(s) emitted`);
