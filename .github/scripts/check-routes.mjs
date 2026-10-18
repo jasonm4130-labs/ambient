@@ -69,12 +69,21 @@ const resolves = (route) => {
 };
 
 const EXTERNAL = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+// 404.html names itself /404/ in these two tags. GitHub Pages serves it for any
+// miss, never by that route, so only these exact tags are exempt.
+const NOT_FOUND_SELF_TAGS = [
+	`<link rel="canonical" href="${SITE}${BASE}/404/">`,
+	`<meta property="og:url" content="${SITE}${BASE}/404/">`,
+];
 const failures = [];
 
 for (const page of pages) {
 	// The page's own route directory, which relative hrefs resolve against.
 	const routeDir = BASE + "/" + path.relative(DIST, path.dirname(page)).split(path.sep).join("/");
-	const html = readFileSync(page, "utf8");
+	let html = readFileSync(page, "utf8");
+	if (path.relative(DIST, page) === "404.html") {
+		for (const tag of NOT_FOUND_SELF_TAGS) html = html.replace(tag, "");
+	}
 
 	const contentUrls = [...html.matchAll(/\scontent="(?:\d+;\s*url=)?([^"]*)"/gi)]
 		.map((m) => m[1])
@@ -84,9 +93,6 @@ for (const page of pages) {
 	for (const url of [...hrefs, ...contentUrls]) {
 		const href = url.startsWith(`${SITE}/`) ? url.slice(SITE.length) : url;
 		if (!href || EXTERNAL.test(href) || href.startsWith("#")) continue;
-		// 404.html names itself /404/ in its canonical and og:url. GitHub Pages
-		// serves it for any miss, never by that route.
-		if (path.basename(page) === "404.html" && href === `${BASE}/404/`) continue;
 
 		const target = href.split(/[#?]/)[0];
 		if (!target) continue;
