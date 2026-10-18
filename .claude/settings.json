@@ -1,22 +1,4 @@
 {
-  "permissions": {
-    "allow": [
-      "Bash(scripts/check:*)",
-      "Bash(./scripts/check:*)",
-      "Bash(./merge-pr.sh:*)",
-      "Bash(loop/task-brief:*)",
-      "Bash(./loop/task-brief:*)",
-      "Bash(cargo:*)",
-      "Bash(git:*)",
-      "Bash(gh:*)",
-      "Bash(./loop/merge-pr.sh:*)"
-    ],
-    "deny": [
-      "Bash(gh pr merge:*)",
-      "Bash(git push --force:*)",
-      "Bash(git push -f:*)"
-    ]
-  },
   "hooks": {
     "PreToolUse": [
       {
