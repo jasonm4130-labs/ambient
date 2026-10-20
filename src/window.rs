@@ -93,6 +93,13 @@ impl MainWindow {
         }
     }
 
+    /// The talk card and panel's state, beside the phase.
+    pub fn render_talk(&self, talk: &Value) {
+        if self.window.isVisible() {
+            self.host.ivars().page.event("talk", talk);
+        }
+    }
+
     pub fn show(&self, mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
