@@ -22,6 +22,17 @@ hands the transcript to the agent you run in Claude Code, which sends it to
 that agent's model, and keeps a log of what it said in the session's
 `assistant.jsonl`.
 
+### Push-to-talk
+
+[Talking to your agent](talk.md) never writes the audio: it is held in memory
+while you hold the key and handed to the transcriber. The words are written to
+`talk/` in Ambient's settings folder (`~/Library/Application Support/Ambient/`,
+readable only by you) until the agent answers or the question expires after
+five minutes, and then deleted. An expired question leaves an empty marker,
+named by its id, for an hour, so a late answer can be refused. The listening
+session puts your words in its conversation, which the agent's client keeps
+and sends to its model under its own terms. Ambient keeps no talk log.
+
 The recording prompt asks you, not the other participants. Obtain appropriate
 permission before recording. Ambient does not join the call or announce the
 recording to the people in it.

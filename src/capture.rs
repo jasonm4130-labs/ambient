@@ -735,6 +735,74 @@ impl ProcessTap {
     }
 }
 
+/// The microphone alone, held open for one push-to-talk turn and read once.
+///
+/// The audio lives only in this ring: nothing here writes a file, and
+/// [`MicHold::finish`] hands the samples to the caller, who pipes them to
+/// `ambient talk` and drops them. It is a separate device user from a
+/// recording's `ProcessTap`, and the app never runs the two together: talking
+/// is refused while a recording runs, and a recording that starts cancels
+/// the hold.
+pub struct MicHold {
+    dev: AudioObjectID,
+    proc_id: AudioDeviceIOProcID,
+    ring: Arc<Ring>,
+    channels: u32,
+    pub rate: f64,
+    started: std::time::Instant,
+}
+
+impl MicHold {
+    /// The longest hold that is kept whole. Past it the ring keeps only the
+    /// most recent `MAX_S` seconds, and the app lets go for the user.
+    pub const MAX_S: usize = 60;
+
+    /// Open the configured microphone (or the system default) and start
+    /// buffering.
+    pub fn start(mic_name: Option<&str>) -> Result<Self> {
+        unsafe {
+            let dev = input_device(mic_name)?;
+            let channels = input_channel_count(dev).unwrap_or(1);
+            let rate = nominal_sample_rate(dev).unwrap_or(48_000.0);
+            let ring = Arc::new(Ring::new((rate as usize) * channels as usize * Self::MAX_S));
+            let proc_id = start_ioproc(dev, ring.clone())?;
+            Ok(Self {
+                dev,
+                proc_id,
+                ring,
+                channels,
+                rate,
+                started: std::time::Instant::now(),
+            })
+        }
+    }
+
+    /// How long the key has been held.
+    pub fn held(&self) -> std::time::Duration {
+        self.started.elapsed()
+    }
+
+    /// Stop the microphone and take what it heard, as mono at
+    /// [`MicHold::rate`].
+    pub fn finish(self) -> Vec<f32> {
+        unsafe {
+            AudioDeviceStop(self.dev, self.proc_id);
+        }
+        let (raw, _) = self.ring.drain_from(0);
+        let ch = self.channels.max(1) as usize;
+        crate::resample::downmix(&raw, ch, 0..ch)
+    }
+}
+
+impl Drop for MicHold {
+    fn drop(&mut self) {
+        unsafe {
+            AudioDeviceStop(self.dev, self.proc_id);
+            AudioDeviceDestroyIOProcID(self.dev, self.proc_id);
+        }
+    }
+}
+
 /// Attach a realtime IOProc to `device` that pushes every input buffer into
 /// `ring`, and start it. Used for both the tap's aggregate and the microphone.
 unsafe fn start_ioproc(device: AudioObjectID, ring: Arc<Ring>) -> Result<AudioDeviceIOProcID> {

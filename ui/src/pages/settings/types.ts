@@ -16,6 +16,15 @@ export interface SettingsConfig {
   audio_retention: string;
   roster: string[];
   latest_session: string | null;
+  /// Optional only so a config.get from an older build still renders.
+  talk?: TalkSettings;
+}
+
+/// Push-to-talk: `talk` and `talk.speak`. Who hears it is not a setting; it
+/// is whichever agent session is listening (the window's `talk` event).
+export interface TalkSettings {
+  enabled: boolean;
+  speak: boolean;
 }
 
 export interface UnnamedSpeaker {

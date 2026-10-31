@@ -22,7 +22,9 @@ its own.
 The same server also carries [the live assistant](assistant.md): four tools
 that let an agent watch the meeting being recorded and speak in it, and a
 `watch` prompt that tells it how. Those tools do nothing while the assistant is
-turned off; see that page for what they write and say.
+turned off; see that page for what they write and say. And it carries
+[push-to-talk](#push-to-talk): four tools and a `talk` prompt that let the
+session hear what you say to it through Ambient and answer out loud.
 
 ## Access and privacy
 
@@ -71,7 +73,7 @@ server answers one line per request:
 
 ```sh
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ambient mcp | jq -c '[.result.tools[].name]'
-["sessions","transcript","status","watch_meeting","wait_for_transcript","speak","stop_watching"]
+["sessions","transcript","status","watch_meeting","wait_for_transcript","speak","stop_watching","talk_listen","wait_for_talk","talk_reply","stop_listening"]
 ```
 
 Without `jq`, the answer is one JSON-RPC line holding each tool's name,
@@ -203,6 +205,39 @@ ongoing speech and other transcription work can delay the first lines. Continue
 polling through Stop: the final speech tail and speaker separation finish
 afterward. To refresh speaker labels on earlier lines, read again with `since: 0`
 once the session is `done`.
+
+## Push-to-talk
+
+What you say through [push-to-talk](talk.md) waits in a mailbox beside the
+config file until the session that is listening answers it. The server
+declares `capabilities.experimental["claude/channel"]`, which is what lets a
+Claude Code session started with `--dangerously-load-development-channels
+server:ambient` receive pushed messages, and its `initialize` result carries
+short `instructions` saying how to answer.
+
+| Tool | Arguments | What it does |
+| --- | --- | --- |
+| `talk_listen` | none | Makes this session the one that hears, the last caller winning. From then on each question is pushed once as a channel message. Returns `listening`, `push`, `replaced_pid` (the session that was listening before, if any), `open` (questions already waiting) and `how`. |
+| `wait_for_talk` | `timeout_s` (1 to 120, default 60) | For a client without channels: blocks until a question it has not returned yet arrives, and returns `request_id`, `text` and `asked_s_ago`, or `request_id: null` on timeout. Makes this session the listener and stops pushing. |
+| `talk_reply` | `request_id`, `text` (both required) | Answers a question. The first answer wins. Refused, with a reason the model reads, for an id Ambient did not give out, an empty answer, a question that expired or was stopped, and one already answered. |
+| `stop_listening` | none | This session stops hearing. |
+
+A pushed question arrives as:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/claude/channel","params":{"content":"what is the status of the build?","meta":{"request_id":"ambient-5d0c…","asked_at":"2026-10-31T21:42:07+11:00"}}}
+```
+
+which Claude Code shows the model as `<channel source="ambient"
+request_id="ambient-5d0c…" asked_at="…">what is the status of the
+build?</channel>`. A session that has not loaded the server as a channel drops
+it without telling the server; that is what `wait_for_talk` is for.
+
+The `talk` prompt, `/mcp__ambient__talk` in Claude Code, tells the agent to
+call `talk_listen`, treat each message as you speaking in the conversation,
+and answer with `talk_reply`, leading with one to three short spoken
+sentences. `/mcp__ambient__talk wait` tells it to loop on `wait_for_talk`
+instead.
 
 ## When it will not answer
 

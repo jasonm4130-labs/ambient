@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { BridgeProvider } from "@/lib/bridge-context";
@@ -95,6 +95,47 @@ describe("Settings", () => {
     await userEvent.click(change);
 
     await screen.findByText(/a recording is in progress/u);
+  });
+
+  it("talking mode and speaking are set from the Talk section", async () => {
+    const fake = new FakeBridge();
+    const config = { ...baseConfig, talk: { enabled: false, speak: true } };
+    fake.answer("config.get", config);
+    fake.answer("config.set", config);
+    renderSettings(fake);
+
+    await userEvent.click(await screen.findByRole("switch", { name: "Talking mode" }));
+    await waitFor(() => {
+      const sets = fake.calls.filter((c) => c.method === "config.set").map((c) => c.params);
+      expect(sets).toEqual([{ key: "talk", value: "true" }]);
+    });
+  });
+
+  it("Settings Talk section shows the listener status and the launch flag, and no firstmate chooser", async () => {
+    const fake = new FakeBridge();
+    fake.answer("config.get", { ...baseConfig, talk: { enabled: true, speak: true } });
+    renderSettings(fake);
+
+    const status = await screen.findByTestId("talk-listener-status");
+    expect(status).toHaveTextContent("Checking…");
+    act(() => fake.emit("talk", { listener: null }));
+    expect(status).toHaveTextContent("No agent is listening.");
+    act(() =>
+      fake.emit("talk", {
+        listener: { since: "2026-10-31T21:40:00+11:00", push: true, client: "claude-code" },
+      }),
+    );
+    expect(status).toHaveTextContent(/^Listening: Claude Code since/u);
+    expect(screen.getByTestId("talk-launch")).toHaveTextContent(
+      "claude --dangerously-load-development-channels server:ambient",
+    );
+    const section = screen.getByTestId("talk-section");
+    expect(section).toHaveTextContent("/mcp__ambient__talk");
+    expect(section.textContent).not.toMatch(/firstmate/iu);
+    expect(screen.queryByRole("button", { name: "Choose…" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy the launch command" }));
+    expect(await screen.findByText(/Copied\.|press ⌘C/u)).toBeInTheDocument();
   });
 
   it("every button and switch on the screen has an accessible name", async () => {

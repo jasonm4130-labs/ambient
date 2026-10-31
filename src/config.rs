@@ -43,14 +43,28 @@ pub struct Config {
     pub talk: TalkConfig,
 }
 
-/// Where `ambient talk` sends what the user says. Only firstmate today, as an
-/// adapter, so another target can be added beside it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+/// Push-to-talk. What the user says goes to whichever agent session is
+/// listening through `ambient mcp` (ADR 0019), so there is no destination to
+/// configure here. A file from before that still names `firstmate_home`
+/// loads; the key is ignored and dropped at the next save.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TalkConfig {
-    /// The firstmate home whose `bin/fm-inbox.sh` takes the note and records
-    /// the reply. `None` means talking has nowhere to go and is refused.
-    pub firstmate_home: Option<PathBuf>,
+    /// Talking mode: the app holds ⌥Space and shows the talk controls. Off
+    /// unless turned on, because a held system hotkey takes ⌥Space away from
+    /// every other app.
+    pub enabled: bool,
+    /// Read the agent's replies aloud. Off, a reply is shown as text only.
+    pub speak: bool,
+}
+
+impl Default for TalkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            speak: true,
+        }
+    }
 }
 
 /// Whether the live assistant may watch a meeting, and how often it may
@@ -231,14 +245,15 @@ impl Config {
             "voice.description" => self.voice.description = optional(value),
             "voice.cue" => self.voice.cue = optional(value),
             "voice.reference" => self.voice.reference = optional(value).map(PathBuf::from),
-            "talk.firstmate_home" => self.talk.firstmate_home = optional(value).map(PathBuf::from),
+            "talk" => self.talk.enabled = flag(value)?,
+            "talk.speak" => self.talk.speak = flag(value)?,
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
                  threshold, sessions_dir, ask_before_recording, audio_retention_days, \
                  assistant, assistant.name, assistant.cooldown_s, \
                  assistant.max_per_meeting, \
                  voice.engine, voice.speaker, voice.style, voice.helper_dir, \
-                 voice.description, voice.cue, voice.reference, talk.firstmate_home"
+                 voice.description, voice.cue, voice.reference, talk, talk.speak"
             ),
         }
         Ok(())
@@ -440,17 +455,53 @@ mod tests {
         std::fs::remove_file(&p).ok();
     }
 
+    /// Talking mode is off until turned on, and replies are spoken once it is.
     #[test]
-    fn the_firstmate_home_is_unset_until_given_and_round_trips() {
-        let p = temp("talk");
+    fn talking_mode_is_off_and_speaking_on_by_default() {
+        let p = temp("talk-mode");
         let mut c = Config::default();
-        assert_eq!(c.talk.firstmate_home, None);
-        c.set("talk.firstmate_home", "/Users/me/firstmate").unwrap();
+        assert!(!c.talk.enabled);
+        assert!(c.talk.speak);
+        c.set("talk", "on").unwrap();
+        c.set("talk.speak", "off").unwrap();
         c.save_to(&p).unwrap();
-        assert_eq!(Config::load_from(&p), c);
-        c.set("talk.firstmate_home", "default").unwrap();
-        assert_eq!(c.talk.firstmate_home, None);
+        let back = Config::load_from(&p);
+        assert!(back.talk.enabled);
+        assert!(!back.talk.speak);
+        assert!(c.set("talk.speak", "maybe").is_err());
         std::fs::remove_file(&p).ok();
+    }
+
+    /// Push-to-talk went to firstmate before ADR 0019. A config written then
+    /// still loads with its other settings, and the old key is no setting now.
+    #[test]
+    fn an_old_config_with_firstmate_home_still_loads() {
+        let p = temp("talk-firstmate");
+        std::fs::write(
+            &p,
+            r#"{"diarize":false,"talk":{"enabled":true,"speak":false,"firstmate_home":"/Users/x/fm"}}"#,
+        )
+        .unwrap();
+        let c = Config::load_from(&p);
+        assert!(!c.diarize, "the rest of the file is read, not defaulted");
+        assert!(c.talk.enabled);
+        assert!(!c.talk.speak);
+        c.save_to(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("firstmate"), "{text}");
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn talk_firstmate_home_is_now_an_unknown_setting() {
+        let e = Config::default()
+            .set("talk.firstmate_home", "/Users/x/fm")
+            .unwrap_err();
+        let e = e.to_string();
+        assert!(e.contains("unknown setting"), "{e}");
+        let known = e.split("Known:").nth(1).unwrap();
+        assert!(!known.contains("firstmate"), "{e}");
+        assert!(known.contains("talk.speak"), "{e}");
     }
 
     #[test]

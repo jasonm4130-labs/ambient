@@ -71,6 +71,21 @@ red dot, the clock and the live session's name, which opens its live
 transcript. A recording that starts selects its session once, on the phase
 edge, so choosing another session mid-recording sticks.
 
+The talk card sits under the live card and is drawn from the `talk` event,
+which Rust sends beside `phase` (`Talk::payload` in `src/talk/app.rs`); the
+components are in `ui/src/components/talk/`. Off, it links to Settings. On,
+**Hold to talk** calls `talk.press` on pointer or key down and `talk.release`
+on up, both forwarded to the app delegate like `record.*`; it is disabled
+while recording or armed, or while the payload's `listener` is `null` (no
+agent session is listening), when a **How** link opens Settings. One status
+line, a `role="status"` live region the button names with
+`aria-describedby`, says which of idle, listening, thinking, speaking or error
+the card is in (`talkState` in `text.ts`). **Conversation** puts the turns in
+the main pane until a session is chosen; a reply is shown from `reply_text`,
+the plain-text form Rust makes with `talk::readable`. Settings → Talk listens
+for the same event to say who is listening. See
+[talking to your agent](../using/talk.md).
+
 ## Appearance and shortcuts
 
 The page uses system fonts, the neutral theme, a 0.5 rem radius, 13 px body

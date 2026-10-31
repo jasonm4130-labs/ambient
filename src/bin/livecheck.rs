@@ -7,11 +7,27 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// The server's stdout, kept to read back. `mcp::serve` owns its writer,
+/// because the talk listener may write from a thread of its own.
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn poll(root: &Path, since: u64) -> Result<Value> {
     let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
         "params":{"name":"transcript","arguments":{"session":"replay","since":since}}});
-    let mut output = Vec::new();
-    ambient::mcp::serve(format!("{request}\n").as_bytes(), &mut output, root)?;
+    let output = Captured::default();
+    ambient::mcp::serve(format!("{request}\n").as_bytes(), output.clone(), root)?;
+    let output = output.0.lock().unwrap().clone();
     let response: Value = serde_json::from_slice(&output)?;
     let result = &response["result"];
     if result["isError"] == true || response.get("error").is_some() {

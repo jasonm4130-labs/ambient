@@ -372,31 +372,38 @@ arguments and the cursor for following a session as it records are in
 ## talk
 
 ```sh
-ambient talk --wav <a.wav> [--dry-run] [--no-play] [--home <dir>] [--timeout <s>]
+ambient talk --wav <a.wav> [--dry-run] [--no-play] [--timeout <s>]
 ambient talk --pcm [--rate <hz>] [...]       audio on stdin
 ambient talk --stop
 ```
 
-One spoken turn with firstmate. It trims the audio with the VAD and
+One spoken turn with the agent session listening through
+[`ambient mcp`](mcp.md#push-to-talk). It trims the audio with the VAD and
 transcribes it with Parakeet on this Mac; less than 0.4 s of speech is "didn't
-catch that" and nothing is sent. The text goes to firstmate as a note through
-`fm-inbox.sh note --request-id ambient-<id>`, in the home named by
-`talk.firstmate_home` or `--home`, and the turn polls `fm-inbox.sh receipts`
-about once a second for the reply to that note's id, for up to `--timeout`
-seconds (300 by default). The reply is read aloud through the assistant's
-voice helper with its markdown stripped and cut to 600 characters, while
-holding `speaking.lock` beside the config file so the live assistant never
-talks over it. A voice that fails, a lock still held after ten seconds, or a
-recording that started meanwhile leaves the reply as text.
+catch that" and nothing is sent. The text is posted as a question to
+`talk/ambient-<id>.json` beside the config file, and the turn looks for
+`talk/ambient-<id>.reply.json`, which the agent's `talk_reply` writes, about
+once a second for up to `--timeout` seconds (300 by default). With no agent
+listening the turn says `queued` and the question still waits, in case one
+starts. A turn that gives up marks the question expired and deletes its text,
+so a late answer is refused.
+
+The first paragraph of the reply is read aloud through the assistant's voice
+helper with its markdown stripped and cut to 600 characters, while holding
+`speaking.lock` beside the config file so the live assistant never talks over
+it. A voice that fails, a lock still held after ten seconds, or a recording
+that started meanwhile leaves the reply as text, as does a pause the app marks
+with `.talk-paused` in the sessions folder while a call waits to be recorded.
 
 The audio is never written to disk or sent anywhere: only the transcript
 leaves the process. Talking is refused while a recording is in progress,
-because the microphone is shared. `--dry-run` sends the note and waits for
-the reply but prints what it would say instead of starting the voice, so the
-whole loop runs headless against a stand-in `fm-inbox.sh`. `--pcm` reads raw
-32-bit float little-endian mono until end of file, which is how the app hands
-over a push-to-talk hold. `--stop`, or SIGTERM to the turn, silences a reply
-mid-word.
+because the microphone is shared. `--dry-run` posts the question and waits for
+the answer but prints what it would say instead of starting the voice, so the
+whole loop runs headless against `ambient mcp`. `--pcm` reads raw 32-bit float
+little-endian mono until end of file, which is how the app hands over a
+push-to-talk hold. `--stop`, or SIGTERM to the turn, silences a reply
+mid-word; SIGUSR1 does the same to a reply being said and is ignored by a turn
+still waiting for one.
 
 Stdout is one JSON event per line for the program that started it (`heard`,
 `nothing`, `queued`, `sent`, `reply`, `spoken`, `text_only`, `dry_run`,

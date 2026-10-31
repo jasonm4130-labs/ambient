@@ -289,6 +289,8 @@ impl Bridge {
             "record.decline" => self.forward_action(req.id, sel!(notThisOne:)),
             "record.stop" => self.forward_action(req.id, sel!(stopRecording:)),
             "dismiss" => self.forward_action(req.id, sel!(dismissFailure:)),
+            "talk.press" => self.forward_action(req.id, sel!(talkPress:)),
+            "talk.release" => self.forward_action(req.id, sel!(talkRelease:)),
             "diarize.start" => {
                 let session = req
                     .params

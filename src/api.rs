@@ -382,6 +382,10 @@ fn config_get(paths: &Paths) -> Value {
             .as_deref()
             .and_then(|d| d.file_name())
             .map(|n| n.to_string_lossy().to_string()),
+        "talk": {
+            "enabled": cfg.talk.enabled,
+            "speak": cfg.talk.speak,
+        },
     })
 }
 
@@ -1110,11 +1114,13 @@ mod tests {
                 "audio_retention",
                 "roster",
                 "latest_session",
+                "talk",
             ]
             .into_iter()
             .collect::<std::collections::BTreeSet<&str>>()
         );
         assert!(got["devices"].is_array());
+        assert_eq!(got["talk"], json!({"enabled": false, "speak": true}));
     }
 
     /// Item 3's second named test: `config.set` of `sessions_dir` while a

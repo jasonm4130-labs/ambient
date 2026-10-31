@@ -26,12 +26,12 @@ USAGE
                                        write markdown, text, json, srt, vtt or assistant
   ambient config [<key> <value>]       show or change settings
   ambient mcp [--no-play] [--save-audio <dir>]
-                                       serve sessions, and the live assistant's
-                                       tools, over MCP on stdio
+                                       serve sessions, the live assistant's
+                                       tools and push-to-talk, over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
   ambient talk --wav <a.wav> [--dry-run]
-                                       say one thing to firstmate and hear
-                                       its reply (see `ambient talk --help`)
+                                       say one thing to your agent session and
+                                       hear its reply (see `ambient talk --help`)
   ambient doctor [--json]              say which of ten things is missing
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
@@ -383,7 +383,8 @@ fn main() -> Result<()> {
         // The whole of it is on stdin and stdout: nothing else may print to
         // stdout while this runs or the client sees a protocol error instead
         // of an answer. Sessions are read-only here; the assistant's tools
-        // write only its heartbeat and `assistant.jsonl`.
+        // write only its heartbeat and `assistant.jsonl`, and the talk tools
+        // only `talk.json` and the answers in `talk/`.
         Some("mcp") => {
             let mut voice_args: Vec<String> = Vec::new();
             while let Some(a) = args.next() {
@@ -399,9 +400,11 @@ fn main() -> Result<()> {
                     other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
                 }
             }
+            // `stdout()` rather than its lock: the talk listener's thread
+            // writes channel notifications to it too, a whole line at a time.
             ambient::mcp::serve_with(
                 std::io::stdin().lock(),
-                std::io::stdout().lock(),
+                std::io::stdout(),
                 &ambient::session::home(),
                 ambient::assist::real_voice(voice_args),
             )
@@ -789,14 +792,8 @@ fn main() -> Result<()> {
                             .unwrap_or_else(ambient::assist::voice::default_helper_dir)
                             .display()
                     );
-                    println!(
-                        "{:<14} {}",
-                        "talk.firstmate_home",
-                        cfg.talk
-                            .firstmate_home
-                            .as_ref()
-                            .map_or_else(|| "(none)".into(), |p| p.display().to_string())
-                    );
+                    println!("{:<14} {}", "talk", cfg.talk.enabled);
+                    println!("{:<14} {}", "talk.speak", cfg.talk.speak);
                     println!();
                     println!(
                         "in effect: sessions go to {}",
