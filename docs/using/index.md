@@ -31,8 +31,9 @@ three read-only tools, and how to follow a session while it records.
 session joins a meeting by voice through `ambient mcp`. Off until you turn it
 on; read what it sends off the Mac first.
 
-**[Talking to firstmate](talk.md)** — hold ⌥Space, speak, and hear firstmate's
-reply. Transcribed on this Mac; only the text leaves it.
+**[Talking to your agent](talk.md)** — hold ⌥Space, speak to the Claude Code
+session you have listening, and hear its reply. Transcribed on this Mac; only
+the text leaves it.
 
 ## What a recording produces
 

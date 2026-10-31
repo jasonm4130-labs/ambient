@@ -1,11 +1,19 @@
 use super::*;
-use std::path::PathBuf;
 
-fn cfg(enabled: bool, home: bool) -> TalkConfig {
+fn cfg(enabled: bool) -> TalkConfig {
     TalkConfig {
         enabled,
         speak: true,
-        firstmate_home: home.then(|| PathBuf::from("/tmp/fm")),
+    }
+}
+
+fn agent() -> Listener {
+    Listener {
+        pid: std::process::id(),
+        id: "l1".into(),
+        since: "2026-10-31T21:40:00+11:00".into(),
+        push: true,
+        client: Some("claude-code".into()),
     }
 }
 
@@ -75,11 +83,15 @@ fn nothing_heard_queued_unannounced_and_text_only_are_said() {
     let mut t = Turn::new(2, true);
     t.apply(&ev(r#"{"event":"heard","text":"hi"}"#));
     t.apply(&ev(
-        r#"{"event":"queued","reason":"firstmate is not taking notes"}"#,
+        r#"{"event":"queued","reason":"no agent is listening: in Claude Code, run /mcp__ambient__talk"}"#,
     ));
-    assert!(t.note.as_deref().unwrap().starts_with("Queued: firstmate"));
+    assert!(t
+        .note
+        .as_deref()
+        .unwrap()
+        .starts_with("Queued: no agent is listening"));
     t.apply(&ev(r#"{"event":"sent","id":"n2","announced":false}"#));
-    assert!(t.note.as_deref().unwrap().contains("not woken"));
+    assert!(t.note.as_deref().unwrap().contains("No agent is listening"));
     t.apply(&ev(r#"{"event":"reply","id":"n2","text":"ok"}"#));
     assert_eq!(t.note, None, "a reply clears the waiting notes");
     t.apply(&ev(r#"{"event":"text_only","reason":"the voice failed"}"#));
@@ -114,33 +126,64 @@ fn a_signalled_worker_is_stopped_not_failed() {
     t.apply(&ev(r#"{"event":"sent","id":"n","announced":true}"#));
     t.exited(None, "");
     assert_eq!(t.stage, Stage::Stopped);
-    assert!(t.note.as_deref().unwrap().contains("inbox"));
+    assert_eq!(t.note.as_deref(), Some("Stopped before the reply came."));
 }
 
 /// D3: the microphone is the meeting's while a recording runs or a call is
 /// waiting to be recorded.
 #[test]
-fn talking_is_refused_while_recording_or_armed_or_unset() {
-    let on = cfg(true, true);
-    assert_eq!(refusal(&on, PhaseKind::Idle), None);
-    assert_eq!(refusal(&on, PhaseKind::Failed), None);
+fn talking_is_refused_while_recording_or_armed() {
+    let (on, l) = (cfg(true), agent());
+    assert_eq!(refusal(&on, PhaseKind::Idle, Some(&l)), None);
+    assert_eq!(refusal(&on, PhaseKind::Failed, Some(&l)), None);
     for busy in [PhaseKind::Recording, PhaseKind::Stopping] {
-        assert!(refusal(&on, busy).unwrap().contains("recording"));
+        assert!(refusal(&on, busy, Some(&l)).unwrap().contains("recording"));
     }
-    assert!(refusal(&on, PhaseKind::Armed).unwrap().contains("call"));
-    assert!(refusal(&cfg(false, true), PhaseKind::Idle)
+    assert!(refusal(&on, PhaseKind::Armed, Some(&l))
         .unwrap()
-        .contains("off"));
-    assert!(refusal(&cfg(true, false), PhaseKind::Idle)
-        .unwrap()
-        .contains("home"));
+        .contains("call"));
     assert_eq!(
         pause_reason(PhaseKind::Armed),
-        refusal(&on, PhaseKind::Armed)
+        refusal(&on, PhaseKind::Armed, Some(&l))
     );
     assert_eq!(pause_reason(PhaseKind::Idle), None);
     assert_eq!(paused(PhaseKind::Armed), Some("armed"));
     assert_eq!(paused(PhaseKind::Idle), None);
+}
+
+/// Off first, then paused, then nobody listening: each says what to do, and
+/// the earlier one wins when several hold.
+#[test]
+fn refusal_order_is_off_then_paused_then_no_listener() {
+    let l = agent();
+    assert_eq!(
+        refusal(&cfg(false), PhaseKind::Recording, None),
+        Some("Talking mode is off. Turn it on in Settings.")
+    );
+    assert_eq!(
+        refusal(&cfg(true), PhaseKind::Armed, None),
+        pause_reason(PhaseKind::Armed)
+    );
+    assert_eq!(
+        refusal(&cfg(true), PhaseKind::Idle, None),
+        Some(NO_LISTENER)
+    );
+    assert!(NO_LISTENER.contains("/mcp__ambient__talk"));
+    assert_eq!(refusal(&cfg(true), PhaseKind::Idle, Some(&l)), None);
+}
+
+#[test]
+fn turn_reply_text_has_no_markdown() {
+    let mut t = Turn::new(1, false);
+    t.apply(&ev(
+        r#"{"event":"reply","id":"n","text":"**Green.** See [the run](https://x.y).\n\n- 512 passed\n- `0` failed"}"#,
+    ));
+    assert_eq!(
+        t.reply_text.as_deref(),
+        Some("Green. See the run.\n\n• 512 passed\n• 0 failed")
+    );
+    assert!(t.reply.as_deref().unwrap().starts_with("**Green.**"));
+    assert_eq!(t.payload()["reply_text"], json!(t.reply_text));
 }
 
 #[test]
@@ -153,7 +196,7 @@ fn the_menu_line_follows_the_latest_turn_and_a_notice_wins() {
         r#"{"event":"reply","id":"n","text":"\n**All** green.\nMore detail."}"#,
     ));
     talk.turns.push_back(t);
-    assert_eq!(talk.menu_line().as_deref(), Some("firstmate: All green."));
+    assert_eq!(talk.menu_line().as_deref(), Some("Reply: All green."));
     assert_eq!(talk.symbol(), Some(SPEAKING_SYMBOL));
     talk.notice("Talking is paused while Ambient is recording.");
     assert_eq!(
@@ -169,18 +212,31 @@ fn the_payload_carries_both_sides_and_the_pause() {
     t.apply(&ev(r#"{"event":"heard","text":"status?"}"#));
     talk.turns.push_back(t);
     let p = talk.payload(
-        &cfg(true, true),
+        &cfg(true),
         Err("another app already uses ⌥Space"),
         PhaseKind::Recording,
+        None,
     );
     assert_eq!(p["enabled"], json!(true));
-    assert_eq!(p["configured"], json!(true));
+    assert_eq!(p["listener"], Value::Null);
     assert_eq!(p["paused"], json!("recording"));
     assert_eq!(p["hotkey_error"], json!("another app already uses ⌥Space"));
     assert_eq!(p["listening"], json!(false));
     assert_eq!(p["turns"][0]["you"], json!("status?"));
     assert_eq!(p["turns"][0]["state"], json!("sending"));
     assert_eq!(p["turns"][0]["reply"], Value::Null);
+    assert_eq!(p["turns"][0]["reply_text"], Value::Null);
+}
+
+#[test]
+fn payload_reports_the_listener() {
+    let talk = Talk::default();
+    let p = talk.payload(&cfg(true), Ok(()), PhaseKind::Idle, Some(&agent()));
+    assert_eq!(
+        p["listener"],
+        json!({"since": "2026-10-31T21:40:00+11:00", "push": true, "client": "claude-code"})
+    );
+    assert_eq!(p["hotkey_error"], Value::Null);
 }
 
 /// The worker gets every sample on stdin, and its events become the turn.
@@ -240,10 +296,7 @@ while :; do sleep 0.05; done"#;
     let turn = talk.turns.back().unwrap();
     assert_eq!(turn.stage, Stage::Stopped, "{turn:?}");
     assert_eq!(turn.reply.as_deref(), Some("PR 12 merged."));
-    assert_eq!(
-        talk.menu_line().as_deref(),
-        Some("firstmate: PR 12 merged.")
-    );
+    assert_eq!(talk.menu_line().as_deref(), Some("Reply: PR 12 merged."));
     assert!(!talk.speaking());
 }
 

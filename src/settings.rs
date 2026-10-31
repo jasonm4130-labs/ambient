@@ -230,19 +230,6 @@ impl Bridge {
                 let chosen = self.pick_app();
                 self.eval(&reply_js(req.id, Ok(json!({"chosen": chosen}))));
             }
-            // Talking's firstmate home is a folder like the sessions one, but
-            // moving it mid-recording splits nothing.
-            "pick_dir"
-                if req
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("purpose"))
-                    .and_then(Value::as_str)
-                    == Some("firstmate_home") =>
-            {
-                let chosen = self.pick_dir("Which firstmate home should talking go to?");
-                self.eval(&reply_js(req.id, Ok(json!({"chosen": chosen}))));
-            }
             "pick_dir" => {
                 let chosen = if self.ivars().recording.get() {
                     self.refuse(
@@ -253,7 +240,7 @@ impl Bridge {
                     );
                     None
                 } else {
-                    self.pick_dir("Where should sessions be written?")
+                    self.pick_dir()
                 };
                 self.eval(&reply_js(req.id, Ok(json!({"chosen": chosen}))));
             }
@@ -372,14 +359,16 @@ impl Bridge {
         }
     }
 
-    fn pick_dir(&self, message: &str) -> Option<PathBuf> {
+    fn pick_dir(&self) -> Option<PathBuf> {
         let mtm = MainThreadMarker::from(self);
         let panel = NSOpenPanel::openPanel(mtm);
         {
             panel.setCanChooseFiles(false);
             panel.setCanChooseDirectories(true);
             panel.setCanCreateDirectories(true);
-            panel.setMessage(Some(&NSString::from_str(message)));
+            panel.setMessage(Some(&NSString::from_str(
+                "Where should sessions be written?",
+            )));
             if panel.runModal() != NSModalResponseOK {
                 return None;
             }

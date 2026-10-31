@@ -231,7 +231,7 @@ Reply:
   "audio_retention": "7",
   "roster": ["Ana"],
   "latest_session": "2026-09-05T1200",
-  "talk": {"enabled": false, "speak": true, "firstmate_home": null}
+  "talk": {"enabled": false, "speak": true}
 }
 ```
 

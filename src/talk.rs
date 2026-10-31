@@ -1,12 +1,18 @@
-//! `ambient talk`: one spoken turn with an agent, in a short-lived child.
+//! `ambient talk`: one spoken turn with the user's own agent, in a
+//! short-lived child.
 //!
 //! The app holds the microphone and buffers a push-to-talk hold in memory;
 //! on release it pipes the audio here. This process trims it with the VAD,
-//! transcribes it with Parakeet on this Mac, sends the text as a note through
-//! a [`Target`] (firstmate's `fm-inbox.sh` today), waits for the reply to
-//! that note, and speaks it through the assistant's voice helper. The audio
-//! never leaves the process and is never written anywhere: only the text
-//! goes to the target.
+//! transcribes it with Parakeet on this Mac, posts the text as a question
+//! through a [`Target`], waits for the answer, and speaks it through the
+//! assistant's voice helper. The audio never leaves the process and is never
+//! written anywhere: only the text goes to the target.
+//!
+//! The target is the [`mailbox`]: the question waits in `talk/` beside the
+//! config file until the `ambient mcp` process listening in the user's agent
+//! session ([`listen`]) hands it over, and the agent answers with
+//! `talk_reply`. Ambient holds no model for this; the answer is the agent's,
+//! as the live assistant's judgement is (ADR 0018, ADR 0019).
 //!
 //! It runs as a child for the reason finalization does
 //! ([`crate::finalize`]): the recogniser's memory goes back to the system
@@ -17,8 +23,8 @@
 //! ```text
 //! {"event":"heard","text":"…","speech_s":1.8,"load_ms":420,"text_ms":610}
 //! {"event":"nothing","speech_s":0.1}               didn't catch that; nothing sent
-//! {"event":"queued","reason":"…"}                  the target is busy; the note still goes
-//! {"event":"sent","id":"…","request_id":"ambient-…","announced":true}
+//! {"event":"queued","reason":"…"}                  no agent is listening; the question still waits
+//! {"event":"sent","id":"ambient-…","request_id":"ambient-…","announced":true}
 //! {"event":"reply","id":"…","text":"…","speech":"…","reply_ms":5200}
 //! {"event":"spoken","first_audio_ms":60,"audio_s":3.1}
 //! {"event":"text_only","reason":"…"}               the reply stays text
@@ -39,11 +45,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 use std::time::{Duration, Instant};
 
 pub mod app;
+pub mod listen;
+pub mod mailbox;
 
 /// The subcommand the child runs under.
 pub const SUBCOMMAND: &str = "talk";
@@ -54,9 +61,12 @@ pub const MIN_SPEECH_S: f64 = 0.4;
 /// How often the target is asked for the reply.
 const POLL: Duration = Duration::from_secs(1);
 
-/// How long a turn waits for its reply by default. A later reply is still
-/// recorded by the target; it is only not spoken by this turn.
+/// How long a turn waits for its reply by default. After it, the question is
+/// marked expired and a late `talk_reply` is told so.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// What a queued turn tells the user to do.
+pub const NO_LISTENER: &str = "no agent is listening: in Claude Code, run /mcp__ambient__talk";
 
 /// In the sessions folder, kept fresh by the app while talking is paused for
 /// a call waiting to be recorded or a recording starting.
@@ -91,18 +101,20 @@ const SPEAKING_WAIT: Duration = Duration::from_secs(10);
 
 pub const USAGE: &str = "\
 ambient talk (--wav <file> | --pcm [--rate <hz>]) [--dry-run] [--no-play]
-             [--home <firstmate-home>] [--timeout <s>]
+             [--timeout <s>]
 ambient talk --stop
 
   --wav <file>   a recorded question, any rate or channel count
   --pcm          raw 32-bit float little-endian mono on stdin, until EOF
   --rate <hz>    the --pcm sample rate (default 16000)
-  --dry-run      send the note and wait for the reply, but print it instead
-                 of speaking it
+  --dry-run      post the question and wait for the answer, but print it
+                 instead of speaking it
   --no-play      speak through the voice helper without playing the audio
-  --home <dir>   the firstmate home (default: the talk.firstmate_home setting)
-  --timeout <s>  how long to wait for the reply (default 300)
+  --timeout <s>  how long to wait for the answer (default 300)
   --stop         silence the turn that is speaking now
+
+The question goes to the agent session listening through `ambient mcp`:
+in Claude Code, run /mcp__ambient__talk.
 ";
 
 /// Where a transcript goes and its reply comes from.
@@ -114,6 +126,8 @@ pub trait Target {
     fn send(&mut self, text: &str, request_id: &str) -> Result<Sent>;
     /// The reply to note `id`, if it has arrived.
     fn reply(&mut self, id: &str) -> Result<Option<String>>;
+    /// The turn stopped waiting for note `id`.
+    fn expire(&mut self, _id: &str) {}
 }
 
 /// A note the target accepted.
@@ -125,128 +139,54 @@ pub struct Sent {
     pub announced: bool,
 }
 
-/// Firstmate, through its `bin/fm-inbox.sh`: `note --request-id` to send,
-/// `receipts` to find the reply, `ready` to ask whether the primary is
-/// there. All three are local file operations; none makes a network call.
-pub struct Firstmate {
-    home: PathBuf,
-    script: PathBuf,
-    cursor: String,
+/// The [`mailbox`], for the agent session listening through `ambient mcp`.
+pub struct MailboxTarget {
+    mailbox: mailbox::Mailbox,
+    config_file: PathBuf,
+    /// How long the question stays open, which is how long this turn waits.
+    timeout: Duration,
 }
 
-impl Firstmate {
-    pub fn new(home: &Path) -> Result<Self> {
-        let script = home.join("bin").join("fm-inbox.sh");
-        if !script.is_file() {
-            bail!(
-                "{} is not a firstmate home: it has no bin/fm-inbox.sh",
-                home.display()
-            );
-        }
+impl MailboxTarget {
+    pub fn new(config_file: &Path, timeout: Duration) -> Result<Self> {
+        let mailbox = mailbox::Mailbox::at(config_file).map_err(|e| {
+            anyhow!(
+                "could not open the talk mailbox beside {}: {e}",
+                config_file.display()
+            )
+        })?;
+        // Whatever an earlier turn left behind (a stopped worker never
+        // cleans up) is cleared before this one posts.
+        mailbox.sweep();
         Ok(Self {
-            home: home.to_path_buf(),
-            script,
-            cursor: String::new(),
+            mailbox,
+            config_file: config_file.to_path_buf(),
+            timeout,
         })
     }
-
-    fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<(Option<i32>, String)> {
-        let mut child = Command::new(&self.script)
-            .args(args)
-            .env("FM_HOME", &self.home)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("could not run {}", self.script.display()))?;
-        if let Some(text) = stdin {
-            let mut pipe = child.stdin.take().expect("piped stdin");
-            pipe.write_all(text.as_bytes())?;
-        }
-        let out = child.wait_with_output()?;
-        let code = out.status.code();
-        if code != Some(0) && code != Some(3) {
-            bail!(
-                "fm-inbox.sh {} failed ({}): {}",
-                args.first().copied().unwrap_or_default(),
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
-    }
-
-    fn json(&self, args: &[&str], stdin: Option<&str>) -> Result<(Option<i32>, Value)> {
-        let (code, out) = self.run(args, stdin)?;
-        let v = serde_json::from_str(out.trim())
-            .with_context(|| format!("fm-inbox.sh {} printed {out:?}", args[0]))?;
-        Ok((code, v))
-    }
-
-    /// Every reply after the cursor: receipts pages its replies oldest
-    /// first, so a bounded page would trail the newest ones.
-    fn receipts(&self) -> Result<Value> {
-        let mut args = vec!["receipts"];
-        if !self.cursor.is_empty() {
-            args.extend(["--after", &self.cursor]);
-        }
-        args.push("--all-replies");
-        Ok(self.json(&args, None)?.1)
-    }
 }
 
-impl Target for Firstmate {
+impl Target for MailboxTarget {
     fn ready(&mut self) -> Result<Option<bool>> {
-        let (_, v) = self.json(&["ready"], None)?;
-        Ok(v["can_receive"].as_bool())
+        Ok(Some(mailbox::listener(&self.config_file).is_some()))
     }
 
     fn send(&mut self, text: &str, request_id: &str) -> Result<Sent> {
-        // Replies are read from here on, so one recorded before this note
-        // cannot be mistaken for its answer.
-        self.cursor = self.receipts()?["reply_cursor"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let (code, v) = self.json(
-            &["note", "--request-id", request_id, "--json", "-"],
-            Some(text),
-        )?;
-        let id = v["id"]
-            .as_str()
-            .ok_or_else(|| anyhow!("fm-inbox.sh note gave no id: {v}"))?
-            .to_string();
-        let mut announced = v["announced"].as_bool() == Some(true);
-        // Exit 3 is "saved but firstmate was not woken": repair the wake for
-        // this note rather than sending it again.
-        if code == Some(3) || !announced {
-            announced = match self.json(&["announce", "--json", &id], None) {
-                Ok((_, a)) => a["announced"].as_bool() == Some(true),
-                Err(e) => {
-                    eprintln!("  talk: note {id} is saved but not announced: {e:#}");
-                    false
-                }
-            };
-        }
-        Ok(Sent { id, announced })
+        self.mailbox
+            .post(request_id, text, std::process::id(), self.timeout)
+            .map_err(|e| anyhow!("could not post the question: {e}"))?;
+        Ok(Sent {
+            id: request_id.to_string(),
+            announced: mailbox::listener(&self.config_file).is_some(),
+        })
     }
 
     fn reply(&mut self, id: &str) -> Result<Option<String>> {
-        let v = self.receipts()?;
-        if let Some(c) = v["reply_cursor"].as_str() {
-            self.cursor = c.to_string();
-        }
-        Ok(v["replies"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|r| r["id"] == id)
-            .and_then(|r| r["body"].as_str())
-            .map(str::to_string))
+        Ok(self.mailbox.take_reply(id))
+    }
+
+    fn expire(&mut self, id: &str) {
+        self.mailbox.expire(id);
     }
 }
 
@@ -259,15 +199,11 @@ pub fn speakable(md: &str) -> String {
     let mut fenced = false;
     for line in md.lines() {
         let t = line.trim();
-        if t.starts_with("```") || t.starts_with("~~~") {
+        if is_fence(t) {
             fenced = !fenced;
             continue;
         }
-        if fenced
-            || t.is_empty()
-            || t.chars()
-                .all(|c| matches!(c, '-' | '*' | '_' | '=' | '|' | ':' | ' '))
-        {
+        if fenced || t.is_empty() || is_rule(t) {
             continue;
         }
         let t = t.trim_start_matches('#').trim_start_matches('>').trim();
@@ -289,6 +225,103 @@ pub fn speakable(md: &str) -> String {
     out
 }
 
+/// The part of a reply that is said aloud: its first paragraph, up to the
+/// first blank line or code block, after any headings. The agent is asked to
+/// lead with what should be heard and to put detail after a blank line,
+/// which is shown and not read out. A reply with no such paragraph is read
+/// whole.
+pub fn lead(md: &str) -> String {
+    let mut para: Vec<&str> = Vec::new();
+    let mut fenced = false;
+    for line in md.lines() {
+        let t = line.trim();
+        if is_fence(t) {
+            if !para.is_empty() {
+                break;
+            }
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if t.is_empty() {
+            if !para.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if para.is_empty() && t.starts_with('#') {
+            continue;
+        }
+        para.push(line);
+    }
+    if para.is_empty() {
+        md.to_string()
+    } else {
+        para.join("\n")
+    }
+}
+
+fn is_fence(t: &str) -> bool {
+    t.starts_with("```") || t.starts_with("~~~")
+}
+
+fn is_rule(t: &str) -> bool {
+    t.chars()
+        .all(|c| matches!(c, '-' | '*' | '_' | '=' | '|' | ':' | ' '))
+}
+
+/// Markdown made readable as plain text, for the window: lines and
+/// paragraphs kept, bullets drawn as "• ", numbers kept, emphasis, heading
+/// marks and code ticks dropped, a link reduced to its text, and code blocks
+/// kept as they are. Nothing in it needs a markdown renderer to read.
+pub fn readable(md: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let (mut fenced, mut gap) = (false, false);
+    for line in md.lines() {
+        let t = line.trim();
+        if is_fence(t) {
+            fenced = !fenced;
+            continue;
+        }
+        let shown = if fenced {
+            line.trim_end().to_string()
+        } else if t.is_empty() || is_rule(t) {
+            gap |= t.is_empty() && !out.is_empty();
+            continue;
+        } else {
+            let t = t.trim_start_matches('#').trim_start_matches('>').trim();
+            let (mark, rest) = bullet(t);
+            let words = inline_with(rest, false);
+            if words.is_empty() {
+                continue;
+            }
+            format!("{mark}{words}")
+        };
+        if gap {
+            out.push(String::new());
+            gap = false;
+        }
+        out.push(shown);
+    }
+    out.join("\n")
+}
+
+/// A list item's marker as [`readable`] draws it, and the rest of the line.
+fn bullet(t: &str) -> (String, &str) {
+    let rest = strip_bullet(t);
+    if rest.len() == t.len() {
+        return (String::new(), t);
+    }
+    let digits = t.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 {
+        (format!("{}. ", &t[..digits]), rest)
+    } else {
+        ("• ".to_string(), rest)
+    }
+}
+
 fn strip_bullet(t: &str) -> &str {
     for b in ["- ", "* ", "+ "] {
         if let Some(rest) = t.strip_prefix(b) {
@@ -307,6 +340,11 @@ fn strip_bullet(t: &str) -> &str {
 
 /// Links, images, emphasis, code spans, table pipes and URLs within a line.
 fn inline(t: &str) -> String {
+    inline_with(t, true)
+}
+
+/// [`inline`], with a bare URL said as "a link" only when `urls_as_words`.
+fn inline_with(t: &str, urls_as_words: bool) -> String {
     let mut s = String::with_capacity(t.len());
     let chars: Vec<char> = t.chars().collect();
     let mut i = 0;
@@ -335,7 +373,7 @@ fn inline(t: &str) -> String {
     s.split_whitespace()
         .map(|w| {
             let bare = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != ':');
-            if bare.starts_with("http://") || bare.starts_with("https://") {
+            if urls_as_words && (bare.starts_with("http://") || bare.starts_with("https://")) {
                 "a link"
             } else {
                 w.trim_matches('_')
@@ -444,14 +482,10 @@ pub fn converse(text: &str, turn: Turn<'_>) -> Result<Outcome> {
     } = turn;
     match target.ready() {
         Ok(Some(true)) => {}
-        Ok(Some(false)) => emit(
-            out,
-            json!({"event": "queued", "reason": "firstmate is not taking notes right now; \
-                it will see this when it is"}),
-        ),
+        Ok(Some(false)) => emit(out, json!({"event": "queued", "reason": NO_LISTENER})),
         Ok(None) => emit(
             out,
-            json!({"event": "queued", "reason": "firstmate's readiness is unknown"}),
+            json!({"event": "queued", "reason": "whether an agent is listening is unknown"}),
         ),
         Err(e) => emit(out, json!({"event": "queued", "reason": format!("{e:#}")})),
     }
@@ -476,6 +510,7 @@ pub fn converse(text: &str, turn: Turn<'_>) -> Result<Outcome> {
             Err(e) => eprintln!("  talk: reading replies: {e:#}"),
         }
         if sent_at.elapsed() >= timeout {
+            target.expire(&sent.id);
             emit(
                 out,
                 json!({"event": "no_reply", "id": sent.id,
@@ -485,7 +520,7 @@ pub fn converse(text: &str, turn: Turn<'_>) -> Result<Outcome> {
         }
         std::thread::sleep(poll);
     };
-    let speech = cap(&speakable(&reply), MAX_SPEECH_CHARS);
+    let speech = cap(&speakable(&lead(&reply)), MAX_SPEECH_CHARS);
     emit(
         out,
         json!({"event": "reply", "id": sent.id, "text": reply, "speech": speech,
@@ -651,7 +686,6 @@ pub fn main(args: Vec<String>) -> Result<()> {
     let mut input = None;
     let mut rate = 16_000u32;
     let (mut dry_run, mut no_play) = (false, false);
-    let mut home: Option<PathBuf> = None;
     let mut timeout = DEFAULT_TIMEOUT;
     let mut args = args.into_iter();
     let value = |args: &mut std::vec::IntoIter<String>, flag: &str| {
@@ -666,22 +700,13 @@ pub fn main(args: Vec<String>) -> Result<()> {
             "--rate" => rate = value(&mut args, "--rate")?.parse()?,
             "--dry-run" => dry_run = true,
             "--no-play" => no_play = true,
-            "--home" => home = Some(value(&mut args, "--home")?.into()),
             "--timeout" => timeout = Duration::from_secs(value(&mut args, "--timeout")?.parse()?),
             other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
         }
     }
     let input = input.ok_or_else(|| anyhow!("give --wav <file> or --pcm\n\n{USAGE}"))?;
     let cfg = Config::load();
-    let home = home
-        .or_else(|| cfg.talk.firstmate_home.clone())
-        .ok_or_else(|| {
-            anyhow!(
-                "talking has nowhere to go: set the firstmate home with \
-                 `ambient config talk.firstmate_home <dir>`"
-            )
-        })?;
-    let mut target = Firstmate::new(&home)?;
+    let mut target = MailboxTarget::new(&crate::config::path(), timeout)?;
     on_interrupt();
     let paused = || is_paused_in(&crate::session::home());
     // Talking is paused while a recording runs: the mic is shared, so the

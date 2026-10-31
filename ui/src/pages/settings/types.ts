@@ -20,11 +20,11 @@ export interface SettingsConfig {
   talk?: TalkSettings;
 }
 
-/// Talking to firstmate: `talk`, `talk.speak` and `talk.firstmate_home`.
+/// Push-to-talk: `talk` and `talk.speak`. Who hears it is not a setting; it
+/// is whichever agent session is listening (the window's `talk` event).
 export interface TalkSettings {
   enabled: boolean;
   speak: boolean;
-  firstmate_home: string | null;
 }
 
 export interface UnnamedSpeaker {

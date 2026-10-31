@@ -5,7 +5,9 @@ import { NamingStrip } from "@/components/NamingStrip";
 import { SearchPalette } from "@/components/SearchPalette";
 import { SessionHeader } from "@/components/SessionHeader";
 import { SessionList, sessionState, type SessionSummary } from "@/components/SessionList";
-import { TalkCard, TalkPanel, type TalkPayload } from "@/components/Talk";
+import { TalkCard } from "@/components/talk/TalkCard";
+import { TalkPanel } from "@/components/talk/TalkPanel";
+import type { TalkPayload } from "@/components/talk/text";
 import { Transcript } from "@/components/Transcript";
 import { useBridge } from "@/lib/bridge-context";
 import { useLatest } from "@/lib/latest";
@@ -35,7 +37,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
   const [error, setError] = useState<string>();
   const [capture, setCapture] = useState<CaptureConfig>();
   const [talk, setTalk] = useState<TalkPayload>();
-  // The conversation with firstmate takes the main pane until a session is
+  // The conversation with the agent takes the main pane until a session is
   // chosen again.
   const [talkOpen, setTalkOpen] = useState(false);
 

@@ -1,4 +1,4 @@
-//! The app's half of talking to firstmate: the hold, the turns, the words.
+//! The app's half of push-to-talk: the hold, the turns, the words.
 //!
 //! The menu bar owns one [`Talk`]. A press of ⌥Space (or the window's talk
 //! button) opens the microphone into memory with [`crate::capture::MicHold`];
@@ -7,9 +7,10 @@
 //! come back here and become [`Turn`]s, which the menu, the status icon and
 //! the window's talk panel are all drawn from.
 //!
-//! Turns are kept in memory only, and only the last [`MAX_TURNS`]: firstmate's
-//! inbox already keeps the record, and Ambient keeps no talk log of its own.
+//! Turns are kept in memory only, and only the last [`MAX_TURNS`]: the agent's
+//! own session already keeps the record, and Ambient keeps no talk log.
 
+use super::mailbox::Listener;
 use crate::config::TalkConfig;
 use crate::state::PhaseKind;
 use serde_json::{json, Value};
@@ -42,9 +43,9 @@ pub const SYMBOLS: [&str; 2] = [LISTENING_SYMBOL, SPEAKING_SYMBOL];
 pub enum Stage {
     /// The worker is trimming and transcribing the audio.
     Hearing,
-    /// The transcript is going to firstmate.
+    /// The transcript is being posted for the agent.
     Sending,
-    /// The note is with firstmate; no reply yet.
+    /// The question is with the agent; no reply yet.
     Waiting,
     /// The reply is being read aloud.
     Speaking,
@@ -52,7 +53,7 @@ pub enum Stage {
     Done,
     /// Too little speech; nothing was sent.
     Nothing,
-    /// The worker stopped waiting before firstmate answered.
+    /// The worker stopped waiting before the agent answered.
     NoReply,
     /// Stopped by the user, or by a recording starting.
     Stopped,
@@ -89,8 +90,11 @@ pub struct Turn {
     pub id: u64,
     /// What the user said, once transcribed.
     pub you: Option<String>,
-    /// firstmate's reply, as it wrote it.
+    /// The agent's reply, as it wrote it.
     pub reply: Option<String>,
+    /// The reply as plain text for the window, with no markdown symbols
+    /// ([`super::readable`]).
+    pub reply_text: Option<String>,
     pub stage: Stage,
     /// Why a turn is queued, text only, stopped or failed.
     pub note: Option<String>,
@@ -105,6 +109,7 @@ impl Turn {
             id,
             you: None,
             reply: None,
+            reply_text: None,
             stage: Stage::Hearing,
             note: None,
             speak,
@@ -126,20 +131,21 @@ impl Turn {
             "queued" => {
                 self.note = Some(format!(
                     "Queued: {}",
-                    text("reason").unwrap_or_else(|| "firstmate is busy".into())
+                    text("reason").unwrap_or_else(|| super::NO_LISTENER.into())
                 ));
             }
             "sent" => {
                 self.stage = Stage::Waiting;
                 if event["announced"] == json!(false) {
                     self.note = Some(
-                        "Saved, but firstmate was not woken; it will see it at its next check."
+                        "No agent is listening yet; the question waits five minutes for one."
                             .into(),
                     );
                 }
             }
             "reply" => {
                 self.reply = text("text");
+                self.reply_text = self.reply.as_deref().map(super::readable);
                 self.note = None;
                 self.stage = if self.speak {
                     Stage::Speaking
@@ -154,8 +160,7 @@ impl Turn {
             }
             "no_reply" => {
                 self.stage = Stage::NoReply;
-                self.note =
-                    Some("firstmate has not replied yet; its reply will be in its inbox.".into());
+                self.note = Some("No reply within 5 minutes; the question expired.".into());
             }
             _ => {}
         }
@@ -174,7 +179,7 @@ impl Turn {
             self.note = Some(if self.reply.is_some() {
                 "Stopped.".into()
             } else {
-                "Stopped before firstmate replied; its reply will be in its inbox.".into()
+                "Stopped before the reply came.".into()
             });
             return;
         }
@@ -194,27 +199,36 @@ impl Turn {
             "id": self.id,
             "you": self.you,
             "reply": self.reply,
+            "reply_text": self.reply_text,
             "state": self.stage.word(),
             "note": self.note,
         })
     }
 }
 
-/// Why a press is refused, or `None` to start listening.
+/// What a press is refused with when no agent session is listening.
+pub const NO_LISTENER: &str = "No agent is listening. In Claude Code, run /mcp__ambient__talk.";
+
+/// Why a press is refused, or `None` to start listening: talking mode off,
+/// then paused, then nobody to hear it.
 ///
 /// The microphone is shared with recording, so talking is paused while a
 /// recording runs or a call is waiting to be recorded: an aside would land in
 /// the meeting's transcript, and a spoken reply would be heard by everyone
 /// in it.
-pub fn refusal(cfg: &TalkConfig, phase: PhaseKind) -> Option<&'static str> {
+pub fn refusal(
+    cfg: &TalkConfig,
+    phase: PhaseKind,
+    listener: Option<&Listener>,
+) -> Option<&'static str> {
     if !cfg.enabled {
         return Some("Talking mode is off. Turn it on in Settings.");
     }
     if let Some(why) = pause_reason(phase) {
         return Some(why);
     }
-    if cfg.firstmate_home.is_none() {
-        return Some("Choose firstmate's home in Settings first.");
+    if listener.is_none() {
+        return Some(NO_LISTENER);
     }
     None
 }
@@ -305,8 +319,9 @@ impl Talk {
             .map(|(t, _)| t.as_str())
     }
 
-    /// Start a turn: a worker that hears `samples` (mono at `rate`), sends
-    /// them to firstmate and waits for the reply. Returns the turn's id.
+    /// Start a turn: a worker that hears `samples` (mono at `rate`), posts
+    /// the words for the listening agent and waits for the reply. Returns
+    /// the turn's id.
     pub fn spawn(&mut self, samples: Vec<f32>, rate: f64, speak: bool) -> anyhow::Result<u64> {
         let exe = std::env::current_exe()?;
         let mut cmd = Command::new(exe);
@@ -453,15 +468,15 @@ impl Talk {
         Some(match t.stage {
             Stage::Hearing => "Working out what you said…".into(),
             Stage::Sending => format!("Sending “{}”", short(t.you.as_deref().unwrap_or(""))),
-            Stage::Waiting => "Waiting for firstmate's reply…".into(),
+            Stage::Waiting => "Waiting for the reply…".into(),
             Stage::Speaking | Stage::Done => match &t.reply {
-                Some(r) => format!("firstmate: {}", short(r)),
+                Some(r) => format!("Reply: {}", short(r)),
                 None => "Done".into(),
             },
             Stage::Nothing => "Didn't catch that".into(),
-            Stage::NoReply => "No reply from firstmate yet".into(),
+            Stage::NoReply => "No reply within 5 minutes; the question expired.".into(),
             Stage::Stopped => match &t.reply {
-                Some(r) => format!("firstmate: {}", short(r)),
+                Some(r) => format!("Reply: {}", short(r)),
                 None => "Stopped".into(),
             },
             Stage::Failed => format!(
@@ -472,11 +487,21 @@ impl Talk {
     }
 
     /// The window's `talk` event.
-    pub fn payload(&self, cfg: &TalkConfig, hotkey: Result<(), &str>, phase: PhaseKind) -> Value {
+    pub fn payload(
+        &self,
+        cfg: &TalkConfig,
+        hotkey: Result<(), &str>,
+        phase: PhaseKind,
+        listener: Option<&Listener>,
+    ) -> Value {
         json!({
             "enabled": cfg.enabled,
             "speak": cfg.speak,
-            "configured": cfg.firstmate_home.is_some(),
+            "listener": listener.map(|l| json!({
+                "since": l.since,
+                "push": l.push,
+                "client": l.client,
+            })),
             "chord": crate::hotkey::CHORD,
             "hotkey_error": hotkey.err(),
             "listening": self.listening(),

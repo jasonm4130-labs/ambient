@@ -143,20 +143,23 @@ struct Ivars {
     /// The refresh timer runs at 2 Hz for the level meter; watching for calls
     /// needs nothing like that rate, so it happens every eighth tick.
     ticks: Cell<u64>,
-    /// Talking to firstmate: the hold, the turns and their workers.
+    /// Push-to-talk: the hold, the turns and their workers.
     talk: RefCell<crate::talk::app::Talk>,
     /// The talk settings as last read, every fourth tick like the
     /// assistant's.
     talk_cfg: RefCell<crate::config::TalkConfig>,
+    /// The agent session listening for questions, from its heartbeat, read
+    /// with the settings.
+    talk_listener: RefCell<Option<crate::talk::mailbox::Listener>>,
     /// ⌥Space, held while talking mode is on.
     hotkey: RefCell<Option<crate::hotkey::HotKey>>,
     /// Why ⌥Space could not be had, shown until talking mode is turned off
     /// and on again.
     hotkey_error: RefCell<Option<String>>,
-    /// "Hold to talk to firstmate ⌥Space", which also starts and sends a
-    /// turn by click for anyone not holding the key.
+    /// "Hold to talk ⌥Space", which also starts and sends a turn by click
+    /// for anyone not holding the key.
     talk_item: RefCell<Option<Retained<NSMenuItem>>>,
-    /// "Speak firstmate's replies", ticked when replies are read aloud.
+    /// "Speak replies", ticked when replies are read aloud.
     talk_speak_item: RefCell<Option<Retained<NSMenuItem>>>,
     /// The last reply, or where the current turn has got to.
     talk_line: RefCell<Option<Retained<NSMenuItem>>>,
@@ -188,8 +191,8 @@ define_class!(
             // Read before the transition: the closure is pure, and the queue
             // is a second thing that can answer a deferred quit.
             let queue_busy = !self.ivars().queue.borrow().is_empty();
-            // A turn is not worth keeping the app for: its note is already
-            // with firstmate, and the reply stays in firstmate's inbox.
+            // A turn is not worth keeping the app for: its question expires
+            // with its worker, and the agent is told so if it answers late.
             {
                 let mut talk = self.ivars().talk.borrow_mut();
                 talk.hold = None;
@@ -381,7 +384,7 @@ define_class!(
             match cfg.save() {
                 Ok(()) => {
                     self.log(&format!(
-                        "speaking firstmate's replies turned {} by the user",
+                        "speaking talk replies turned {} by the user",
                         if cfg.talk.speak { "on" } else { "off" }
                     ));
                     *self.ivars().talk_cfg.borrow_mut() = cfg.talk;
@@ -668,6 +671,7 @@ impl Delegate {
                     None => Ok(()),
                 },
                 view.kind,
+                self.ivars().talk_listener.borrow().as_ref(),
             );
             w.render_talk(&talk);
         }
@@ -792,10 +796,12 @@ impl Delegate {
         *self.ivars().assistant_state.borrow_mut() = crate::assist::listening(&config);
     }
 
-    /// Refresh the talk settings, and hold ⌥Space exactly while talking mode
-    /// is on.
+    /// Refresh the talk settings and who is listening, and hold ⌥Space
+    /// exactly while talking mode is on.
     fn read_talk(&self) {
         let cfg = crate::config::Config::load().talk;
+        *self.ivars().talk_listener.borrow_mut() =
+            crate::talk::mailbox::listener(&crate::config::path());
         let held = self.ivars().hotkey.borrow().is_some();
         if cfg.enabled && !held && self.ivars().hotkey_error.borrow().is_none() {
             let me = self.retain();
@@ -840,8 +846,12 @@ impl Delegate {
         }
         let cfg = crate::config::Config::load();
         *self.ivars().talk_cfg.borrow_mut() = cfg.talk.clone();
+        // Read now rather than trusting the last tick: an agent that started
+        // listening a second ago should not be refused.
+        let listener = crate::talk::mailbox::listener(&crate::config::path());
+        *self.ivars().talk_listener.borrow_mut() = listener.clone();
         let kind = self.ivars().phase.snapshot().kind;
-        if let Some(why) = crate::talk::app::refusal(&cfg.talk, kind) {
+        if let Some(why) = crate::talk::app::refusal(&cfg.talk, kind, listener.as_ref()) {
             self.log(&format!("talk refused — {why}"));
             self.ivars().talk.borrow_mut().notice(why);
             NSBeep();
@@ -957,9 +967,9 @@ impl Delegate {
         if let Some(i) = self.ivars().talk_item.borrow().as_ref() {
             i.setHidden(!cfg.enabled);
             let title = if talk.listening() {
-                "Send to firstmate".to_string()
+                "Send".to_string()
             } else {
-                format!("Hold to talk to firstmate {}", crate::hotkey::CHORD)
+                format!("Hold to talk {}", crate::hotkey::CHORD)
             };
             i.setTitle(&NSString::from_str(&title));
             i.setEnabled(crate::talk::app::paused(kind).is_none());
@@ -1097,6 +1107,7 @@ pub fn run() -> anyhow::Result<()> {
         ticks: Cell::new(0),
         talk: RefCell::new(crate::talk::app::Talk::default()),
         talk_cfg: RefCell::new(crate::config::TalkConfig::default()),
+        talk_listener: RefCell::new(None),
         hotkey: RefCell::new(None),
         hotkey_error: RefCell::new(None),
         talk_item: RefCell::new(None),
@@ -1117,16 +1128,11 @@ pub fn run() -> anyhow::Result<()> {
     let assistant_line = item(mtm, "", None, "");
     let talk_item = item(
         mtm,
-        &format!("Hold to talk to firstmate {}", crate::hotkey::CHORD),
+        &format!("Hold to talk {}", crate::hotkey::CHORD),
         Some(sel!(talkToggle:)),
         "",
     );
-    let talk_speak = item(
-        mtm,
-        "Speak firstmate's replies",
-        Some(sel!(toggleTalkSpeak:)),
-        "",
-    );
+    let talk_speak = item(mtm, "Speak replies", Some(sel!(toggleTalkSpeak:)), "");
     let talk_line = item(mtm, "", None, "");
     let settings = item(mtm, "Settings…", Some(sel!(openSettings:)), ",");
     let open = item(mtm, "Open Ambient", Some(sel!(openWindow:)), "0");

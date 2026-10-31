@@ -1,13 +1,16 @@
-//! `ambient mcp` — the sessions on this machine, read over MCP, and the live
-//! assistant's tools: watch the meeting being recorded, wait for what is
-//! said, and speak (see [`crate::assist`]).
+//! `ambient mcp` — the sessions on this machine, read over MCP, the live
+//! assistant's tools (watch the meeting being recorded, wait for what is
+//! said, and speak; see [`crate::assist`]), and push-to-talk's (hear what
+//! the user says out loud and answer it; see [`crate::talk::listen`]).
 //!
 //! A synchronous JSON-RPC 2.0 loop over newline-delimited stdio: one message
-//! per line in, one per line out, nothing else on stdout ever. No async
-//! runtime and no MCP SDK, because the protocol that matters here is a few
-//! methods wide and an SDK would be more code than the server. A
-//! `wait_for_transcript` call holds the loop until it answers, which is
-//! what a client calling one tool at a time expects.
+//! per line in, one per line out. The only other lines on stdout are the
+//! `notifications/claude/channel` messages the talk listener pushes, written
+//! whole under the same lock as the answers, so no two lines ever interleave.
+//! No async runtime and no MCP SDK, because the protocol that matters here is
+//! a few methods wide and an SDK would be more code than the server. A
+//! `wait_for_transcript` or `wait_for_talk` call holds the loop until it
+//! answers, which is what a client calling one tool at a time expects.
 //!
 //! The loop never dies on input. Every way a line can be wrong — down to
 //! bytes that are not UTF-8 — becomes an error *response*, so a client that
@@ -21,12 +24,14 @@ use crate::config;
 use crate::roster;
 #[cfg(test)]
 use crate::session;
+use crate::talk::listen::{self, Desk};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 /// The revision this server implements, and the only one it claims. A client
 /// offering any other gets this back rather than its own version, which is
@@ -43,21 +48,43 @@ const INVALID_PARAMS: i64 = -32602;
 /// Read requests from `reader` until EOF, writing one response line each to
 /// `writer`. Returns `Ok(())` at EOF; only a broken pipe or unreadable stdin
 /// is an error, since everything else is answered on the wire.
-pub fn serve<R: BufRead, W: Write>(reader: R, writer: W, root: &Path) -> Result<()> {
+pub fn serve<R: BufRead, W: Write + Send + 'static>(
+    reader: R,
+    writer: W,
+    root: &Path,
+) -> Result<()> {
     serve_with(reader, writer, root, assist::real_voice(Vec::new()))
 }
 
 /// [`serve`], with the assistant's voice built by `voice`: `ambient mcp
 /// --no-play` passes the helper its flags, and tests pass a recorder.
-pub fn serve_with<R: BufRead, W: Write>(
-    mut reader: R,
-    mut writer: W,
+pub fn serve_with<R: BufRead, W: Write + Send + 'static>(
+    reader: R,
+    writer: W,
     root: &Path,
     voice: assist::MakeSpeaker,
 ) -> Result<()> {
+    serve_in(reader, writer, root, config::path(), Desk::new, voice)
+}
+
+/// [`serve_with`], with the talk mailbox beside `config_file` rather than
+/// the real config, and the [`Desk`] built by `desk`, so a test can listen
+/// without touching the user's.
+fn serve_in<R: BufRead, W: Write + Send + 'static>(
+    mut reader: R,
+    writer: W,
+    root: &Path,
+    config_file: std::path::PathBuf,
+    desk: impl FnOnce(std::path::PathBuf, listen::Out) -> Desk,
+    voice: assist::MakeSpeaker,
+) -> Result<()> {
+    // Shared with the talk listener's thread, which writes notifications
+    // between answers.
+    let out: listen::Out = Arc::new(Mutex::new(writer));
     let mut server = Server {
         root: root.to_path_buf(),
         watch: Watch::new(paths(root), voice),
+        desk: desk(config_file, Arc::clone(&out)),
     };
     let mut buffer = Vec::new();
     loop {
@@ -74,10 +101,9 @@ pub fn serve_with<R: BufRead, W: Write>(
             continue;
         }
         if let Some(response) = server.handle(&line) {
-            writeln!(writer, "{response}")?;
             // Flushed per message: the client is blocked on this line, and a
             // buffered answer to a request nobody follows up is a hang.
-            writer.flush()?;
+            listen::send_line(&out, &response)?;
         }
     }
 }
@@ -90,11 +116,13 @@ fn paths(root: &Path) -> Paths {
     }
 }
 
-/// What one `ambient mcp` process holds: the sessions folder, and the
-/// meeting the assistant is watching, if any.
+/// What one `ambient mcp` process holds: the sessions folder, the meeting
+/// the assistant is watching, if any, and whether it is listening for the
+/// user's spoken questions.
 struct Server {
     root: std::path::PathBuf,
     watch: Watch,
+    desk: Desk,
 }
 
 impl Server {
@@ -117,11 +145,14 @@ impl Server {
         };
         let params = object.get("params");
         let answered = match method {
-            "initialize" => Ok(initialize()),
+            "initialize" => {
+                self.desk.on_initialize(params);
+                Ok(initialize())
+            }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
             "tools/call" => self.call(params),
-            "prompts/list" => Ok(json!({ "prompts": [watch_prompt_entry()] })),
+            "prompts/list" => Ok(json!({ "prompts": [watch_prompt_entry(), talk_prompt_entry()] })),
             "prompts/get" => get_prompt(params),
             other => {
                 let message = format!("no such method {other:?}");
@@ -153,7 +184,11 @@ impl Server {
         let empty = json!({});
         let arguments = params.get("arguments").unwrap_or(&empty);
         if !MCP_TOOLS.contains(&name) {
-            return match self.watch.call(name, arguments) {
+            let ran = match self.watch.call(name, arguments) {
+                Some(r) => Some(r),
+                None => self.desk.call(name, arguments),
+            };
+            return match ran {
                 Some(Ok(v)) => Ok(content(&v, false)),
                 Some(Err(m)) => Ok(content(&Value::String(m), true)),
                 None => Err(invalid_params(format!("no such tool {name:?}"))),
@@ -182,17 +217,50 @@ fn watch_prompt_entry() -> Value {
     })
 }
 
+/// The talk prompt: what to tell an agent to make it hear what the user says
+/// out loud. Claude Code offers it as `/mcp__ambient__talk`.
+fn talk_prompt_entry() -> Value {
+    json!({
+        "name": "talk",
+        "title": "Talk out loud",
+        "description": "Hear what the user says through Ambient's push-to-talk, and answer it aloud.",
+        "arguments": [{
+            "name": "mode",
+            "description": "Leave empty in Claude Code started with --dangerously-load-development-channels server:ambient. Say `wait` anywhere else, to collect questions with wait_for_talk.",
+            "required": false,
+        }],
+    })
+}
+
 fn get_prompt(params: Option<&Value>) -> Result<Value, Refusal> {
     let params = params
         .and_then(Value::as_object)
         .ok_or_else(|| invalid_params("prompts/get needs an object `params`"))?;
-    if params.get("name").and_then(Value::as_str) != Some("watch") {
-        return Err(invalid_params("no such prompt; the one prompt is `watch`"));
+    let argument = |key: &str| {
+        params
+            .get("arguments")
+            .and_then(|a| a.get(key))
+            .and_then(Value::as_str)
+    };
+    match params.get("name").and_then(Value::as_str) {
+        Some("watch") => {}
+        Some("talk") => {
+            let wait = argument("mode").is_some_and(|m| m.trim().eq_ignore_ascii_case("wait"));
+            return Ok(json!({
+                "description": "Talk out loud",
+                "messages": [{
+                    "role": "user",
+                    "content": {"type": "text", "text": listen::talk_prompt(wait)},
+                }],
+            }));
+        }
+        _ => {
+            return Err(invalid_params(
+                "no such prompt; the prompts are `watch` and `talk`",
+            ))
+        }
     }
-    let focus = params
-        .get("arguments")
-        .and_then(|a| a.get("focus"))
-        .and_then(Value::as_str);
+    let focus = argument("focus");
     let name = config::Config::load_from(&config::path()).assistant.name;
     Ok(json!({
         "description": "Watch this meeting",
@@ -222,11 +290,19 @@ fn failure(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
+/// `experimental["claude/channel"]` is what makes Claude Code register a
+/// listener for the talk notifications; a session that has not loaded this
+/// server as a channel drops them, and other clients ignore the key.
 fn initialize() -> Value {
     json!({
         "protocolVersion": PROTOCOL,
-        "capabilities": {"tools": {"listChanged": false}, "prompts": {"listChanged": false}},
+        "capabilities": {
+            "tools": {"listChanged": false},
+            "prompts": {"listChanged": false},
+            "experimental": {"claude/channel": {}},
+        },
         "serverInfo": {"name": "ambient", "version": env!("CARGO_PKG_VERSION")},
+        "instructions": listen::INSTRUCTIONS,
     })
 }
 
@@ -253,6 +329,7 @@ fn tools() -> Value {
         })
         .collect();
     ordered.extend(Watch::tools());
+    ordered.extend(Desk::tools());
     Value::Array(ordered)
 }
 
@@ -269,21 +346,146 @@ fn content(value: &Value, is_error: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::talk::mailbox::{self, Mailbox};
     use serde_json::Value;
+    use std::time::{Duration, Instant};
+
+    /// stdout, as a buffer the test can read while the server still writes
+    /// to it from its talk listener thread.
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl SharedBuf {
+        /// Every line so far, each parsed as one JSON message.
+        fn lines(&self) -> Vec<Value> {
+            String::from_utf8(self.0.lock().unwrap().clone())
+                .expect("utf-8 output")
+                .lines()
+                .map(|l| serde_json::from_str(l).expect("each line is one JSON message"))
+                .collect()
+        }
+    }
 
     /// Feed request lines through `serve` and parse what came back, one value
     /// per output line. Every test below is this one exchange: they drive the
     /// same entry point `main` does, so nothing about the loop is mocked.
     fn exchange(root: &Path, requests: &[&str]) -> Vec<Value> {
         let input = requests.join("\n") + "\n";
-        let mut out: Vec<u8> = Vec::new();
-        serve(input.as_bytes(), &mut out, root).expect("serve reached EOF");
-        String::from_utf8(out)
-            .expect("utf-8 output")
-            .lines()
-            .map(|l| serde_json::from_str(l).expect("each line is one JSON message"))
+        let out = SharedBuf::default();
+        serve(input.as_bytes(), out.clone(), root).expect("serve reached EOF");
+        out.lines()
+    }
+
+    /// [`exchange`], with the talk mailbox beside `config_file`.
+    fn exchange_in(root: &Path, config_file: &Path, requests: &[&str]) -> Vec<Value> {
+        let input = requests.join("\n") + "\n";
+        let out = SharedBuf::default();
+        serve_in(
+            input.as_bytes(),
+            out.clone(),
+            root,
+            config_file.to_path_buf(),
+            |c, o| Desk::new(c, o).with_tick(Duration::from_millis(5)),
+            assist::real_voice(Vec::new()),
+        )
+        .expect("serve reached EOF");
+        out.lines()
+    }
+
+    /// A server whose stdin stays open, as a client's does, so what its
+    /// listener thread pushes between requests can be watched. Requests go
+    /// in with `send`; dropping it closes stdin and joins the server.
+    struct Live {
+        stdin: Option<std::io::PipeWriter>,
+        out: SharedBuf,
+        server: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Live {
+        fn start(root: &Path, config_file: &Path, tick: Duration) -> Self {
+            let (reader, writer) = std::io::pipe().unwrap();
+            let out = SharedBuf::default();
+            let (root, cfg, o) = (root.to_path_buf(), config_file.to_path_buf(), out.clone());
+            let server = std::thread::spawn(move || {
+                serve_in(
+                    std::io::BufReader::new(reader),
+                    o,
+                    &root,
+                    cfg,
+                    move |c, o| Desk::new(c, o).with_tick(tick),
+                    assist::real_voice(Vec::new()),
+                )
+                .expect("serve reached EOF");
+            });
+            Live {
+                stdin: Some(writer),
+                out,
+                server: Some(server),
+            }
+        }
+
+        fn send(&mut self, line: &str) {
+            let w = self.stdin.as_mut().unwrap();
+            writeln!(w, "{line}").unwrap();
+        }
+
+        /// Wait, up to five seconds, until `until` holds of the output.
+        fn wait_for(&self, until: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let lines = self.out.lines();
+                if until(&lines) || Instant::now() > deadline {
+                    return lines;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    impl Drop for Live {
+        fn drop(&mut self) {
+            drop(self.stdin.take());
+            if let Some(s) = self.server.take() {
+                let _ = s.join();
+            }
+        }
+    }
+
+    fn channel_lines(lines: &[Value]) -> Vec<Value> {
+        lines
+            .iter()
+            .filter(|l| l["method"] == "notifications/claude/channel")
+            .cloned()
             .collect()
     }
+
+    /// A config file in a scratch folder of its own, so the talk mailbox and
+    /// heartbeat beside it are the test's.
+    fn scratch_config(name: &str) -> PathBuf {
+        scratch(&format!("{name}-cfg")).join("config.json")
+    }
+
+    fn post(config_file: &Path, rid: &str, text: &str) {
+        Mailbox::at(config_file)
+            .unwrap()
+            .post(rid, text, std::process::id(), Duration::from_secs(300))
+            .unwrap();
+    }
+
+    const RID: &str = "ambient-00112233445566778899aabb";
+    const RID2: &str = "ambient-ffeeddccbbaa998877665544";
+    const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"claude-code","version":"0"}}}"#;
+    const LISTEN: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"talk_listen","arguments":{}}}"#;
 
     /// A scratch sessions folder of its own per test, since these run in one
     /// process and a shared name would have them treading on each other.
@@ -361,7 +563,11 @@ mod tests {
                 "watch_meeting",
                 "wait_for_transcript",
                 "speak",
-                "stop_watching"
+                "stop_watching",
+                "talk_listen",
+                "wait_for_talk",
+                "talk_reply",
+                "stop_listening"
             ]
         );
         for t in &tools {
@@ -375,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn the_watch_prompt_is_listed_and_fetched_and_no_other() {
+    fn the_watch_and_talk_prompts_are_listed_and_fetched_and_no_other() {
         let root = scratch("prompts");
         let got = exchange(
             &root,
@@ -388,8 +594,11 @@ mod tests {
         );
         assert!(got[0]["result"]["capabilities"]["prompts"].is_object());
         let prompts = got[1]["result"]["prompts"].as_array().unwrap();
-        assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0]["name"], "watch");
+        let names: Vec<&str> = prompts
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["watch", "talk"]);
         let message = &got[2]["result"]["messages"][0];
         assert_eq!(message["role"], "user");
         let text = message["content"]["text"].as_str().unwrap();
@@ -410,6 +619,223 @@ mod tests {
         let (text, is_error) = payload(&got[0]);
         assert!(is_error);
         assert!(text.as_str().unwrap().contains("watch_meeting"), "{text}");
+    }
+
+    #[test]
+    fn initialize_declares_the_claude_channel_capability_and_instructions() {
+        let root = scratch("init-channel");
+        let got = exchange(&root, &[INIT]);
+        let result = &got[0]["result"];
+        assert_eq!(
+            result["capabilities"]["experimental"]["claude/channel"],
+            json!({})
+        );
+        let instructions = result["instructions"].as_str().unwrap();
+        assert!(instructions.contains("talk_reply"), "{instructions}");
+        assert!(
+            instructions.contains(r#"<channel source="ambient""#),
+            "{instructions}"
+        );
+    }
+
+    #[test]
+    fn the_talk_prompt_names_talk_reply_and_the_wait_mode_loops() {
+        let root = scratch("talk-prompt");
+        let got = exchange(
+            &root,
+            &[
+                r#"{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"talk"}}"#,
+                r#"{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"talk","arguments":{"mode":"wait"}}}"#,
+            ],
+        );
+        let text = |i: usize| {
+            got[i]["result"]["messages"][0]["content"]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let push = text(0);
+        assert!(push.contains("`talk_listen`"), "{push}");
+        assert!(push.contains("`talk_reply`"), "{push}");
+        assert!(push.contains("--dangerously-load-development-channels server:ambient"));
+        let wait = text(1);
+        assert!(wait.contains("call `wait_for_talk` again"), "{wait}");
+        assert!(wait.contains("`talk_reply`"), "{wait}");
+        assert!(!wait.contains("`talk_listen`"), "{wait}");
+    }
+
+    #[test]
+    fn after_talk_listen_a_posted_note_is_pushed_once_as_a_channel_notification() {
+        let root = scratch("push");
+        let cfg = scratch_config("push");
+        let mut live = Live::start(&root, &cfg, Duration::from_millis(5));
+        live.send(INIT);
+        live.send(LISTEN);
+        let lines = live.wait_for(|l| l.iter().any(|v| v["id"] == 2));
+        let listened = lines.iter().find(|v| v["id"] == 2).unwrap();
+        let (v, is_error) = payload(listened);
+        assert!(!is_error, "{v}");
+        assert_eq!(v["listening"], true);
+        assert_eq!(v["push"], true);
+        let beat = mailbox::listener(&cfg).expect("the heartbeat says a session listens");
+        assert!(beat.push);
+        assert_eq!(beat.client.as_deref(), Some("claude-code"));
+
+        post(&cfg, RID, "what is the status of the build?");
+        live.wait_for(|l| !channel_lines(l).is_empty());
+        // Two more notifier periods and then some: still exactly one.
+        std::thread::sleep(Duration::from_millis(60));
+        let pushed = channel_lines(&live.out.lines());
+        assert_eq!(pushed.len(), 1, "{pushed:?}");
+        let n = &pushed[0];
+        assert_eq!(n["jsonrpc"], "2.0");
+        assert!(n.get("id").is_none(), "a notification has no id");
+        assert_eq!(n["params"]["content"], "what is the status of the build?");
+        assert_eq!(n["params"]["meta"]["request_id"], RID);
+        assert!(n["params"]["meta"]["asked_at"].is_string());
+        drop(live);
+        assert_eq!(
+            mailbox::listener(&cfg),
+            None,
+            "the heartbeat goes when the client closes stdin"
+        );
+    }
+
+    #[test]
+    fn a_server_that_never_listened_pushes_nothing() {
+        let root = scratch("quiet");
+        let cfg = scratch_config("quiet");
+        let mut live = Live::start(&root, &cfg, Duration::from_millis(5));
+        live.send(INIT);
+        post(&cfg, RID, "anyone?");
+        live.send(r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#);
+        live.wait_for(|l| l.iter().any(|v| v["id"] == 2));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(channel_lines(&live.out.lines()).is_empty());
+        assert!(!mailbox::beat_path(&cfg).exists(), "no heartbeat either");
+    }
+
+    #[test]
+    fn the_last_listener_wins_and_the_first_stops_pushing() {
+        let root = scratch("two");
+        let cfg = scratch_config("two");
+        let mut first = Live::start(&root, &cfg, Duration::from_millis(5));
+        first.send(LISTEN);
+        first.wait_for(|l| l.iter().any(|v| v["id"] == 2));
+        let mut second = Live::start(&root, &cfg, Duration::from_millis(5));
+        second.send(LISTEN);
+        let lines = second.wait_for(|l| l.iter().any(|v| v["id"] == 2));
+        let (v, _) = payload(lines.iter().find(|v| v["id"] == 2).unwrap());
+        assert_eq!(v["replaced_pid"], std::process::id(), "{v}");
+        // The first notices at its next heartbeat, eight ticks on.
+        std::thread::sleep(Duration::from_millis(120));
+        post(&cfg, RID, "who hears this?");
+        second.wait_for(|l| !channel_lines(l).is_empty());
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(channel_lines(&second.out.lines()).len(), 1);
+        assert!(
+            channel_lines(&first.out.lines()).is_empty(),
+            "only the last listener hears"
+        );
+        drop(first);
+        assert!(
+            mailbox::listener(&cfg).is_some(),
+            "the first leaving does not take the second's heartbeat with it"
+        );
+    }
+
+    #[test]
+    fn wait_for_talk_returns_the_oldest_open_note_then_times_out_empty() {
+        let root = scratch("wait");
+        let cfg = scratch_config("wait");
+        let mb = Mailbox::at(&cfg).unwrap();
+        mb.write_note(&mailbox::Note {
+            request_id: RID2.into(),
+            text: "first".into(),
+            asked_at: (chrono::Local::now() - chrono::Duration::seconds(20)).to_rfc3339(),
+            worker_pid: std::process::id(),
+            timeout_s: 300,
+        })
+        .unwrap();
+        post(&cfg, RID, "second");
+        let wait = r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"wait_for_talk","arguments":{"timeout_s":1}}}"#;
+        let got = exchange_in(&root, &cfg, &[INIT, wait, wait, wait]);
+        let answers: Vec<Value> = got[1..].iter().map(|r| payload(r).0).collect();
+        assert_eq!(answers[0]["request_id"], RID2);
+        assert_eq!(answers[0]["text"], "first");
+        assert!(answers[0]["asked_s_ago"].as_u64().unwrap() >= 19);
+        assert_eq!(answers[1]["request_id"], RID);
+        assert_eq!(answers[2]["request_id"], Value::Null);
+        assert_eq!(answers[2]["listening"], true);
+        assert!(
+            channel_lines(&got).is_empty(),
+            "a waiting session is not also pushed to"
+        );
+    }
+
+    #[test]
+    fn talk_reply_writes_the_reply_the_worker_reads() {
+        let root = scratch("reply");
+        let cfg = scratch_config("reply");
+        post(&cfg, RID, "status?");
+        let reply = |text: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"talk_reply","arguments":{{"request_id":"{RID}","text":"{text}"}}}}}}"#
+            )
+        };
+        let bad = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"talk_reply","arguments":{"request_id":"../x","text":"hi"}}}"#;
+        let got = exchange_in(&root, &cfg, &[&reply("**Green.**"), &reply("Red."), bad]);
+        let (ok, is_error) = payload(&got[0]);
+        assert!(!is_error, "{ok}");
+        assert!(ok.as_str().unwrap().starts_with("Sent."), "{ok}");
+        let (twice, is_error) = payload(&got[1]);
+        assert!(is_error);
+        assert!(twice.as_str().unwrap().contains("already been answered"));
+        let (bad, is_error) = payload(&got[2]);
+        assert!(is_error);
+        assert!(bad.as_str().unwrap().contains("not a request_id"), "{bad}");
+        assert_eq!(
+            Mailbox::at(&cfg).unwrap().take_reply(RID).as_deref(),
+            Some("**Green.**")
+        );
+    }
+
+    /// The listener thread and the request loop share stdout. Whatever the
+    /// interleaving, each line is one whole message and every answer and
+    /// every notification arrives.
+    #[test]
+    fn every_output_line_is_one_json_message_while_notifications_race_responses() {
+        let root = scratch("race-out");
+        let cfg = scratch_config("race-out");
+        let mut live = Live::start(&root, &cfg, Duration::from_millis(1));
+        live.send(LISTEN);
+        live.wait_for(|l| l.iter().any(|v| v["id"] == 2));
+        let poster_cfg = cfg.clone();
+        let poster = std::thread::spawn(move || {
+            for i in 0..20u32 {
+                let rid = format!("ambient-{i:024x}");
+                post(
+                    &poster_cfg,
+                    &rid,
+                    &format!("question {i} {}", "x".repeat(2000)),
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        for i in 0..50 {
+            live.send(&format!(
+                r#"{{"jsonrpc":"2.0","id":"p{i}","method":"ping"}}"#
+            ));
+        }
+        poster.join().unwrap();
+        // `lines()` parses every line as JSON, so a torn one fails here.
+        let lines = live.wait_for(|l| {
+            channel_lines(l).len() == 20
+                && l.iter().filter(|v| v["result"] == json!({})).count() == 50
+        });
+        assert_eq!(channel_lines(&lines).len(), 20);
+        let pings = lines.iter().filter(|v| v["result"] == json!({})).count();
+        assert_eq!(pings, 50);
     }
 
     /// `status` counts the directories that are sessions, and only those: a
@@ -511,18 +937,14 @@ mod tests {
     #[test]
     fn a_line_that_is_not_utf8_does_not_end_the_session() {
         let root = scratch("bytes");
-        let mut out: Vec<u8> = Vec::new();
+        let out = SharedBuf::default();
         serve(
             &b"\xff\xfe garbage\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n"[..],
-            &mut out,
+            out.clone(),
             &root,
         )
         .expect("serve reached EOF");
-        let got: Vec<Value> = String::from_utf8(out)
-            .expect("utf-8 output")
-            .lines()
-            .map(|l| serde_json::from_str(l).expect("a JSON line"))
-            .collect();
+        let got = out.lines();
         assert_eq!(got.len(), 2, "{got:?}");
         assert_eq!(got[0]["error"]["code"], -32700);
         assert_eq!(got[1]["id"], 1);

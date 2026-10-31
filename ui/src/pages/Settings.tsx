@@ -105,14 +105,6 @@ export function Settings() {
               onSpeakChange={(value) => {
                 void setKey("talk.speak", value ? "true" : "false");
               }}
-              onChooseHome={() => {
-                void bridge
-                  .call<{ chosen: string | null }>("pick_dir", { purpose: "firstmate_home" })
-                  .then(({ chosen }) => {
-                    if (chosen === null) return;
-                    return setKey("talk.firstmate_home", chosen);
-                  });
-              }}
             />
           )}
           <PeopleSection

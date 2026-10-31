@@ -195,6 +195,43 @@ as speakers would.
 In all it took 13 turns, and the session reported an equivalent API cost of
 $0.006.
 
+## Talk replies
+
+[Push-to-talk](../using/talk.md) shares this note's server and voice, with a
+different shape: the user asks, the agent answers, and Ambient speaks the
+answer ([ADR 0019](../adr/0019-push-to-talk-goes-to-the-users-agent.md)). The
+state is `Desk` in `src/talk/listen.rs`, beside `Watch`, and the files are
+`src/talk/mailbox.rs`'s.
+
+| File, beside the config file | Written by | Content | Lifetime |
+| --- | --- | --- | --- |
+| `talk/<rid>.json` | the `ambient talk` worker, staged then renamed | `request_id`, `text`, `asked_at`, `worker_pid`, `timeout_s` | Until the worker takes the answer or gives up |
+| `talk/<rid>.reply.json` | `talk_reply`, staged then hard-linked into place, so a second answer fails | `text`, `at`, `pid` | Until the worker reads it |
+| `talk/<rid>.expired` | the worker, when it gives up | empty | An hour, so a late answer is refused by name |
+| `talk.json` | the listener, every two seconds | `pid`, `id`, `since`, `updated_at`, `push`, `client` | Fresh while under ten seconds old and its pid is alive |
+
+`talk/` is created owner-only (0700), and every file in it 0600. A question is
+**open** while it has no answer and no expired mark, its worker is still
+running, and it is younger than the worker's timeout. The running-worker rule
+is what keeps barge-in safe: a worker stopped by SIGTERM leaves through
+`_exit` without cleaning up, and its question simply stops being open. A
+`request_id` is checked against `ambient-` and 24 lowercase hex digits before
+any path is built from it, since it arrives from the model.
+
+The listener thread runs while `talk_listen` or `wait_for_talk` has made this
+process the listener. Every 250 ms it pushes each open question it has not
+pushed before as one `notifications/claude/channel` line, written whole under
+the same lock as the request loop's answers. Every eighth tick it rewrites the
+heartbeat, unless the heartbeat names another listener: then a later session
+has taken over, and the thread stops. `wait_for_talk` keeps its own record of
+what it has returned, apart from what was pushed, because a push to a session
+without channels is dropped silently and must not stop the same question
+being collected.
+
+The worker speaks only the reply's first paragraph (`talk::lead`), so the
+agent can put detail after a blank line for the window, which shows the reply
+through `talk::readable` without markdown symbols.
+
 ## The voice helper
 
 ### Protocol

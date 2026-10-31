@@ -1,29 +1,54 @@
 ---
-title: "Talking to firstmate"
+title: "Talking to your agent"
 sidebar:
   order: 18
 ---
 
-# Talking to firstmate
+# Talking to your agent
 
 Hold ⌥Space anywhere, say something, and let go. Ambient transcribes what you
-said on this Mac, sends the words to firstmate as a note, and reads its reply
-aloud when it comes. Both sides of every turn are shown as text in the window.
-Talking mode is off until you turn it on.
+said on this Mac and hands the words to the Claude Code session you have
+listening, as if you had typed them there. The agent does what you asked and
+answers, and Ambient reads the answer aloud. Both sides of every turn are
+shown as text in the window. Talking mode is off until you turn it on.
 
 ## Setting it up
 
-In the window, open **Settings → Talk to firstmate**:
+1. Register `ambient mcp` with Claude Code once, as for
+   [the live assistant](mcp.md#registering-it).
+2. Start the session you want to talk to with Ambient loaded as a channel:
 
-1. Choose **firstmate home**: the firstmate checkout whose `bin/fm-inbox.sh`
-   takes the note. Without one, talking has nowhere to go and is refused.
-2. Turn on **Talking mode**. Ambient now holds ⌥Space.
-3. Leave **Speak firstmate's replies** on to hear replies, or turn it off to
-   read them only. The status menu has the same switch.
+   ```sh
+   claude --dangerously-load-development-channels server:ambient
+   ```
 
-The same settings from the command line are `ambient config talk on`,
-`ambient config talk.speak off` and `ambient config talk.firstmate_home <dir>`
-([settings](settings.md)). The app picks a change up within two seconds.
+   Channels are a Claude Code research preview, and a server of your own needs
+   this development flag. Claude Code shows a warning first; choose **I am
+   using this for local development**. The flag only works in an interactive
+   session, not with `claude -p`.
+3. In that session, run `/mcp__ambient__talk`. The agent starts listening and
+   says so in one line. The last session to run it is the one that hears; the
+   others stop.
+4. In Ambient, open **Settings → Talk** and turn on **Talking mode**. Ambient
+   now holds ⌥Space. The section says which session is listening, and the
+   launch line above is there to copy. Leave **Speak replies** on to hear
+   answers, or turn it off to read them only; the status menu has the same
+   switch.
+
+The same settings from the command line are `ambient config talk on` and
+`ambient config talk.speak off` ([settings](settings.md)). The app picks a
+change up within two seconds.
+
+The first time the agent answers, Claude Code may ask permission for the
+`mcp__ambient__talk_reply` tool. Allow it, or add it to your allowed tools, so
+answers are not held at a prompt you cannot see while you are talking.
+
+### Without channels
+
+In a session started without the flag, or in another MCP client, run the
+prompt as `/mcp__ambient__talk wait`. The agent then waits for questions in a
+loop with `wait_for_talk`, answering each one, until you tell it to stop. The
+session is busy while it waits, so this suits a session kept for talking.
 
 ## Talking
 
@@ -31,40 +56,62 @@ The same settings from the command line are `ambient config talk on`,
   app. Holding it again while a reply is being read out stops the reply.
 - **The window**: the sidebar's **Hold to talk** button works the same way,
   with the mouse or with Space or Return while it has focus. **Conversation**
-  opens every turn so far, your words on the right and firstmate's on the
-  left.
-- **The status menu**: **Hold to talk to firstmate ⌥Space** starts listening
-  when clicked and sends on the next click (a menu cannot be held). The line
-  under it shows the last reply, or where the current turn has got to.
+  opens every turn so far, your words on the right and the reply on the left.
+- **The status menu**: **Hold to talk ⌥Space** starts listening when clicked
+  and becomes **Send**; click it again to send (a menu cannot be held). The
+  line under it shows the last reply, or where the current turn has got to.
 
-While Ambient listens, the menu bar icon is a microphone; while a reply is
-read out, it is a speaker. Less than about 0.4 s of speech is "Didn't catch
-that", and nothing is sent. A hold is kept to one minute; at a minute Ambient
-lets go for you.
+The card under **Hold to talk** says where talking is: **Listening…** while
+you hold the key, **Thinking…** while the agent works, **Speaking the reply**
+while it is read out, or what went wrong. The menu bar icon is a microphone
+while Ambient listens and a speaker while a reply is read out.
 
-If firstmate is busy the note is queued, and the turn says so. A turn waits
-five minutes for its reply. A reply that comes later stays in firstmate's
-inbox and is not spoken.
+In the session, your words arrive as a message from Ambient. The agent works
+on it as on anything you type, tools and all, then answers. A message that
+arrives while the agent is busy waits for its current turn to end.
 
-## When talking is paused
+Only the first paragraph of the answer is read aloud, up to 600 characters;
+the rest is shown in the window. The agent is told to lead with one to three
+short spoken sentences and put detail after a blank line. Markdown is shown as
+plain text, without its symbols.
 
-Talking is refused while Ambient is recording or while a call is waiting to
-be recorded (**Record this call?**). The microphone belongs to the meeting
-then: what you said would land in its transcript, and a spoken reply would be
-heard by everyone on the call. Pressing ⌥Space then beeps and the menu says
-why. A recording that starts, or a call that starts waiting to be recorded,
-while you are holding the key drops what was heard without sending it. It
-also stops any reply being read out, and a reply that arrives while talking
-is paused is shown as text in the window and the menu instead of spoken.
+## When talking is refused
+
+A press beeps and the menu line and the card say why:
+
+- **Talking mode is off.** Turn it on in Settings.
+- **Talking is paused while Ambient is recording**, or **while a call is
+  waiting to be recorded**. The microphone belongs to the meeting then: what
+  you said would land in its transcript, and a spoken reply would be heard by
+  everyone on the call. The button reads **Paused: recording** or **Paused:
+  call waiting**. A recording that starts while you hold the key drops what
+  was heard without sending it, stops a reply being read out, and keeps a
+  reply that arrives meanwhile as text.
+- **No agent is listening.** Run `/mcp__ambient__talk` in a session. The card's
+  **How** link opens Settings.
+
+Less than about 0.4 s of speech is "Didn't catch that", and nothing is sent. A
+hold is kept to one minute; at a minute Ambient lets go for you. A question
+waits five minutes for its answer; after that the turn says **No reply within
+5 minutes; the question expired**, and an answer that comes later is refused,
+so the agent knows to say it in the chat instead. A voice that fails, or a
+live assistant that is still speaking after ten seconds, leaves the reply as
+text with the reason under it.
 
 ## What leaves the Mac
 
 The audio is held in memory only, for as long as you hold the key, and is
 handed straight to a short-lived `ambient talk` process that transcribes it
 with Parakeet on this Mac ([`ambient talk`](commands.md#talk)). It is never
-written to disk and never sent anywhere. Only the text reaches firstmate's
-inbox, which keeps it as a note, exactly as if you had typed it. Ambient keeps
-no talk log of its own; the window's conversation lasts until the app quits.
+written to disk and never sent anywhere.
+
+The text is written to `talk/` in Ambient's settings folder (`~/Library/Application Support/Ambient/`),
+which only your user can read, until the agent answers or the question
+expires; then it is deleted ([what is kept](what-is-kept.md#push-to-talk)).
+The listening session reads it from there and puts it in its conversation,
+which sends it to that agent's model under the client's terms, exactly as if
+you had typed it. Ambient keeps no talk log of its own; the window's
+conversation lasts until the app quits.
 
 ## ⌥Space and permissions
 

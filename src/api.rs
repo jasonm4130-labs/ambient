@@ -385,7 +385,6 @@ fn config_get(paths: &Paths) -> Value {
         "talk": {
             "enabled": cfg.talk.enabled,
             "speak": cfg.talk.speak,
-            "firstmate_home": cfg.talk.firstmate_home,
         },
     })
 }
@@ -1121,10 +1120,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<&str>>()
         );
         assert!(got["devices"].is_array());
-        assert_eq!(
-            got["talk"],
-            json!({"enabled": false, "speak": true, "firstmate_home": null})
-        );
+        assert_eq!(got["talk"], json!({"enabled": false, "speak": true}));
     }
 
     /// Item 3's second named test: `config.set` of `sessions_dir` while a
