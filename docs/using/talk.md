@@ -63,7 +63,8 @@ session is busy while it waits, so this suits a session kept for talking.
 
 The card under **Hold to talk** says where talking is: **Listening…** while
 you hold the key, **Thinking…** while the agent works, **Speaking the reply**
-while it is read out, or what went wrong. The menu bar icon is a microphone
+while it is read out, or what went wrong. If no session was listening when
+you let go, the card and the status menu say so while the question waits. The menu bar icon is a microphone
 while Ambient listens and a speaker while a reply is read out.
 
 In the session, your words arrive as a message from Ambient. The agent works

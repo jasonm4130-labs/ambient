@@ -136,12 +136,11 @@ impl Turn {
             }
             "sent" => {
                 self.stage = Stage::Waiting;
-                if event["announced"] == json!(false) {
-                    self.note = Some(
-                        "No agent is listening yet; the question waits five minutes for one."
-                            .into(),
-                    );
-                }
+                // A listener seen when the question was posted outdates a
+                // "queued" note from just before.
+                self.note = (event["announced"] == json!(false)).then(|| {
+                    "No agent is listening yet; the question waits five minutes for one.".into()
+                });
             }
             "reply" => {
                 self.reply = text("text");
@@ -465,6 +464,11 @@ impl Talk {
             ));
         }
         let t = self.turns.back()?;
+        // A turn in flight with a note is one nobody may be hearing: say so
+        // rather than that a reply is coming.
+        if let (Stage::Sending | Stage::Waiting, Some(note)) = (t.stage, &t.note) {
+            return Some(note.clone());
+        }
         Some(match t.stage {
             Stage::Hearing => "Working out what you said…".into(),
             Stage::Sending => format!("Sending “{}”", short(t.you.as_deref().unwrap_or(""))),

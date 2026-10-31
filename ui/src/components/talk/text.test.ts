@@ -43,6 +43,11 @@ describe("talkLine", () => {
   it("says thinking, speaking and what went wrong", () => {
     expect(talkLine({ ...on, turns: [turn("hearing")] })).toBe("Hearing you…");
     expect(talkLine({ ...on, turns: [turn("waiting")] })).toBe("Thinking…");
+    const unheard = "No agent is listening yet; the question waits five minutes for one.";
+    expect(talkLine({ ...on, turns: [turn("waiting", { note: unheard })] })).toBe(unheard);
+    expect(talkLine({ ...on, turns: [turn("sending", { note: "Queued: no agent" })] })).toBe(
+      "Queued: no agent",
+    );
     expect(talkLine({ ...on, turns: [turn("speaking", { reply: "Hi." })] })).toContain(
       "Hold to interrupt",
     );

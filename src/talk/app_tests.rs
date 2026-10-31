@@ -97,6 +97,17 @@ fn nothing_heard_queued_unannounced_and_text_only_are_said() {
     t.apply(&ev(r#"{"event":"text_only","reason":"the voice failed"}"#));
     assert_eq!(t.stage, Stage::Done);
     assert_eq!(t.note.as_deref(), Some("Not said aloud: the voice failed"));
+
+    let mut t = Turn::new(3, true);
+    t.apply(&ev(r#"{"event":"heard","text":"hi"}"#));
+    t.apply(&ev(
+        r#"{"event":"queued","reason":"no agent is listening"}"#,
+    ));
+    t.apply(&ev(r#"{"event":"sent","id":"n3","announced":true}"#));
+    assert_eq!(
+        t.note, None,
+        "a listener seen at the send clears the queued note"
+    );
 }
 
 #[test]
@@ -203,6 +214,34 @@ fn the_menu_line_follows_the_latest_turn_and_a_notice_wins() {
         talk.menu_line().as_deref(),
         Some("Talking is paused while Ambient is recording.")
     );
+}
+
+#[test]
+fn the_menu_line_says_when_a_question_in_flight_has_nobody_to_hear_it() {
+    let mut talk = Talk::default();
+    let mut t = Turn::new(1, true);
+    t.apply(&ev(r#"{"event":"heard","text":"hi"}"#));
+    t.apply(&ev(
+        r#"{"event":"queued","reason":"no agent is listening"}"#,
+    ));
+    talk.turns.push_back(t);
+    assert_eq!(
+        talk.menu_line().as_deref(),
+        Some("Queued: no agent is listening")
+    );
+    talk.turns
+        .back_mut()
+        .unwrap()
+        .apply(&ev(r#"{"event":"sent","id":"n","announced":false}"#));
+    assert_eq!(
+        talk.menu_line().as_deref(),
+        Some("No agent is listening yet; the question waits five minutes for one.")
+    );
+    let mut heard = Turn::new(2, true);
+    heard.apply(&ev(r#"{"event":"heard","text":"hi"}"#));
+    heard.apply(&ev(r#"{"event":"sent","id":"m","announced":true}"#));
+    talk.turns.push_back(heard);
+    assert_eq!(talk.menu_line().as_deref(), Some("Waiting for the reply…"));
 }
 
 #[test]

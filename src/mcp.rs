@@ -727,8 +727,8 @@ mod tests {
         let lines = second.wait_for(|l| l.iter().any(|v| v["id"] == 2));
         let (v, _) = payload(lines.iter().find(|v| v["id"] == 2).unwrap());
         assert_eq!(v["replaced_pid"], std::process::id(), "{v}");
-        // The first notices at its next heartbeat, eight ticks on.
-        std::thread::sleep(Duration::from_millis(120));
+        // Posted at once: the first asks whom the heartbeat names every
+        // tick, not only at its own next heartbeat.
         post(&cfg, RID, "who hears this?");
         second.wait_for(|l| !channel_lines(l).is_empty());
         std::thread::sleep(Duration::from_millis(60));

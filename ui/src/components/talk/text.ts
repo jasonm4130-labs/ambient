@@ -122,7 +122,11 @@ export function talkLine(payload: TalkPayload): string | null {
     return `${payload.chord} is unavailable (${payload.hotkey_error}); use this button.`;
   const last = payload.turns.at(-1);
   if (state === "speaking") return "Speaking the reply. Hold to interrupt.";
-  if (state === "thinking") return last?.state === "hearing" ? "Hearing you…" : "Thinking…";
+  if (state === "thinking") {
+    if (last?.state === "hearing") return "Hearing you…";
+    // A question in flight with a note is one nobody may be hearing yet.
+    return last?.note ?? "Thinking…";
+  }
   if (last === undefined) return null;
   if (state === "error" || last.state === "stopped" || last.state === "nothing")
     return last.note ?? yourSide(last);

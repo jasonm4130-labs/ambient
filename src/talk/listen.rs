@@ -17,9 +17,11 @@
 //! `wait_for_talk` instead. Either way the model answers with `talk_reply`,
 //! and the `ambient talk` worker that posted the question speaks it.
 //!
-//! The last session to listen wins: the thread stops as soon as the
-//! heartbeat names another process, so only one session ever hears a
-//! question.
+//! The last session to listen wins: the thread asks whom the heartbeat names
+//! every tick and before every push, and stops as soon as it names another
+//! listener, so only one session ever hears a question. Every write of the
+//! heartbeat happens under [`mailbox::with_beat_lock`] with that check, so
+//! an older listener never writes over a newer one's.
 
 use super::mailbox::{self, Listener, Mailbox};
 use serde_json::{json, Value};
@@ -112,6 +114,12 @@ pub fn notification(note: &mailbox::Note) -> Value {
             "meta": {"request_id": note.request_id, "asked_at": note.asked_at},
         },
     })
+}
+
+/// Whether the heartbeat now names a listener other than `id`: another
+/// session listened after this one, and it hears now.
+fn superseded(config_file: &std::path::Path, id: &str) -> bool {
+    mailbox::last_beat(config_file).is_some_and(|l| l.id != id)
 }
 
 /// A fresh id for one listener: the pid and a clock reading, which two
@@ -248,9 +256,6 @@ impl Desk {
         mb.sweep();
         let me = std::process::id();
         let id = lock(&self.shared).id.clone();
-        let replaced = mailbox::listener(&self.config_file)
-            .filter(|l| l.id != id)
-            .map(|l| l.pid);
         let beat = {
             let mut s = lock(&self.shared);
             s.push = push;
@@ -265,8 +270,15 @@ impl Desk {
                 client: s.client.clone(),
             }
         };
-        mailbox::write_beat(&self.config_file, &beat)
-            .map_err(|e| format!("could not write Ambient's talk heartbeat: {e}"))?;
+        // Under the lock, so the listener this replaces cannot write its own
+        // heartbeat back over this one.
+        let (replaced, wrote) = mailbox::with_beat_lock(&self.config_file, || {
+            let replaced = mailbox::listener(&self.config_file)
+                .filter(|l| l.id != id)
+                .map(|l| l.pid);
+            (replaced, mailbox::write_beat(&self.config_file, &beat))
+        });
+        wrote.map_err(|e| format!("could not write Ambient's talk heartbeat: {e}"))?;
         if !self.listening() {
             self.start_thread();
         }
@@ -293,23 +305,33 @@ impl Desk {
             let id = lock(&shared).id.clone();
             let mut n: u64 = 0;
             while alive.load(Ordering::SeqCst) {
-                if n % BEAT_EVERY == 0 {
-                    // Another session listened after this one: it hears now.
-                    if mailbox::last_beat(&cfg).is_some_and(|l| l.id != id) {
-                        alive.store(false, Ordering::SeqCst);
-                        break;
+                // Whether this is still the listener is asked every tick, not
+                // only at the heartbeat, and under the lock with the
+                // heartbeat's refresh: a session that listened after this one
+                // hears from its first tick, and a stop or a newer listener
+                // can never be written over.
+                let still = mailbox::with_beat_lock(&cfg, || {
+                    if !alive.load(Ordering::SeqCst) || superseded(&cfg, &id) {
+                        return false;
                     }
-                    let beat = {
-                        let s = lock(&shared);
-                        Listener {
-                            pid: me,
-                            id: id.clone(),
-                            since: s.since.clone(),
-                            push: s.push,
-                            client: s.client.clone(),
-                        }
-                    };
-                    let _ = mailbox::write_beat(&cfg, &beat);
+                    if n % BEAT_EVERY == 0 {
+                        let beat = {
+                            let s = lock(&shared);
+                            Listener {
+                                pid: me,
+                                id: id.clone(),
+                                since: s.since.clone(),
+                                push: s.push,
+                                client: s.client.clone(),
+                            }
+                        };
+                        let _ = mailbox::write_beat(&cfg, &beat);
+                    }
+                    true
+                });
+                if !still {
+                    alive.store(false, Ordering::SeqCst);
+                    break;
                 }
                 let mb = Mailbox::at(&cfg).ok();
                 if let Some(mb) = mb.as_ref().filter(|_| n % SWEEP_EVERY == SWEEP_EVERY - 1) {
@@ -318,9 +340,17 @@ impl Desk {
                 let pushing = lock(&shared).push;
                 if let Some(mb) = mb.filter(|_| pushing) {
                     for note in mb.open_notes() {
-                        if !lock(&shared).pushed.insert(note.request_id.clone()) {
+                        if lock(&shared).pushed.contains(&note.request_id) {
                             continue;
                         }
+                        // Asked again right before each push. The lock is not
+                        // held across the write to stdout, which can block on
+                        // a client that has stopped reading.
+                        if superseded(&cfg, &id) {
+                            alive.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                        lock(&shared).pushed.insert(note.request_id.clone());
                         if send_line(&out, &notification(&note)).is_err() {
                             // The client has gone; nothing can hear now.
                             alive.store(false, Ordering::SeqCst);
@@ -341,7 +371,18 @@ impl Desk {
         }
         let mb = self.mailbox()?;
         let started = Instant::now();
+        let id = lock(&self.shared).id.clone();
         loop {
+            // Asked before a note is handed over, not after: a session that
+            // listened since gets it instead.
+            if !self.listening() || superseded(&self.config_file, &id) {
+                return Ok(json!({
+                    "request_id": null,
+                    "listening": false,
+                    "note": "Another session is listening now, so questions go there. Stop \
+                        looping, unless the user asks you to listen again.",
+                }));
+            }
             if let Some(note) = mb
                 .open_notes()
                 .into_iter()
@@ -352,14 +393,6 @@ impl Desk {
                     "request_id": note.request_id,
                     "text": note.text,
                     "asked_s_ago": note.age().as_secs(),
-                }));
-            }
-            if !self.listening() {
-                return Ok(json!({
-                    "request_id": null,
-                    "listening": false,
-                    "note": "Another session is listening now, so questions go there. Stop \
-                        looping, unless the user asks you to listen again.",
                 }));
             }
             if started.elapsed() >= timeout {
@@ -391,8 +424,13 @@ impl Desk {
         // A process that never listened has no heartbeat to remove, and
         // need not read the user's.
         if let Some(a) = self.alive.take() {
-            a.store(false, Ordering::SeqCst);
-            mailbox::remove_own_beat(&self.config_file, &lock(&self.shared).id);
+            let id = lock(&self.shared).id.clone();
+            // Under the lock: the thread checks `alive` under it too, so it
+            // cannot write the heartbeat back after it is removed here.
+            mailbox::with_beat_lock(&self.config_file, || {
+                a.store(false, Ordering::SeqCst);
+                mailbox::remove_own_beat(&self.config_file, &id);
+            });
         }
         json!({"listening": false, "was_listening": was})
     }
@@ -444,3 +482,7 @@ not arriving, call `wait_for_talk` in a loop instead, answering each with `talk_
         )
     }
 }
+
+#[cfg(test)]
+#[path = "listen_tests.rs"]
+mod tests;

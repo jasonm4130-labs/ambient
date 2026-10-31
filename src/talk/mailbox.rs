@@ -422,7 +422,8 @@ pub fn last_beat(config_file: &Path) -> Option<Listener> {
     serde_json::from_str(&text).ok()
 }
 
-/// Write `l` as the heartbeat, stamped now.
+/// Write `l` as the heartbeat, stamped now. A listener calls it under
+/// [`with_beat_lock`], after checking whom the heartbeat names.
 pub fn write_beat(config_file: &Path, l: &Listener) -> std::io::Result<()> {
     let mut v = serde_json::to_value(l).map_err(std::io::Error::other)?;
     v["updated_at"] = json!(SystemTime::now()
@@ -431,8 +432,32 @@ pub fn write_beat(config_file: &Path, l: &Listener) -> std::io::Result<()> {
     write_whole(&beat_path(config_file), v.to_string().as_bytes())
 }
 
+/// Run `f` holding the heartbeat lock: an exclusive `flock` on the `talk/`
+/// folder, so no new file is needed for it. Every write and removal of the
+/// heartbeat goes through it together with the read of whom the heartbeat
+/// names, so a listener can never overwrite (or rewrite after stopping) the
+/// heartbeat of one that started after it. The app only reads the
+/// heartbeat, which is replaced whole by rename, and takes no lock.
+///
+/// If the folder cannot be opened, `f` runs unlocked, as it would have
+/// before there was a lock.
+pub fn with_beat_lock<R>(config_file: &Path, f: impl FnOnce() -> R) -> R {
+    use std::os::fd::AsRawFd;
+    let dir = Mailbox::at(config_file)
+        .ok()
+        .and_then(|mb| std::fs::File::open(mb.dir()).ok());
+    if let Some(dir) = &dir {
+        // SAFETY: flock on a descriptor this function owns; the lock goes
+        // when `dir` is closed at the end of this function.
+        while unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX) } != 0
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {}
+    }
+    f()
+}
+
 /// Remove the heartbeat only if listener `id` in this process wrote it:
-/// another session may be listening now.
+/// another session may be listening now. Call it under [`with_beat_lock`].
 pub fn remove_own_beat(config_file: &Path, id: &str) {
     if last_beat(config_file).is_some_and(|l| l.pid == std::process::id() && l.id == id) {
         let _ = std::fs::remove_file(beat_path(config_file));
