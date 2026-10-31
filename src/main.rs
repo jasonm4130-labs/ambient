@@ -789,6 +789,8 @@ fn main() -> Result<()> {
                             .unwrap_or_else(ambient::assist::voice::default_helper_dir)
                             .display()
                     );
+                    println!("{:<14} {}", "talk", cfg.talk.enabled);
+                    println!("{:<14} {}", "talk.speak", cfg.talk.speak);
                     println!(
                         "{:<14} {}",
                         "talk.firstmate_home",

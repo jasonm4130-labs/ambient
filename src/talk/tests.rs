@@ -47,6 +47,8 @@ struct FakeTarget {
     polls_before: usize,
     reply: Option<String>,
     polled: usize,
+    /// Called with each poll's number, to change the world while waiting.
+    on_poll: Option<Box<dyn FnMut(usize)>>,
 }
 
 impl Target for FakeTarget {
@@ -63,6 +65,9 @@ impl Target for FakeTarget {
     fn reply(&mut self, id: &str) -> Result<Option<String>> {
         assert_eq!(id, "n1");
         self.polled += 1;
+        if let Some(f) = self.on_poll.as_mut() {
+            f(self.polled);
+        }
         Ok((self.polled > self.polls_before)
             .then(|| self.reply.clone())
             .flatten())
@@ -97,14 +102,14 @@ fn turn<'a>(
     target: &'a mut FakeTarget,
     speaker: Option<&'a mut dyn Speaker>,
     lock: &Path,
-    recording: &'a dyn Fn() -> bool,
+    paused: &'a dyn Fn() -> bool,
     out: &'a mut Vec<u8>,
 ) -> Turn<'a> {
     Turn {
         target,
         speaker,
         lock: lock.to_path_buf(),
-        recording,
+        paused,
         poll: Duration::from_millis(1),
         timeout: Duration::from_secs(5),
         out,
@@ -190,6 +195,72 @@ fn no_reply_within_the_timeout_is_said_so() {
     assert_eq!(converse("hi", t).unwrap(), Outcome::NoReply);
 }
 
+/// D3: a call arming while the turn waits, then going away without a
+/// recording, leaves the reply to be said as usual; one still armed when the
+/// reply comes is shown, not said.
+#[test]
+fn a_reply_is_said_after_a_call_arms_and_disarms_but_not_while_armed() {
+    let dir = temp("armed");
+    let lock = dir.join("speaking.lock");
+    let root = dir.join("sessions");
+    std::fs::create_dir_all(&root).unwrap();
+    let paused = || is_paused_in(&root);
+    let target = |disarm: bool| {
+        let root = root.clone();
+        FakeTarget {
+            ready: Some(true),
+            polls_before: 3,
+            reply: Some("Merged.".into()),
+            on_poll: Some(Box::new(move |n| match n {
+                1 => set_paused(&root, true).unwrap(),
+                2 if disarm => set_paused(&root, false).unwrap(),
+                _ => {}
+            })),
+            ..Default::default()
+        }
+    };
+
+    let mut voice = FakeVoice::default();
+    let (mut t, mut out) = (target(true), Vec::new());
+    let got = converse(
+        "hi",
+        turn(&mut t, Some(&mut voice), &lock, &paused, &mut out),
+    )
+    .unwrap();
+    assert_eq!(got, Outcome::Spoken);
+    assert_eq!(*voice.said.borrow(), ["Merged."]);
+
+    let mut voice = FakeVoice::default();
+    let (mut t, mut out) = (target(false), Vec::new());
+    let got = converse(
+        "hi",
+        turn(&mut t, Some(&mut voice), &lock, &paused, &mut out),
+    )
+    .unwrap();
+    assert!(matches!(got, Outcome::TextOnly(_)), "{got:?}");
+    assert!(voice.said.borrow().is_empty());
+    let kinds: Vec<_> = events(&out)
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["sent", "reply", "text_only"]);
+    set_paused(&root, false).unwrap();
+    assert!(!is_paused_in(&root));
+    set_paused(&root, false).unwrap();
+}
+
+/// A fresh install has no sessions folder until its first recording; a call
+/// arming before then must still keep a reply from being said.
+#[test]
+fn pausing_works_before_the_sessions_folder_exists() {
+    let root = temp("no-sessions").join("not-yet");
+    assert!(!root.exists());
+    set_paused(&root, false).unwrap();
+    assert!(!is_paused_in(&root));
+    set_paused(&root, true).unwrap();
+    assert!(is_paused_in(&root));
+}
+
 #[test]
 fn the_reply_stays_text_when_the_voice_fails_or_a_recording_starts() {
     let dir = temp("fallback");
@@ -216,12 +287,23 @@ fn the_reply_stays_text_when_the_voice_fails_or_a_recording_starts() {
 
     let mut voice = FakeVoice::default();
     let (mut t, mut out) = (reply(), Vec::new());
+    t.polls_before = 3;
     let got = converse("hi", turn(&mut t, Some(&mut voice), &lock, &yes, &mut out)).unwrap();
     assert!(
         matches!(got, Outcome::TextOnly(ref w) if w.contains("recording")),
         "{got:?}"
     );
     assert!(voice.said.borrow().is_empty());
+    let kinds: Vec<_> = events(&out)
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["sent", "reply", "text_only"],
+        "the reply is still shown"
+    );
+    assert!(!lock.exists(), "the speaking lock is released");
 }
 
 #[test]

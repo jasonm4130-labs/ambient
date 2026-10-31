@@ -97,6 +97,33 @@ describe("Settings", () => {
     await screen.findByText(/a recording is in progress/u);
   });
 
+  it("talking mode, speaking and firstmate's home are set from the Talk section", async () => {
+    const fake = new FakeBridge();
+    const config = {
+      ...baseConfig,
+      talk: { enabled: false, speak: true, firstmate_home: null },
+    };
+    fake.answer("config.get", config);
+    fake.answer("config.set", config);
+    fake.answer("pick_dir", { chosen: "/Users/x/firstmate" });
+    renderSettings(fake);
+
+    expect(await screen.findByTestId("talk-home")).toHaveTextContent("Not set");
+    await userEvent.click(screen.getByRole("switch", { name: "Talking mode" }));
+    await userEvent.click(screen.getByRole("button", { name: "Choose…" }));
+    await waitFor(() => {
+      const sets = fake.calls.filter((c) => c.method === "config.set").map((c) => c.params);
+      expect(sets).toEqual([
+        { key: "talk", value: "true" },
+        { key: "talk.firstmate_home", value: "/Users/x/firstmate" },
+      ]);
+    });
+    expect(fake.calls).toContainEqual({
+      method: "pick_dir",
+      params: { purpose: "firstmate_home" },
+    });
+  });
+
   it("every button and switch on the screen has an accessible name", async () => {
     const fake = new FakeBridge();
     fake.answer("config.get", { ...baseConfig, apps: ["us.zoom.xos"] });

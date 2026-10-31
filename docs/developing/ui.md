@@ -71,6 +71,14 @@ red dot, the clock and the live session's name, which opens its live
 transcript. A recording that starts selects its session once, on the phase
 edge, so choosing another session mid-recording sticks.
 
+The talk card sits under the live card and is drawn from the `talk` event,
+which Rust sends beside `phase` (`Talk::payload` in `src/talk/app.rs`). Off,
+it links to Settings. On, **Hold to talk** calls `talk.press` on pointer or
+key down and `talk.release` on up, both forwarded to the app delegate like
+`record.*`; it is disabled while recording or armed, or before a firstmate
+home is chosen. **Conversation** puts the turns in the main pane until a
+session is chosen. See [talking to firstmate](../using/talk.md).
+
 ## Appearance and shortcuts
 
 The page uses system fonts, the neutral theme, a 0.5 rem radius, 13 px body

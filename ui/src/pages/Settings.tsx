@@ -6,6 +6,7 @@ import { DiarizeSection } from "./settings/DiarizeSection";
 import { NamingSection } from "./settings/NamingSection";
 import { PeopleSection } from "./settings/PeopleSection";
 import { StorageSection } from "./settings/StorageSection";
+import { TalkSection } from "./settings/TalkSection";
 import type { SettingsConfig, UnnamedSpeaker } from "./settings/types";
 
 type Scope = "all" | "some";
@@ -95,6 +96,25 @@ export function Settings() {
               void setKey("ask_before_recording", value ? "true" : "false");
             }}
           />
+          {config.talk !== undefined && (
+            <TalkSection
+              talk={config.talk}
+              onEnabledChange={(value) => {
+                void setKey("talk", value ? "true" : "false");
+              }}
+              onSpeakChange={(value) => {
+                void setKey("talk.speak", value ? "true" : "false");
+              }}
+              onChooseHome={() => {
+                void bridge
+                  .call<{ chosen: string | null }>("pick_dir", { purpose: "firstmate_home" })
+                  .then(({ chosen }) => {
+                    if (chosen === null) return;
+                    return setKey("talk.firstmate_home", chosen);
+                  });
+              }}
+            />
+          )}
           <PeopleSection
             roster={config.roster}
             onAdd={(name) => {

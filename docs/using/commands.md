@@ -387,7 +387,9 @@ seconds (300 by default). The reply is read aloud through the assistant's
 voice helper with its markdown stripped and cut to 600 characters, while
 holding `speaking.lock` beside the config file so the live assistant never
 talks over it. A voice that fails, a lock still held after ten seconds, or a
-recording that started meanwhile leaves the reply as text.
+recording that started meanwhile leaves the reply as text, as does a pause the
+app marks with `.talk-paused` in the sessions folder while a call waits to be
+recorded.
 
 The audio is never written to disk or sent anywhere: only the transcript
 leaves the process. Talking is refused while a recording is in progress,
@@ -396,7 +398,8 @@ the reply but prints what it would say instead of starting the voice, so the
 whole loop runs headless against a stand-in `fm-inbox.sh`. `--pcm` reads raw
 32-bit float little-endian mono until end of file, which is how the app hands
 over a push-to-talk hold. `--stop`, or SIGTERM to the turn, silences a reply
-mid-word.
+mid-word; SIGUSR1 does the same to a reply being said and is ignored by a turn
+still waiting for one.
 
 Stdout is one JSON event per line for the program that started it (`heard`,
 `nothing`, `queued`, `sent`, `reply`, `spoken`, `text_only`, `dry_run`,

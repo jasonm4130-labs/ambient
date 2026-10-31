@@ -5,6 +5,7 @@ import { NamingStrip } from "@/components/NamingStrip";
 import { SearchPalette } from "@/components/SearchPalette";
 import { SessionHeader } from "@/components/SessionHeader";
 import { SessionList, sessionState, type SessionSummary } from "@/components/SessionList";
+import { TalkCard, TalkPanel, type TalkPayload } from "@/components/Talk";
 import { Transcript } from "@/components/Transcript";
 import { useBridge } from "@/lib/bridge-context";
 import { useLatest } from "@/lib/latest";
@@ -33,6 +34,12 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string>();
   const [capture, setCapture] = useState<CaptureConfig>();
+  const [talk, setTalk] = useState<TalkPayload>();
+  // The conversation with firstmate takes the main pane until a session is
+  // chosen again.
+  const [talkOpen, setTalkOpen] = useState(false);
+
+  useEffect(() => bridge.on("talk", (payload) => setTalk(payload as TalkPayload)), [bridge]);
 
   const loadSessions = useLatest(
     useCallback(() => bridge.call<SessionSummary[]>("sessions"), [bridge]),
@@ -113,6 +120,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
         // it takes the selection once — on the edge, never on every event, so
         // choosing another session mid-recording sticks.
         if (edge.liveId !== null && prev?.liveId !== edge.liveId) {
+          setTalkOpen(false);
           setSelected(edge.liveId);
           setHighlightIndex(undefined);
         }
@@ -142,12 +150,14 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
   }, []);
 
   const openHit = useCallback((session: string, index: number) => {
+    setTalkOpen(false);
     setSelected(session);
     setHighlightIndex(index);
     setSearchOpen(false);
   }, []);
 
   const selectSession = useCallback((session: string) => {
+    setTalkOpen(false);
     setSelected(session);
     setHighlightIndex(undefined);
   }, []);
@@ -203,6 +213,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
           }}
           onAddApps={onSettings}
         />
+        <TalkCard payload={talk} onOpen={() => setTalkOpen(true)} onSettings={onSettings} />
         <div className="flex min-h-0 flex-1 flex-col">
           <SessionList sessions={sessions} selectedId={selected} onSelect={selectSession} />
         </div>
@@ -224,11 +235,13 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
             {error}
           </p>
         )}
-        {health !== undefined &&
-        (health.some((check) => !check.ok) ||
-          (loaded &&
-            sessions.length === 0 &&
-            (phase?.live === null || phase?.live === undefined))) ? (
+        {talkOpen ? (
+          <TalkPanel payload={talk} />
+        ) : health !== undefined &&
+          (health.some((check) => !check.ok) ||
+            (loaded &&
+              sessions.length === 0 &&
+              (phase?.live === null || phase?.live === undefined))) ? (
           <Welcome
             checks={health}
             onRetry={() => {
