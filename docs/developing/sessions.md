@@ -27,6 +27,13 @@ until stopped, then resamples, transcribes and writes a session under
   audio/call.wav   mono 16 kHz, tap
 ```
 
+`ambient record --mic-only`, the menu's **Record microphone only** and the
+`capture` setting set to `mic` record the microphone alone: no tap is created,
+`audio/call.wav` is never written, and `session.json` carries `"capture": "mic"`
+(`"all"` otherwise, and for sessions that predate the field). While the
+recording is live, before `session.json` exists, a `capture` file in the session
+directory holds the same word.
+
 `capture_into` owns the tap and preserves native audio while a background worker
 publishes completed turns to `raw.jsonl`. Recognition processes bounded blocks;
 the capture drain does not wait for it. After Stop, the capture half writes the

@@ -7,7 +7,9 @@ ambient — local-first ambient capture
 
 USAGE
   ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>]
-                 [--seconds <n>]       record with live transcription
+                 [--seconds <n>] [--mic-only]
+                                       record with live transcription;
+                                       --mic-only skips the system audio
   ambient stop [<session-dir>]         stop the recording in progress
   ambient sessions [--json]            list the sessions on disk
   ambient search <query> [--json]      find words across every session
@@ -42,6 +44,46 @@ USAGE
 Sessions are written to ~/Documents/Ambient (override with AMBIENT_HOME).
 ";
 
+/// What `ambient record` was asked to do.
+#[derive(Debug, Default, PartialEq)]
+struct RecordArgs {
+    name: Option<String>,
+    model: Option<String>,
+    seconds: Option<u64>,
+    apps: Vec<String>,
+    /// `--mic-only`: capture the microphone alone for this recording,
+    /// whatever the `capture` setting says.
+    mic_only: bool,
+}
+
+fn parse_record_args(mut args: impl Iterator<Item = String>) -> Result<RecordArgs> {
+    let mut r = RecordArgs::default();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--name" => r.name = args.next(),
+            "--model" => r.model = args.next(),
+            "--seconds" => {
+                r.seconds = Some(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--seconds needs a value"))?
+                        .parse()?,
+                )
+            }
+            "--app" => {
+                if let Some(b) = args.next() {
+                    r.apps.push(b);
+                }
+            }
+            "--mic-only" => r.mic_only = true,
+            other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
+        }
+    }
+    if r.mic_only && !r.apps.is_empty() {
+        bail!("--mic-only records no system audio, so --app has nothing to select");
+    }
+    Ok(r)
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -50,30 +92,14 @@ fn main() -> Result<()> {
         // still reaches the diagnostics.
         None => ambient::menubar::run(),
         Some("record") => {
-            let mut name: Option<String> = None;
-            let mut model: Option<String> = None;
-            let mut seconds: Option<u64> = None;
-            let mut apps: Vec<String> = Vec::new();
-            while let Some(a) = args.next() {
-                match a.as_str() {
-                    "--name" => name = args.next(),
-                    "--model" => model = args.next(),
-                    "--seconds" => {
-                        seconds = Some(
-                            args.next()
-                                .ok_or_else(|| anyhow::anyhow!("--seconds needs a value"))?
-                                .parse()?,
-                        )
-                    }
-                    "--app" => {
-                        if let Some(b) = args.next() {
-                            apps.push(b);
-                        }
-                    }
-                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
-                }
-            }
-            let dir = ambient::session::record(name.as_deref(), &apps, model.as_deref(), seconds)?;
+            let r = parse_record_args(args)?;
+            let dir = ambient::session::record(
+                r.name.as_deref(),
+                &r.apps,
+                r.model.as_deref(),
+                r.seconds,
+                r.mic_only.then_some(ambient::config::CaptureMode::Mic),
+            )?;
             println!("{}", dir.display());
             Ok(())
         }
@@ -709,6 +735,7 @@ fn main() -> Result<()> {
                             .unwrap_or_else(|| "(system default)".into())
                     );
                     println!("{:<14} {}", "diarize", cfg.diarize);
+                    println!("{:<14} {}", "capture", cfg.capture.as_str());
                     println!(
                         "{:<14} {}",
                         "ask_before_recording", cfg.ask_before_recording
@@ -820,5 +847,39 @@ fn main() -> Result<()> {
             print!("{USAGE}");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<RecordArgs> {
+        parse_record_args(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn record_captures_everything_unless_told_otherwise() {
+        assert!(!parse(&[]).unwrap().mic_only);
+        assert!(!parse(&["--name", "x", "--seconds", "5"]).unwrap().mic_only);
+    }
+
+    #[test]
+    fn mic_only_is_a_flag_beside_the_others() {
+        let r = parse(&["--name", "standup", "--mic-only", "--seconds", "30"]).unwrap();
+        assert!(r.mic_only);
+        assert_eq!(r.name.as_deref(), Some("standup"));
+        assert_eq!(r.seconds, Some(30));
+    }
+
+    #[test]
+    fn mic_only_with_an_app_is_refused() {
+        let e = parse(&["--mic-only", "--app", "us.zoom.xos"]).unwrap_err();
+        assert!(e.to_string().contains("--mic-only"), "{e}");
+    }
+
+    #[test]
+    fn an_unknown_record_flag_is_still_refused() {
+        assert!(parse(&["--mic"]).is_err());
     }
 }

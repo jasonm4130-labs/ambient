@@ -18,6 +18,7 @@ the app does not keep, so the struct in `src/config.rs` and the key list in
 | `threshold` | How readily two utterances are called different people. Governs `record`'s automatic diarization only — a standalone `ambient diarize` ignores it and takes `--threshold`. | Float | `0.5` |
 | `sessions_dir` | Where sessions are written. | Path; `default` or the empty string clears it | `~/Documents/Ambient` |
 | `ask_before_recording` | Wait to be told before recording a call the app noticed. | `true`/`yes`/`on`/`1`, or `false`/`no`/`off`/`0` | `true` |
+| `capture` | What a recording captures. `all` is the microphone (the `room` track) plus system audio (the `call` track). `mic` records the microphone only: no system-audio tap is created and the session has no `call` track. `ambient record --mic-only` and the menu's **Record microphone only** choose `mic` for one recording without changing this. | `all` or `mic`; anything else is refused | `all` |
 | `audio_retention_days` | How long the track wavs are kept. `0` deletes them as soon as the transcript exists. | Unsigned integer, or `forever` / `never` to keep them indefinitely | `7` |
 | `assistant` | The live assistant's on/off switch, also in the status menu as **Live Assistant**. | Boolean, as above | `false` |
 | `assistant.*`, `voice.*` | The assistant's name, limits on speaking, and voice. | See [the live assistant](assistant.md#settings) | |
@@ -32,7 +33,7 @@ that do exist.
 
 **Environment → CLI flag → config file → default**, for every setting read
 through `Config::load()`. So `AMBIENT_HOME` beats `sessions_dir`, a `--app` on the
-command line beats the stored `apps` list, and an existing harness that sets
+command line beats the stored `apps` list, `ambient record --mic-only` beats a `capture` of `all`, and an existing harness that sets
 neither is unaffected.
 
 `threshold` is the exception, and it is worth knowing before you tune it: the

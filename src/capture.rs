@@ -423,17 +423,19 @@ pub struct Drain {
 const PAD_THRESHOLD_S: f64 = 0.05;
 
 impl ProcessTap {
-    /// The microphone alone, with no tap and no aggregate — the isolation case
-    /// for diagnosing whether the input IOProc blocks on its own.
-    pub fn start_mic_only() -> Result<Self> {
+    /// The microphone alone, with no tap and no aggregate: a `mic`-mode
+    /// recording. There is no call track, so `call_channels` is 0 and
+    /// [`ProcessTap::drain`] returns an empty call stream rather than padding
+    /// one to length. Takes the same ring length and input-device name as
+    /// [`ProcessTap::start`], so the room track is written exactly as it is in
+    /// a normal recording.
+    pub fn start_mic_only(ring_seconds: usize, mic_name: Option<&str>) -> Result<Self> {
         unsafe {
-            let dev = default_input()?.0;
+            let dev = input_device(mic_name)?;
             let ch = input_channel_count(dev).unwrap_or(1);
             let rate = nominal_sample_rate(dev).unwrap_or(48_000.0);
-            eprintln!("[mic-only] device {dev}, {ch} ch, {rate} Hz — starting IOProc");
-            let ring = Arc::new(Ring::new((rate as usize) * ch as usize * 30));
+            let ring = Arc::new(Ring::new((rate as usize) * ch as usize * ring_seconds));
             let proc = start_ioproc(dev, ring.clone())?;
-            eprintln!("[mic-only] IOProc running");
             Ok(Self {
                 tap: 0,
                 agg: 0,
@@ -449,6 +451,11 @@ impl ProcessTap {
                 started: std::time::Instant::now(),
             })
         }
+    }
+
+    /// Whether this capture has a system-audio (call) track at all.
+    pub fn has_call_track(&self) -> bool {
+        self.call_channels > 0
     }
 
     /// Tap the given bundle IDs, mixed down to mono. An empty list taps
@@ -724,7 +731,8 @@ impl ProcessTap {
             self.mic_rate,
         );
         let call = take(
-            Some(&self.call_ring),
+            // No tap, no call track: nothing to pad either.
+            self.has_call_track().then_some(&self.call_ring),
             &mut d.call_cursor,
             &mut d.call_out,
             &mut d.call_real,

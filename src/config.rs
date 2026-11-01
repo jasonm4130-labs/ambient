@@ -41,6 +41,42 @@ pub struct Config {
     pub voice: VoiceConfig,
     /// Talking to an agent out loud (`ambient talk`).
     pub talk: TalkConfig,
+    /// What a recording captures: the microphone and the system audio, or the
+    /// microphone alone. `ambient record --mic-only` overrides it once.
+    pub capture: CaptureMode,
+}
+
+/// What a recording captures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMode {
+    /// The microphone (the `room` track) and the system audio (`call`).
+    #[default]
+    All,
+    /// The microphone only. No process tap is created, so there is no `call`
+    /// track.
+    Mic,
+}
+
+impl CaptureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CaptureMode::All => "all",
+            CaptureMode::Mic => "mic",
+        }
+    }
+}
+
+impl std::str::FromStr for CaptureMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim() {
+            "all" => Ok(CaptureMode::All),
+            "mic" => Ok(CaptureMode::Mic),
+            other => anyhow::bail!("{other:?} is not a capture mode. Use all or mic."),
+        }
+    }
 }
 
 /// Where `ambient talk` sends what the user says. Only firstmate today, as an
@@ -125,6 +161,7 @@ impl Default for Config {
             assistant: AssistantConfig::default(),
             voice: VoiceConfig::default(),
             talk: TalkConfig::default(),
+            capture: CaptureMode::default(),
         }
     }
 }
@@ -220,6 +257,7 @@ impl Config {
                     v => Some(v.parse()?),
                 }
             }
+            "capture" => self.capture = value.parse()?,
             "assistant" => self.assistant.enabled = flag(value)?,
             "assistant.name" => self.assistant.name = nonempty(key, value)?,
             "assistant.cooldown_s" => self.assistant.cooldown_s = value.parse()?,
@@ -248,7 +286,7 @@ impl Config {
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
                  threshold, sessions_dir, ask_before_recording, audio_retention_days, \
-                 assistant, assistant.name, assistant.cooldown_s, \
+                 capture, assistant, assistant.name, assistant.cooldown_s, \
                  assistant.max_per_meeting, assistant.settle_s, \
                  voice.engine, voice.speaker, voice.style, voice.helper_dir, \
                  voice.description, voice.cue, voice.reference, talk.firstmate_home"
@@ -463,6 +501,37 @@ mod tests {
         assert_eq!(Config::load_from(&p), c);
         c.set("talk.firstmate_home", "default").unwrap();
         assert_eq!(c.talk.firstmate_home, None);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn capture_defaults_to_all_and_older_files_load_as_all() {
+        assert_eq!(Config::default().capture, CaptureMode::All);
+        let p = temp("capture-older");
+        std::fs::write(&p, r#"{"diarize": false}"#).unwrap();
+        assert_eq!(Config::load_from(&p).capture, CaptureMode::All);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn capture_is_parsed_validated_and_round_trips() {
+        let p = temp("capture");
+        let mut c = Config::default();
+        c.set("capture", "mic").unwrap();
+        assert_eq!(c.capture, CaptureMode::Mic);
+        assert!(c.set("capture", "everything").is_err());
+        assert_eq!(
+            c.capture,
+            CaptureMode::Mic,
+            "a refused value leaves it alone"
+        );
+        c.save_to(&p).unwrap();
+        assert!(std::fs::read_to_string(&p)
+            .unwrap()
+            .contains(r#""capture": "mic""#));
+        assert_eq!(Config::load_from(&p).capture, CaptureMode::Mic);
+        c.set("capture", "all").unwrap();
+        assert_eq!(c.capture, CaptureMode::All);
         std::fs::remove_file(&p).ok();
     }
 
