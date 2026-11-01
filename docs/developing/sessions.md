@@ -18,6 +18,7 @@ until stopped, then resamples, transcribes and writes a session under
 ```
 2026-08-29T1101-smoke/
   session.json     metadata, written when the capture ends
+  started_at       when capture began, written as it starts (for the live assistant)
   raw.jsonl        what the recogniser heard — never rewritten
   edits.jsonl      repairs, speaker names, reverts — append-only
   transcript.md    the export, regenerated on every change

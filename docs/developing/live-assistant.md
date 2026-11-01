@@ -145,7 +145,10 @@ again and is refused if the remark it waited for started the cooldown.
 
 The speakers feed the microphone, so each utterance comes back as a transcript
 line a few seconds later. `speak` records where each utterance sits on the
-recording's clock, from `started_at` in `session.json`. A line counts as an
+recording's clock, from the `started_at` file capture writes into the session
+folder as it starts (`session.json` exists only once capture ends, and is the
+fallback). On the trial's two sessions this placed the assistant's speech
+within about 0.2 seconds of where the transcript heard it back. A line counts as an
 echo when its time overlaps an utterance (within three seconds either side, for
 the drift between the voice's wall clock and the recording's) and at least 60%
 of its words appear in it; a line under three words must be wholly inside it,
@@ -153,7 +156,7 @@ so a fragment such as "Question eight." is caught. A person who repeats the
 assistant's words later is never taken for it: in the trial of 2026-11-01,
 "Yeah. Claude, go." 17 seconds after the assistant had said "just say, Claude,
 go" was dropped by words alone, and the name never fired. When the session has
-no `started_at`, the rule falls back to words alone: at least three words, at
+no start time, the rule falls back to words alone: at least three words, at
 least 60% of them in something said in the last two minutes. Echoes are left out of the batch and only counted, so the
 agent never answers itself. The consent notice is checked the other way round:
 a line is its echo only when it holds at least 60% of the notice's words. A

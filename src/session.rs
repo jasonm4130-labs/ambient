@@ -232,6 +232,9 @@ pub const STOP_FILE: &str = "STOP";
 /// Live level meter, rewritten each second. Under `open -a` stderr goes
 /// nowhere, so this is the only way to tell a live recording from a dead one.
 pub const STATUS_FILE: &str = "status";
+/// When capture began (RFC 3339), written as it starts, before `session.json`
+/// exists.
+pub const STARTED_FILE: &str = "started_at";
 
 /// Which stage of a recording's life the worker is in, as told to a
 /// [`Meter`]. Distinct from `Phase` in `state.rs`: that governs which
@@ -615,6 +618,10 @@ pub fn capture_into(
     let started = chrono::Local::now();
     let audio = dir.join("audio");
     std::fs::create_dir_all(&audio).with_context(|| format!("creating {}", audio.display()))?;
+    // `session.json` is written only once capture ends; the live assistant
+    // needs the start now, to place its own speech on the transcript's clock.
+    std::fs::write(dir.join(STARTED_FILE), started.to_rfc3339())
+        .with_context(|| format!("writing {}", dir.join(STARTED_FILE).display()))?;
 
     let tap = ProcessTap::start(bundles, 60, true, cfg.input_device.as_deref())?;
     // Two devices, two clocks: the mic is on the input device and the call on

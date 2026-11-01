@@ -927,11 +927,21 @@ fn trails_off(text: &str) -> bool {
         .is_some_and(|w| TRAILING.contains(&w.as_str()))
 }
 
-/// When the recording at `dir` began, from its `session.json`.
+/// When the recording at `dir` began: the `started_at` file capture writes
+/// as it starts, or `session.json` once it has ended. Measured on the trial
+/// of 2026-11-01, this puts the assistant's speech within about 0.2 s of where
+/// the transcript hears it back.
 fn started_at(dir: &Path) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s.trim()).ok();
+    if let Some(at) = std::fs::read_to_string(dir.join(crate::session::STARTED_FILE))
+        .ok()
+        .and_then(|t| parse(&t))
+    {
+        return Some(at);
+    }
     let text = std::fs::read_to_string(dir.join("session.json")).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
-    chrono::DateTime::parse_from_rfc3339(v["started_at"].as_str()?).ok()
+    parse(v["started_at"].as_str()?)
 }
 
 /// How often the assistant has already spoken in the meeting at `dir`, and
