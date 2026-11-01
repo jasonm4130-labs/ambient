@@ -62,8 +62,12 @@ The agent then:
 
 Ambient, not the agent, enforces a **cooldown** after each utterance and a
 **cap** per meeting, so a model that loses the thread cannot talk over a
-meeting. Its own voice, picked up again by the microphone, is left out of what
-the agent reads. Turning **Live Assistant** off in the menu silences it
+meeting. It also never talks over a person: it will not speak while someone's
+words are still unread or they finished speaking moments ago, and it waits
+longer when someone trails off ("um", "so"), so you have time to think. Say
+its name to hand it the turn at once. Its own voice, picked up again by the
+microphone, is left out of what the agent reads, and so is a line heard on
+both the room and call tracks. Turning **Live Assistant** off in the menu silences it
 immediately, even mid-meeting.
 
 Haiku is fast enough to answer about three seconds after its name is said. A
@@ -136,6 +140,7 @@ All are set with `ambient config <key> <value>`; see [settings](settings.md).
 | `assistant.name` | `Claude` | What people call it, and what it answers to. |
 | `assistant.cooldown_s` | `60` | Seconds of silence after each utterance. |
 | `assistant.max_per_meeting` | `10` | Most utterances in one meeting. |
+| `assistant.settle_s` | `5` | Seconds of quiet that end a person's turn (15 after a trailing "um" or "so"). |
 | `voice.engine` | `auto` | `auto`, `qwen3-tts`, `supertonic3` or `kokoro`. |
 | `voice.speaker` | engine default | `Vivian` (Qwen3-TTS), `F1` (Supertonic), `af_heart` (Kokoro). |
 | `voice.style` | none | Standing delivery instruction for preset Qwen3-TTS speakers. |

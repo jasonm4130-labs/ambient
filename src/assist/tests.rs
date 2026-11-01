@@ -88,8 +88,8 @@ impl Room {
         };
         Watch::new(paths, make).with_pacing(Pacing {
             poll: Duration::from_millis(10),
-            settle: Duration::from_millis(60),
-            longest: Duration::from_millis(400),
+            settle: Some(Duration::from_millis(60)),
+            trailing: Duration::from_millis(300),
             speaking_wait: Duration::from_millis(100),
         })
     }
@@ -117,6 +117,31 @@ impl Room {
             .open(self.root.join(id).join("raw.jsonl"))
             .unwrap();
         writeln!(f, "{line}").unwrap();
+    }
+
+    /// A line on either track, with its own end time.
+    fn line(&self, id: &str, track: &str, start_ms: u64, end_ms: u64, text: &str) {
+        let line = json!({
+            "track": track, "start_ms": start_ms, "end_ms": end_ms,
+            "text": text, "confidence": 0.9,
+        });
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join(id).join("raw.jsonl"))
+            .unwrap();
+        writeln!(f, "{line}").unwrap();
+    }
+
+    /// Give the session a clock: recording began `ago_ms` before now.
+    fn started(&self, id: &str, ago_ms: i64) {
+        let at = chrono::Local::now().fixed_offset() - chrono::Duration::milliseconds(ago_ms);
+        // As capture writes it while recording; `session.json` comes later.
+        std::fs::write(
+            self.root.join(id).join(crate::session::STARTED_FILE),
+            at.to_rfc3339(),
+        )
+        .unwrap();
     }
 
     fn set(&self, key: &str, value: &str) {
@@ -249,8 +274,7 @@ fn its_name_returns_at_once_without_waiting_for_a_pause() {
     room.live("m1");
     let mut w = room.watch().with_pacing(Pacing {
         poll: Duration::from_millis(10),
-        settle: Duration::from_secs(30),
-        longest: Duration::from_secs(30),
+        settle: Some(Duration::from_secs(30)),
         ..Pacing::default()
     });
     w.watch(None).unwrap();
@@ -456,8 +480,8 @@ fn a_remark_that_waited_for_another_watchs_voice_is_held_by_its_cooldown() {
     room.live("m1");
     let mut b = room.watch().with_pacing(Pacing {
         poll: Duration::from_millis(10),
-        settle: Duration::from_millis(60),
-        longest: Duration::from_millis(400),
+        settle: Some(Duration::from_millis(60)),
+        trailing: Duration::from_millis(300),
         speaking_wait: Duration::from_secs(5),
     });
     b.watch(None).unwrap();
@@ -758,4 +782,171 @@ fn a_line_names_its_speaker_when_one_is_known_and_its_track_when_not() {
     assert_eq!(render(&call), "[00:00] someone on the call: Hello?");
     let blank = json!({"speaker": "", "track": "room", "start_ms": 3_000, "text": "Hi."});
     assert_eq!(render(&blank), "[00:03] someone in the room: Hi.");
+}
+
+// Replays of the live trial on 2026-11-01 (sessions 2026-11-01T1004 and
+// T1012): text and timestamps only, never audio.
+
+#[test]
+fn it_will_not_talk_over_words_it_has_not_read() {
+    // T1004: "Yes." at 58.0 s ended the batch; the person went on from
+    // 60.3 s, and the assistant spoke over them at 78.1 s.
+    let room = Room::new("overtalk", true);
+    room.live("m1");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    room.line("m1", "room", 58_008, 58_952, "Yes.");
+    assert_eq!(lines(&w.wait(Duration::from_secs(5)).unwrap()).len(), 1);
+    room.line(
+        "m1",
+        "room",
+        60_280,
+        67_944,
+        "Yeah, I think this makes sense. Um I tried to align on STE.",
+    );
+    let refused = w
+        .speak("Got it, recorded. Question nine.", None)
+        .unwrap_err();
+    assert!(
+        refused.contains("someone spoke since you last listened"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("align on STE"),
+        "the words come back: {refused}"
+    );
+    assert_eq!(
+        room.said(),
+        [consent_notice("Claude")],
+        "nothing was said over them"
+    );
+    // Read now, so the next attempt goes ahead.
+    w.speak("Got it, recorded. Question nine.", None).unwrap();
+}
+
+#[test]
+fn it_will_not_speak_moments_after_a_turn_or_after_one_that_trailed_off() {
+    let room = Room::new("midturn", true);
+    room.live("m1");
+    room.started("m1", 100_000);
+    let mut w = room.watch().with_pacing(Pacing {
+        poll: Duration::from_millis(10),
+        settle: Some(Duration::from_secs(5)),
+        ..Pacing::default()
+    });
+    w.watch(None).unwrap();
+    // Ended half a second ago: maybe only a breath. The agent's wait timed
+    // out with the line in hand, before the room had settled.
+    room.line(
+        "m1",
+        "room",
+        95_000,
+        99_500,
+        "flowery words there, I suppose.",
+    );
+    assert_eq!(lines(&w.wait(SHORT).unwrap()).len(), 1);
+    let refused = w.speak("Thanks, recorded.", None).unwrap_err();
+    assert!(refused.contains("may not be done"), "{refused}");
+    // Saying its name hands the turn over at once.
+    room.line("m1", "room", 99_600, 99_900, "Yeah. Claude, go.");
+    w.wait(Duration::from_secs(5)).unwrap();
+    w.speak("Thanks, recorded.", None).unwrap();
+}
+
+#[test]
+fn a_turn_that_trails_off_is_given_longer_to_finish() {
+    let room = Room::new("trails", true);
+    room.live("m1");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    room.line(
+        "m1",
+        "room",
+        1_000,
+        4_000,
+        "I guess like the option there is, um",
+    );
+    let started = Instant::now();
+    let v = w.wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(lines(&v).len(), 1);
+    assert!(
+        started.elapsed() >= Duration::from_millis(300),
+        "waited the trailing pause, not the 60 ms settle: {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn its_own_words_are_dropped_only_while_it_was_saying_them() {
+    // T1012: the person said "Yeah. Claude, go." 17 s after the assistant
+    // had said "...you can just say, Claude, go." Judged by words alone it
+    // was thrown away as an echo, and the name never fired.
+    let room = Room::new("timedecho", true);
+    room.live("m1");
+    room.started("m1", 120_000);
+    room.set("assistant.cooldown_s", "0");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    w.speak(
+        "When you're done thinking you can just say, Claude, go. Yes?",
+        None,
+    )
+    .unwrap();
+    // Its own voice, heard back while it spoke (a two-word fragment too).
+    room.line(
+        "m1",
+        "room",
+        119_000,
+        121_000,
+        "you can just say Claude go yes",
+    );
+    room.line("m1", "call", 119_500, 120_200, "Claude, go.");
+    let v = w.wait(SHORT).unwrap();
+    assert!(lines(&v).is_empty(), "{v}");
+    assert_eq!(v["left_out_as_your_own_voice"], 2);
+    // The person, well after it finished.
+    room.line("m1", "room", 137_000, 138_300, "Yeah. Claude, go.");
+    let v = w.wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        lines(&v),
+        ["[02:17] someone in the room: Yeah. Claude, go."]
+    );
+    assert_eq!(v["named_you"], true);
+}
+
+#[test]
+fn a_line_heard_on_both_tracks_is_handed_over_once() {
+    // T1004: "Yes." on the room track at 58.0 s and on the call track at
+    // 57.96 s.
+    let room = Room::new("twice", true);
+    room.live("m1");
+    let mut w = room.watch();
+    w.watch(None).unwrap();
+    room.line("m1", "room", 58_008, 58_952, "Yes.");
+    room.line("m1", "call", 57_960, 58_840, "Yes.");
+    let v = w.wait(Duration::from_secs(5)).unwrap();
+    assert_eq!(lines(&v), ["[00:58] someone in the room: Yes."]);
+    assert_eq!(v["left_out_as_heard_twice"], 1);
+    // A copy transcribed a batch later is still the same line.
+    room.line(
+        "m1",
+        "room",
+        60_280,
+        67_944,
+        "Yeah, I think this makes sense.",
+    );
+    let _ = w.wait(Duration::from_secs(5)).unwrap();
+    room.line(
+        "m1",
+        "call",
+        60_300,
+        67_900,
+        "Yeah, I think this makes sense.",
+    );
+    let v = w.wait(SHORT).unwrap();
+    assert!(lines(&v).is_empty(), "{v}");
+    // Different words at the same moment are two people.
+    room.line("m1", "call", 70_000, 72_000, "Sorry, which ticket?");
+    room.line("m1", "room", 70_100, 71_500, "The deploy one.");
+    assert_eq!(lines(&w.wait(Duration::from_secs(5)).unwrap()).len(), 2);
 }

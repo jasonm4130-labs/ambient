@@ -86,29 +86,49 @@ impl Gate {
     }
 }
 
-/// Whether a transcript line is the assistant hearing itself.
+/// The words of a line or a remark, lowercased, for comparing them.
+pub fn words(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Whether most of `line`'s words are among `other`'s. A line under three
+/// words must be wholly inside it: used only once the clock already puts the
+/// two together, where a fragment like "Question eight." is enough.
+pub fn mostly_within(line: &[String], other: &[String]) -> bool {
+    if line.is_empty() {
+        return false;
+    }
+    let other: std::collections::HashSet<&String> = other.iter().collect();
+    let shared = line.iter().filter(|w| other.contains(w)).count();
+    if line.len() < 3 {
+        shared == line.len()
+    } else {
+        shared * 10 >= line.len() * 6
+    }
+}
+
+/// Whether a transcript line is the assistant hearing itself, judged by its
+/// words alone.
 ///
 /// The assistant's voice comes out of the speakers and back in through the
 /// microphone, so its own reply turns up in the transcript a few seconds
 /// later. Treated as a person, that line would invite a reply to itself. A
 /// line counts as an echo when most of its words appear in something the
 /// assistant said recently; lines under three words are too short to tell.
+/// This is the fallback for a meeting whose clock is unknown: with the clock,
+/// a line must also overlap the moment it was said (`Watch`), so a person
+/// repeating the assistant's words later is never taken for it.
 pub fn is_echo(line: &str, recent_replies: &[&str]) -> bool {
-    let words = |s: &str| -> Vec<String> {
-        s.split(|c: char| !c.is_alphanumeric() && c != '\'')
-            .filter(|w| !w.is_empty())
-            .map(str::to_lowercase)
-            .collect()
-    };
     let heard = words(line);
     if heard.len() < 3 {
         return false;
     }
-    recent_replies.iter().any(|reply| {
-        let said: std::collections::HashSet<String> = words(reply).into_iter().collect();
-        let shared = heard.iter().filter(|w| said.contains(*w)).count();
-        shared * 10 >= heard.len() * 6
-    })
+    recent_replies
+        .iter()
+        .any(|reply| mostly_within(&heard, &words(reply)))
 }
 
 #[cfg(test)]
@@ -172,5 +192,13 @@ mod tests {
         assert!(!is_echo("was the deploy ticket closed or not", &said));
         assert!(!is_echo("closed Tuesday", &said), "too short to tell");
         assert!(!is_echo("that ticket was closed on tuesday", &[]));
+    }
+
+    #[test]
+    fn a_short_line_counts_only_when_wholly_inside() {
+        let said = words("Question eight, the console's voice.");
+        assert!(mostly_within(&words("Question eight."), &said));
+        assert!(!mostly_within(&words("Question nine."), &said));
+        assert!(!mostly_within(&[], &said));
     }
 }

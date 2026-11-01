@@ -743,6 +743,7 @@ fn main() -> Result<()> {
                         "  {:<24} {}",
                         "assistant.max_per_meeting", a.max_per_meeting
                     );
+                    println!("  {:<24} {}", "assistant.settle_s", a.settle_s);
                     let ram = ambient::assist::voice::total_ram();
                     println!(
                         "  {:<24} {}",
