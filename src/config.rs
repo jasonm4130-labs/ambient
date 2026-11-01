@@ -67,6 +67,10 @@ pub struct AssistantConfig {
     pub cooldown_s: u32,
     /// The most times it speaks in one meeting.
     pub max_per_meeting: u32,
+    /// Seconds of quiet that end a person's turn, so `wait_for_transcript`
+    /// hands their words over. A turn that trails off ("um", "so") is given
+    /// longer; saying the assistant's name ends it at once.
+    pub settle_s: u32,
 }
 
 impl Default for AssistantConfig {
@@ -76,6 +80,7 @@ impl Default for AssistantConfig {
             name: "Claude".into(),
             cooldown_s: 60,
             max_per_meeting: 10,
+            settle_s: 5,
         }
     }
 }
@@ -219,6 +224,14 @@ impl Config {
             "assistant.name" => self.assistant.name = nonempty(key, value)?,
             "assistant.cooldown_s" => self.assistant.cooldown_s = value.parse()?,
             "assistant.max_per_meeting" => self.assistant.max_per_meeting = value.parse()?,
+            "assistant.settle_s" => {
+                let s: u32 = value.parse()?;
+                anyhow::ensure!(
+                    (1..=60).contains(&s),
+                    "assistant.settle_s must be 1 to 60 seconds"
+                );
+                self.assistant.settle_s = s;
+            }
             "voice.engine" => {
                 self.voice.engine = match value {
                     "auto" | "default" => None,
@@ -236,7 +249,7 @@ impl Config {
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
                  threshold, sessions_dir, ask_before_recording, audio_retention_days, \
                  assistant, assistant.name, assistant.cooldown_s, \
-                 assistant.max_per_meeting, \
+                 assistant.max_per_meeting, assistant.settle_s, \
                  voice.engine, voice.speaker, voice.style, voice.helper_dir, \
                  voice.description, voice.cue, voice.reference, talk.firstmate_home"
             ),
@@ -457,5 +470,20 @@ mod tests {
     fn an_unknown_key_is_refused_by_name() {
         let e = Config::default().set("keep_audio", "true").unwrap_err();
         assert!(e.to_string().contains("keep_audio"), "{e}");
+    }
+
+    #[test]
+    fn settle_is_five_seconds_by_default_and_bounded() {
+        let mut c = Config::default();
+        assert_eq!(c.assistant.settle_s, 5);
+        c.set("assistant.settle_s", "8").unwrap();
+        assert_eq!(c.assistant.settle_s, 8);
+        assert!(c.set("assistant.settle_s", "0").is_err());
+        assert!(c.set("assistant.settle_s", "61").is_err());
+        let old: Config = serde_json::from_str(r#"{"assistant":{"enabled":true}}"#).unwrap();
+        assert_eq!(
+            old.assistant.settle_s, 5,
+            "an old config file gets the default"
+        );
     }
 }

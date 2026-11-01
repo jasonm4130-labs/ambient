@@ -63,8 +63,8 @@ holds their state, `Watch`, one per server process.
 | Tool | What it does |
 | --- | --- |
 | `watch_meeting` | Refuses unless `assistant` is on and a session is being recorded. Otherwise speaks the consent notice, waiting up to five seconds for an `ambient talk` reply holding `speaking.lock` and refusing after that, starts the heartbeat, and returns the last 40 lines as context, the assistant's name and the limits. Calling it again for the same meeting does not repeat the notice. |
-| `wait_for_transcript` | Blocks until new lines arrive, then returns them as `[mm:ss] who: text`. It also returns `status` (`live`, `ended` or `off`), whether speaking is allowed now, and how many lines were left out as the assistant's own voice. |
-| `speak` | Says up to 600 characters in one of six tones, through the voice helper. Refused while off, before `watch_meeting`, during the cooldown and past the cap, and, without counting it, when another voice (an `ambient talk` reply or another watch) still holds `speaking.lock` after five seconds. Returns once the line has been said. |
+| `wait_for_transcript` | Blocks until new lines arrive and the turn ends, then returns them as `[mm:ss] who: text`. A turn ends after `assistant.settle_s` (default 5) seconds with no new line, after 15 seconds when the last line ends on a filler or joining word ("um", "uh", "so", "and", "but"...), or at once when a line says the assistant's name. A batch has no length cap, so a long answer is never split. It also returns `status` (`live`, `ended` or `off`), whether speaking is allowed now, and how many lines were left out as the assistant's own voice (`left_out_as_your_own_voice`) or as a copy from the other track (`left_out_as_heard_twice`). |
+| `speak` | Says up to 600 characters in one of six tones, through the voice helper. Refused while off, before `watch_meeting`, during the cooldown and past the cap. Refused without counting it when lines arrived since the agent last read (they come back with the refusal), when the last turn ended less than the settle time ago (15 seconds if it trailed off) unless that turn named the assistant, and when another voice (an `ambient talk` reply or another watch) still holds `speaking.lock` after five seconds. Returns once the line has been said. |
 | `stop_watching` | Ends the watch: the heartbeat goes and the voice is unloaded. |
 
 A refusal is a tool result with `isError`, worded for the agent: what happened
@@ -144,14 +144,42 @@ again and is refused if the remark it waited for started the cooldown.
 ### Its own voice
 
 The speakers feed the microphone, so each utterance comes back as a transcript
-line a few seconds later. A line counts as an echo when it has at least three
-words and at least 60% of them appear in something the assistant said in the
-last two minutes. Echoes are left out of the batch and only counted, so the
+line a few seconds later. `speak` records where each utterance sits on the
+recording's clock, from `started_at` in `session.json`. A line counts as an
+echo when its time overlaps an utterance (within three seconds either side, for
+the drift between the voice's wall clock and the recording's) and at least 60%
+of its words appear in it; a line under three words must be wholly inside it,
+so a fragment such as "Question eight." is caught. A person who repeats the
+assistant's words later is never taken for it: in the trial of 2026-11-01,
+"Yeah. Claude, go." 17 seconds after the assistant had said "just say, Claude,
+go" was dropped by words alone, and the name never fired. When the session has
+no `started_at`, the rule falls back to words alone: at least three words, at
+least 60% of them in something said in the last two minutes. Echoes are left out of the batch and only counted, so the
 agent never answers itself. The consent notice is checked the other way round:
 a line is its echo only when it holds at least 60% of the notice's words. A
 short question by name right after it, such as "Claude, are you listening?",
 is made mostly of the notice's words, and dropping that would hide the most
 natural first line.
+
+### Lines heard twice
+
+The microphone and the system-audio tap can both carry the same voice, so one
+line can arrive on the room track and again on the call track. A line is left
+out as a copy when a line on the other track handed over in the last minute
+overlaps it in time (within 1.5 seconds) and either holds at least 60% of the
+other's words (all of them under three words). The copy can arrive a batch
+later. Different words at the same moment are two people, and both are kept.
+
+### The voice stalling
+
+`speak` gives the voice helper 15 seconds to make its first sound, then the
+reply's expected length (100 ms a character, generous against the measured
+14.5 characters a second) plus 10 seconds to finish. A helper past either
+limit is treated as hung and replaced, and `speak` reports that nothing was
+heard, so the agent can tell the user in the chat. In the trial of 2026-11-01,
+a 334-character reply stuttered during playback and held `speak` for the full
+two minutes; the same text, generated without playback, took 5.0 seconds for
+23.1 seconds of audio, so the stall was in playback, not generation.
 
 ### The `watch` prompt
 

@@ -27,7 +27,7 @@ pub mod voice;
 use crate::api::{self, Paths};
 use crate::config::Config;
 use anyhow::Result;
-use gate::{is_echo, Gate, Rules};
+use gate::{is_echo, mostly_within, words, Gate, Rules};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,26 @@ const CONTEXT_LINES: usize = 40;
 
 /// How long the assistant remembers what it said, for echo detection.
 const ECHO_WINDOW: Duration = Duration::from_secs(120);
+
+/// How far a transcript line's timestamps may sit from the moment the
+/// assistant spoke and still be its echo. The voice runs on the wall clock
+/// and the transcript on the recording's, and they drift apart by a second
+/// or two.
+const ECHO_SLACK_MS: u64 = 3000;
+
+/// How far apart the same words may sit on the room and call tracks and
+/// still be one line heard twice.
+const DUPLICATE_SLACK_MS: u64 = 1500;
+
+/// How long kept lines are remembered, on the meeting's clock, for spotting
+/// their copy on the other track: a copy can be transcribed a batch later.
+const KEPT_MS: u64 = 60_000;
+
+/// Words that, ending a line, say the speaker has not finished: a filler or
+/// a joining word.
+const TRAILING: [&str; 13] = [
+    "um", "umm", "uh", "uhh", "er", "erm", "hmm", "so", "and", "but", "or", "because", "like",
+];
 
 /// The longest a single `wait_for_transcript` may block, and its default.
 /// A client's tool-call timeout must be longer; Claude Code's is.
@@ -118,13 +138,16 @@ pub fn real_voice(extra: Vec<String>) -> MakeSpeaker {
 
 /// How `wait_for_transcript` batches lines. People speak in bursts, and a
 /// turn of the agent per line would be a turn every few seconds; a batch
-/// closes when the room goes quiet for `settle`, when it has been open for
-/// `longest`, or at once when someone says the assistant's name.
+/// closes when the room goes quiet for `settle`, for `trailing` when the last
+/// words trailed off ("um", "so"), or at once when someone says the
+/// assistant's name. There is no cap on a batch's length: a long answer is
+/// never split, and people need time to think, not only to talk.
 #[derive(Debug, Clone)]
 pub struct Pacing {
     pub poll: Duration,
-    pub settle: Duration,
-    pub longest: Duration,
+    /// `None` reads `assistant.settle_s` from the settings on each wait.
+    pub settle: Option<Duration>,
+    pub trailing: Duration,
     /// How long `speak` waits for another voice (`ambient talk`) to finish
     /// before the remark is not said.
     pub speaking_wait: Duration,
@@ -134,8 +157,8 @@ impl Default for Pacing {
     fn default() -> Self {
         Self {
             poll: Duration::from_millis(500),
-            settle: Duration::from_secs(3),
-            longest: Duration::from_secs(20),
+            settle: None,
+            trailing: Duration::from_secs(15),
             speaking_wait: Duration::from_secs(5),
         }
     }
@@ -149,19 +172,100 @@ struct Beat {
     last_call: Option<Instant>,
 }
 
+/// Something the assistant said: when it finished, the words, and where it
+/// sat on the meeting's own clock (milliseconds from the start of the
+/// recording), when that is known.
+struct Said {
+    at: Instant,
+    text: String,
+    span: Option<(u64, u64)>,
+}
+
+/// A line handed to the agent, remembered so its copy on the other track is
+/// dropped.
+struct Kept {
+    track: String,
+    span: (u64, u64),
+    words: Vec<String>,
+}
+
+/// The end of the latest turn the agent was given, on the meeting's clock.
+#[derive(Clone, Copy)]
+struct Turn {
+    end_ms: u64,
+    trails_off: bool,
+    named: bool,
+}
+
+/// What one read of the transcript found.
+#[derive(Default)]
+struct Fresh {
+    lines: Vec<String>,
+    heard_back: u32,
+    duplicates: u32,
+    named: bool,
+}
+
 /// The meeting being watched.
 struct Meeting {
     id: String,
     dir: PathBuf,
     cursor: u64,
     gate: Gate,
-    /// What it said and when, for echo detection.
-    said: Vec<(Instant, String)>,
-    /// The consent notice and when it was said, for echo detection.
-    notice: (Instant, String),
+    /// When recording began, from `session.json`: puts the assistant's own
+    /// speech on the transcript's clock. Without it, echo is judged by
+    /// words alone.
+    started: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// What it said, for echo detection.
+    said: Vec<Said>,
+    /// The consent notice, for echo detection.
+    notice: Said,
+    kept: Vec<Kept>,
+    last_turn: Option<Turn>,
 }
 
 impl Meeting {
+    /// Now, on the meeting's clock.
+    fn now_ms(&self) -> Option<u64> {
+        let started = self.started?;
+        let ms = (chrono::Local::now().fixed_offset() - started).num_milliseconds();
+        u64::try_from(ms).ok()
+    }
+
+    /// Whether `line` is the assistant hearing itself. With the meeting's
+    /// clock, a line must overlap the moment something was said and be made
+    /// of its words; a person who repeats the assistant later is never
+    /// dropped. Without it, words alone decide, as they always did.
+    fn is_own_voice(&self, line: &Value, text: &str, now: Instant) -> bool {
+        let heard = span(line);
+        let w = words(text);
+        let timed = |s: &Said| match (s.span, heard) {
+            (Some(a), Some(b)) => {
+                Some(overlaps(a, b, ECHO_SLACK_MS) && mostly_within(&w, &words(&s.text)))
+            }
+            _ => None,
+        };
+        let from_reply = self
+            .said
+            .iter()
+            .any(|s| timed(s).unwrap_or_else(|| is_echo(text, &[s.text.as_str()])));
+        // Kept apart from `said` when untimed: the notice invites short
+        // questions by name made mostly of its words, so only a line holding
+        // most of the notice counts as its echo.
+        let from_notice = now.saturating_duration_since(self.notice.at) < ECHO_WINDOW
+            && timed(&self.notice).unwrap_or_else(|| is_echo(&self.notice.text, &[text]));
+        from_reply || from_notice
+    }
+
+    /// Whether `line` is a line already kept, heard again on the other track.
+    fn is_copy(&self, track: &str, at: (u64, u64), w: &[String]) -> bool {
+        self.kept.iter().any(|k| {
+            k.track != track
+                && overlaps(k.span, at, DUPLICATE_SLACK_MS)
+                && (mostly_within(w, &k.words) || mostly_within(&k.words, w))
+        })
+    }
+
     /// Bring the gate up to date with the session's log, so the limits hold
     /// across watches and across `ambient mcp` processes.
     fn catch_up(&mut self) {
@@ -227,9 +331,10 @@ impl Watch {
             json!({
                 "name": "wait_for_transcript",
                 "description": "Block until new lines are said in the watched meeting, then \
-                    return them. Returns a burst of speech once the room pauses, at once when \
-                    someone says the assistant's name, or nothing after the timeout. Its own \
-                    voice, heard back, is left out. `status` is `live` while the meeting goes \
+                    return them. Returns a burst of speech once the room pauses (longer when the \
+                    last words trail off, like \"um\" or \"so\"), at once when someone says the \
+                    assistant's name, or nothing after the timeout. Its own voice, heard back, \
+                    and a line heard on both the room and call tracks are left out. `status` is `live` while the meeting goes \
                     on; on `ended` or `off`, stop.",
                 "inputSchema": {
                     "type": "object",
@@ -242,8 +347,10 @@ impl Watch {
                 "name": "speak",
                 "description": "Say something out loud in the watched meeting, through the \
                     assistant's local voice. One to three short spoken sentences: plain words, \
-                    no lists, markdown, links or code. Returns once it has been said. Refused \
-                    during the cooldown after each utterance and past the per-meeting cap.",
+                    no lists, markdown, links or code. Returns once it has been said. Refused, \
+                    with nothing said, when someone spoke since your last wait_for_transcript \
+                    (their words come back with the refusal) or was speaking moments ago, \
+                    during the cooldown after each utterance, and past the per-meeting cap.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -347,12 +454,17 @@ impl Watch {
                     cooldown: Duration::from_secs(cfg.assistant.cooldown_s.into()),
                     max_per_meeting: cfg.assistant.max_per_meeting,
                 }),
+                started: started_at(&dir),
                 said: Vec::new(),
-                // Kept apart from `said`: the notice invites short questions
-                // by name made mostly of its words, so only a line holding
-                // most of the notice counts as its echo.
-                notice: (Instant::now(), notice.clone()),
+                notice: Said {
+                    at: Instant::now(),
+                    text: notice.clone(),
+                    span: None,
+                },
+                kept: Vec::new(),
+                last_turn: None,
             });
+            let from = self.meeting.as_ref().and_then(Meeting::now_ms);
             self.attend("listening");
             log(&dir, json!({"event": "joined", "notice": notice}));
             let lock = voice::SpeakingLock::path(&self.paths.config_file);
@@ -362,6 +474,10 @@ impl Watch {
                         .get_or_insert_with(|| (self.make_speaker)(&cfg))
                         .say(&notice, "warm")
                 });
+            if let (Ok(_), Some(m)) = (&said, self.meeting.as_mut()) {
+                m.notice.at = Instant::now();
+                m.notice.span = from.zip(m.now_ms());
+            }
             if let Err(e) = said {
                 // The menu bar's notice still stands, but a spoken notice is
                 // the one everyone in the room hears: without it, no watching.
@@ -395,6 +511,7 @@ impl Watch {
                 "cooldown_s": cfg.assistant.cooldown_s,
                 "max_per_meeting": cfg.assistant.max_per_meeting,
                 "spoken": m.gate.spoken(),
+                "settle_s": self.pacing.settle.map_or(u64::from(cfg.assistant.settle_s), |d| d.as_secs()),
             },
             "next": "Call wait_for_transcript, and keep calling it until it reports the meeting ended.",
         }))
@@ -409,6 +526,7 @@ impl Watch {
         let started = Instant::now();
         let mut batch: Vec<String> = Vec::new();
         let mut heard_back = 0u32;
+        let mut duplicates = 0u32;
         let mut first_new: Option<Instant> = None;
         let mut last_new = started;
         let mut named = false;
@@ -427,42 +545,21 @@ impl Watch {
                         need to call stop_watching."}));
             }
             let now = Instant::now();
-            let m = self.meeting.as_ref().expect("checked above");
-            let (next, lines) = self.transcript(&id, m.cursor)?;
-            let m = self.meeting.as_mut().expect("checked above");
-            m.cursor = next;
-            m.said
-                .retain(|(t, _)| now.saturating_duration_since(*t) < ECHO_WINDOW);
-            let recent: Vec<&str> = m.said.iter().map(|(_, s)| s.as_str()).collect();
-            let notice = (now.saturating_duration_since(m.notice.0) < ECHO_WINDOW)
-                .then_some(m.notice.1.as_str());
-            for line in &lines {
-                let text = line["text"].as_str().unwrap_or("").trim();
-                if text.is_empty() {
-                    continue;
-                }
-                if is_echo(text, &recent) || notice.is_some_and(|n| is_echo(n, &[text])) {
-                    heard_back += 1;
-                    continue;
-                }
-                named |= mentions(text, &cfg.assistant.name);
-                batch.push(render(line));
+            let fresh = self.take_new(&cfg.assistant.name)?;
+            heard_back += fresh.heard_back;
+            duplicates += fresh.duplicates;
+            named |= fresh.named;
+            if !fresh.lines.is_empty() {
+                batch.extend(fresh.lines);
                 first_new.get_or_insert(now);
                 last_new = now;
             }
-            let p = &self.pacing;
-            let ready = match first_new {
-                None => false,
-                Some(first) => {
-                    named
-                        || now.duration_since(last_new) >= p.settle
-                        || now.duration_since(first) >= p.longest
-                }
-            };
+            let quiet = self.quiet_needed(&cfg);
+            let ready = first_new.is_some() && (named || now.duration_since(last_new) >= quiet);
             if ready || now.duration_since(started) >= timeout {
                 break;
             }
-            std::thread::sleep(p.poll);
+            std::thread::sleep(self.pacing.poll);
         }
         self.attend("listening");
         let m = self.meeting.as_mut().expect("still watching");
@@ -480,10 +577,85 @@ impl Watch {
         if heard_back > 0 {
             reply["left_out_as_your_own_voice"] = json!(heard_back);
         }
+        if duplicates > 0 {
+            reply["left_out_as_heard_twice"] = json!(duplicates);
+        }
         if named {
             reply["named_you"] = json!(true);
         }
         Ok(reply)
+    }
+
+    /// How much quiet ends the current turn: the settled pause, or longer
+    /// when the last words trailed off.
+    fn quiet_needed(&self, cfg: &Config) -> Duration {
+        let settle = self
+            .pacing
+            .settle
+            .unwrap_or_else(|| Duration::from_secs(cfg.assistant.settle_s.into()));
+        let trails = self
+            .meeting
+            .as_ref()
+            .and_then(|m| m.last_turn)
+            .is_some_and(|t| t.trails_off && !t.named);
+        if trails {
+            settle.max(self.pacing.trailing)
+        } else {
+            settle
+        }
+    }
+
+    /// Read the lines said since the last read, leaving out the assistant's
+    /// own voice and the other track's copy of a line already kept.
+    fn take_new(&mut self, name: &str) -> Result<Fresh, Refused> {
+        let (id, cursor) = match self.meeting.as_ref() {
+            Some(m) => (m.id.clone(), m.cursor),
+            None => return Err("Not watching a meeting. Call watch_meeting first.".into()),
+        };
+        let (next, lines) = self.transcript(&id, cursor)?;
+        let m = self.meeting.as_mut().expect("checked above");
+        m.cursor = next;
+        let now = Instant::now();
+        m.said
+            .retain(|s| now.saturating_duration_since(s.at) < ECHO_WINDOW);
+        if let Some(t) = m.now_ms() {
+            m.kept.retain(|k| k.span.1 + KEPT_MS >= t);
+        }
+        let mut fresh = Fresh::default();
+        for line in &lines {
+            let text = line["text"].as_str().unwrap_or("").trim();
+            if text.is_empty() {
+                continue;
+            }
+            if m.is_own_voice(line, text, now) {
+                fresh.heard_back += 1;
+                continue;
+            }
+            let calls = mentions(text, name);
+            if let Some(at) = span(line) {
+                let track = line["track"].as_str().unwrap_or("room").to_string();
+                let w = words(text);
+                if m.is_copy(&track, at, &w) {
+                    fresh.duplicates += 1;
+                    continue;
+                }
+                m.kept.push(Kept {
+                    track,
+                    span: at,
+                    words: w,
+                });
+                if m.last_turn.is_none_or(|t| at.1 >= t.end_ms) {
+                    m.last_turn = Some(Turn {
+                        end_ms: at.1,
+                        trails_off: trails_off(text),
+                        named: calls,
+                    });
+                }
+            }
+            fresh.named |= calls;
+            fresh.lines.push(render(line));
+        }
+        Ok(fresh)
     }
 
     /// `speak`.
@@ -517,6 +689,35 @@ impl Watch {
         if let Err(hold) = m.gate.may_speak(Instant::now()) {
             return Err(format!("Not said: {hold}. Keep listening."));
         }
+        // Never talk over a person. Words said since the agent last listened
+        // are handed back instead, so it decides again with them in view.
+        let cfg = self.config();
+        let fresh = self.take_new(&cfg.assistant.name)?;
+        if !fresh.lines.is_empty() {
+            return Err(format!(
+                "Not said: someone spoke since you last listened. Read it, decide again, and \
+                 call wait_for_transcript if they may not have finished:\n{}",
+                fresh.lines.join("\n")
+            ));
+        }
+        // A turn that ended moments ago, or trailed off, may not be over.
+        let quiet = self.quiet_needed(&cfg);
+        let m = self.meeting.as_mut().expect("checked above");
+        if let (Some(now), Some(turn)) = (m.now_ms(), m.last_turn) {
+            let since = Duration::from_millis(now.saturating_sub(turn.end_ms));
+            if !turn.named && since < quiet {
+                return Err(format!(
+                    "Not said: someone was speaking {:.1}s ago{}, so they may not be done. Call \
+                     wait_for_transcript and speak once they have finished.",
+                    since.as_secs_f64(),
+                    if turn.trails_off {
+                        " and trailed off"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+        }
         // `ambient talk` or another watch may be speaking; talking over it
         // would garble both, so a reply that cannot get the voice soon is
         // not said rather than counted.
@@ -533,6 +734,7 @@ impl Watch {
         // is held from the first word, and a remark cut off by a crash still
         // counts.
         log(&m.dir, json!({"event": "speaking", "text": text}));
+        let from = m.now_ms();
         self.attend("speaking");
         let started = Instant::now();
         let spoken = self
@@ -545,7 +747,12 @@ impl Watch {
         // Counted whether or not the voice worked: retrying a stale remark
         // later would be worse than missing it.
         m.gate.spoke(now);
-        m.said.push((now, text.to_string()));
+        let span = from.zip(m.now_ms());
+        m.said.push(Said {
+            at: now,
+            text: text.to_string(),
+            span,
+        });
         let dir = m.dir.clone();
         let left = m
             .gate
@@ -701,6 +908,32 @@ fn mentions(text: &str, name: &str) -> bool {
     !name.is_empty() && words(text).windows(name.len()).any(|w| w == name)
 }
 
+/// A line's place on the meeting's clock, in milliseconds.
+fn span(line: &Value) -> Option<(u64, u64)> {
+    let start = line["start_ms"].as_u64()?;
+    Some((start, line["end_ms"].as_u64().unwrap_or(start).max(start)))
+}
+
+/// Whether two spans overlap, allowing `slack` milliseconds between them.
+fn overlaps(a: (u64, u64), b: (u64, u64), slack: u64) -> bool {
+    a.0 <= b.1 + slack && b.0 <= a.1 + slack
+}
+
+/// Whether a line ends on a filler or a joining word: the speaker has not
+/// finished.
+fn trails_off(text: &str) -> bool {
+    words(text)
+        .last()
+        .is_some_and(|w| TRAILING.contains(&w.as_str()))
+}
+
+/// When the recording at `dir` began, from its `session.json`.
+fn started_at(dir: &Path) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let text = std::fs::read_to_string(dir.join("session.json")).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    chrono::DateTime::parse_from_rfc3339(v["started_at"].as_str()?).ok()
+}
+
 /// How often the assistant has already spoken in the meeting at `dir`, and
 /// when it last did, from its `assistant.jsonl`. An utterance counts from its
 /// `speaking` event, so one still being said holds every watch; its `spoke`
@@ -794,7 +1027,9 @@ first, and speak only if the next lines show it still open;
 4. To speak, call `speak` with one to three short sentences, at most about 40 words, the way \
 a thoughtful colleague would say them aloud: plain words, no lists, markdown, links or code, \
 and no preamble like \"Great question\". Pick the `emotion` that fits. If `speak` is \
-refused, keep listening.
+refused because someone spoke or may not be done, read their words, decide again, and wait \
+for them to finish: never talk over a person. If it is refused for another reason, keep \
+listening. If the voice fails, tell the user in the chat instead.
 5. Between tool calls, write nothing, or at most a few words. The transcript is the meeting; \
 do not summarise it back.
 6. When `wait_for_transcript` reports the meeting `ended` or `off`, watching is over: give \

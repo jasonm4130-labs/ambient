@@ -246,24 +246,31 @@ impl Helper {
         }
     }
 
-    fn say(&mut self, text: &str, emotion: &str, within: Duration) -> Result<Spoken> {
+    fn say(&mut self, text: &str, emotion: &str, limits: &Limits) -> Result<Spoken> {
         let id = self.next_id;
         self.next_id += 1;
         let request = json!({"op": "say", "id": id, "text": text, "emotion": emotion});
         writeln!(self.stdin, "{request}")
             .and_then(|_| self.stdin.flush())
             .map_err(|e| anyhow!("the voice helper is gone ({e})"))?;
-        let deadline = Instant::now() + within;
+        let asked = Instant::now();
+        let last_chance = asked + limits.say_within;
+        // Until the first sound, a short wait; after it, the reply's own
+        // length plus some grace. Either way never past `say_within`.
+        let mut deadline = last_chance.min(asked + limits.first_audio_within);
         let mut first_audio_ms = None;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             let event = match self.events.recv_timeout(left) {
                 Ok(v) => v,
                 Err(e @ RecvTimeoutError::Timeout) => {
-                    return Err(anyhow!(e).context(format!(
-                        "the voice helper did not finish within {}s",
-                        within.as_secs()
-                    )))
+                    let waited = asked.elapsed().as_secs();
+                    let why = if first_audio_ms.is_none() {
+                        format!("the voice helper made no sound within {waited}s")
+                    } else {
+                        format!("the voice stalled mid-reply and had not finished after {waited}s")
+                    };
+                    return Err(anyhow!(e).context(why));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.reap();
@@ -275,7 +282,11 @@ impl Helper {
                 continue;
             }
             match event["event"].as_str() {
-                Some("speaking") => first_audio_ms = event["first_audio_ms"].as_u64(),
+                Some("speaking") => {
+                    first_audio_ms = event["first_audio_ms"].as_u64();
+                    deadline =
+                        last_chance.min(Instant::now() + expected_audio(text) + limits.stall_grace);
+                }
                 Some("done") => {
                     return Ok(Spoken {
                         first_audio_ms,
@@ -343,8 +354,16 @@ impl Drop for Helper {
 pub struct Limits {
     /// Loading a model from disk; the first run also downloads it.
     pub ready_within: Duration,
-    /// One utterance, start to last sample.
+    /// One utterance, start to last sample, however long it is.
     pub say_within: Duration,
+    /// From asking to the first sound. A healthy helper answers in well
+    /// under a second once loaded.
+    pub first_audio_within: Duration,
+    /// After the first sound, how long playback may take beyond the
+    /// utterance's expected length ([`expected_audio`]). A reply still
+    /// playing past that has stalled: the voice stutters or goes quiet while
+    /// the room waits.
+    pub stall_grace: Duration,
     /// Consecutive failed starts or crashes before speech is given up.
     pub max_failures: u32,
 }
@@ -356,6 +375,8 @@ impl Default for Limits {
             // downloads the 1.7B VoiceDesign model too.
             ready_within: Duration::from_secs(1800),
             say_within: Duration::from_secs(120),
+            first_audio_within: Duration::from_secs(15),
+            stall_grace: Duration::from_secs(10),
             max_failures: 3,
         }
     }
@@ -450,14 +471,14 @@ impl Voice {
     /// Say `text`. A helper that died since the last reply is restarted first;
     /// one that dies mid-reply is restarted and asked once more.
     pub fn say(&mut self, text: &str, emotion: &str) -> Result<Spoken> {
-        let within = self.limits.say_within;
-        let first = self.ensure_started()?.say(text, emotion, within);
+        let limits = self.limits.clone();
+        let first = self.ensure_started()?.say(text, emotion, &limits);
         let result = match first {
             Err(e) if !timed_out(&e) && !self.is_running() => {
                 eprintln!("  voice: {e:#}; restarting the helper");
                 self.failed();
                 self.helper = None;
-                self.ensure_started()?.say(text, emotion, within)
+                self.ensure_started()?.say(text, emotion, &limits)
             }
             other => other,
         };
@@ -616,6 +637,13 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 /// A say that ran out of time, which leaves the helper wedged.
+/// About how long `text` takes to say, generously: speech runs near 15
+/// characters a second (334 characters measured at 23.1 s with Qwen3-TTS);
+/// this assumes 10.
+pub fn expected_audio(text: &str) -> Duration {
+    Duration::from_millis(text.chars().count() as u64 * 100)
+}
+
 fn timed_out(e: &anyhow::Error) -> bool {
     e.root_cause().is::<RecvTimeoutError>()
 }
@@ -759,6 +787,8 @@ done
         Limits {
             ready_within: Duration::from_secs(5),
             say_within: Duration::from_secs(5),
+            first_audio_within: Duration::from_secs(5),
+            stall_grace: Duration::from_secs(5),
             max_failures: 3,
         }
     }
@@ -829,7 +859,7 @@ while read -r line; do :; done
         );
         let started = Instant::now();
         let e = v.say("one", "warm").unwrap_err();
-        assert!(e.to_string().contains("did not finish"), "{e}");
+        assert!(e.to_string().contains("made no sound"), "{e}");
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "not asked twice"
@@ -840,6 +870,45 @@ while read -r line; do :; done
         assert_eq!(starts, 2, "the next reply got a fresh helper");
         v.say("three", "warm").unwrap_err();
         assert!(v.given_up(), "three hangs in a row");
+    }
+
+    #[test]
+    fn a_reply_that_stalls_after_its_first_sound_is_cut_off_at_its_length_plus_grace() {
+        // The live failure of 2026-11-01: sound started, then playback
+        // stuttered and the reply never finished, holding `speak` for the
+        // whole two minutes while the room heard a dying voice.
+        let body = r#"echo '{"event":"ready"}'
+while read -r line; do
+  id=$(echo "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+  echo "{\"event\":\"speaking\",\"id\":$id,\"first_audio_ms\":40}"
+done
+"#;
+        let (p, a) = fake("stalls", body);
+        let mut v = Voice::new(
+            p,
+            a,
+            Limits {
+                say_within: Duration::from_secs(30),
+                stall_grace: Duration::from_millis(200),
+                ..quick()
+            },
+        );
+        let started = Instant::now();
+        // Five characters: 0.5 s expected, plus 0.2 s grace.
+        let e = v.say("hello", "warm").unwrap_err();
+        assert!(e.to_string().contains("stalled mid-reply"), "{e}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "not the full say_within"
+        );
+        assert!(!v.is_running(), "the stalled helper is replaced");
+    }
+
+    #[test]
+    fn a_long_reply_is_given_its_length() {
+        assert_eq!(expected_audio("hello"), Duration::from_millis(500));
+        // The 334-character reply that stalled live took 23.1 s when healthy.
+        assert!(expected_audio(&"x".repeat(334)) > Duration::from_secs(24));
     }
 
     #[test]
@@ -862,7 +931,7 @@ while read -r line; do :; done
             },
         );
         let e = v.say("one", "warm").unwrap_err();
-        assert!(e.to_string().contains("did not finish"), "{e}");
+        assert!(e.to_string().contains("made no sound"), "{e}");
         assert!(!v.is_running(), "the hung replacement is gone");
         v.say("two", "warm").unwrap_err();
         let starts = std::fs::read_to_string(&hung).unwrap().lines().count();
