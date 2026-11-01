@@ -143,10 +143,12 @@ Reply, the session's full metadata after the change:
   "warnings": [],
   "tags": ["1:1"],
   "notes": "",
-  "pinned": true
+  "pinned": true,
+  "capture": "all"
 }
 ```
 
+`capture` is `all` or `mic`; `mic` means the recording has no `call` track.
 A session still recording has no `session.json` yet and answers `Failed`
 saying so; a session a transcriber currently holds the lock on answers
 `Failed` saying it is being transcribed.

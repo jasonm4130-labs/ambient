@@ -124,6 +124,7 @@ struct Ivars {
     /// app spends most of its life with nobody reading a transcript.
     main_window: RefCell<Option<crate::window::MainWindow>>,
     start_item: RefCell<Option<Retained<NSMenuItem>>>,
+    mic_only_item: RefCell<Option<Retained<NSMenuItem>>>,
     stop_item: RefCell<Option<Retained<NSMenuItem>>>,
     level_item: RefCell<Option<Retained<NSMenuItem>>>,
     /// What the transcription queue is doing, under the level line. Hidden
@@ -219,7 +220,18 @@ define_class!(
                 return;
             }
             self.log("start recording");
-            self.begin_recording(None);
+            self.begin_recording(None, None);
+        }
+
+        /// Start Recording without the system-audio tap: the microphone
+        /// alone, whatever the `capture` setting says.
+        #[unsafe(method(startMicOnlyRecording:))]
+        fn start_mic_only_recording(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().phase.snapshot().has_worker {
+                return;
+            }
+            self.log("start recording (microphone only)");
+            self.begin_recording(None, Some(crate::config::CaptureMode::Mic));
         }
 
         /// The armed state's yes. Identical to pressing Start, but logged
@@ -233,7 +245,7 @@ define_class!(
             });
             let Some(who) = armed else { return };
             self.log(&format!("recording {who} — allowed by the user"));
-            self.begin_recording(Some(who));
+            self.begin_recording(Some(who), None);
         }
 
         /// The armed state's no. Remembered against the bundle so the menu does
@@ -393,7 +405,7 @@ impl Delegate {
     /// The directory is claimed here, on the main thread, before the worker
     /// exists — so the phase knows where the recording is writing rather than
     /// having to go and find it later.
-    fn begin_recording(&self, app: Option<String>) {
+    fn begin_recording(&self, app: Option<String>, capture: Option<crate::config::CaptureMode>) {
         let dir = match SessionDir::claim(&crate::session::home(), None) {
             Ok(d) => Arc::new(d),
             Err(e) => {
@@ -418,6 +430,7 @@ impl Delegate {
                 &[],
                 None,
                 None,
+                capture,
                 Some(worker_meter),
             ))
             .ok();
@@ -468,7 +481,7 @@ impl Delegate {
             }
             Tick::Start(app) => {
                 self.log(&format!("{app} is producing audio — recording"));
-                self.begin_recording(Some(app));
+                self.begin_recording(Some(app), None);
             }
         }
     }
@@ -494,7 +507,13 @@ impl Delegate {
         }
         let armed = view.kind == PhaseKind::Armed;
         let failed = view.kind == PhaseKind::Failed;
-        if let Some(i) = self.ivars().start_item.borrow().as_ref() {
+        for i in [
+            self.ivars().start_item.borrow().as_ref(),
+            self.ivars().mic_only_item.borrow().as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             i.setEnabled(!view.has_worker);
         }
         if let Some(i) = self.ivars().stop_item.borrow().as_ref() {
@@ -801,6 +820,7 @@ pub fn run() -> anyhow::Result<()> {
         log: log_path(),
         main_window: RefCell::new(None),
         start_item: RefCell::new(None),
+        mic_only_item: RefCell::new(None),
         stop_item: RefCell::new(None),
         level_item: RefCell::new(None),
         queue_item: RefCell::new(None),
@@ -818,6 +838,12 @@ pub fn run() -> anyhow::Result<()> {
     let record_call = item(mtm, "Record this call", Some(sel!(recordThisCall:)), "");
     let decline = item(mtm, "Not this one", Some(sel!(notThisOne:)), "");
     let start = item(mtm, "Start Recording", Some(sel!(startRecording:)), "r");
+    let mic_only = item(
+        mtm,
+        "Record microphone only",
+        Some(sel!(startMicOnlyRecording:)),
+        "",
+    );
     let stop = item(mtm, "Stop Recording", Some(sel!(stopRecording:)), "s");
     let level = item(mtm, "", None, "");
     let queue_line = item(mtm, "", None, "");
@@ -829,6 +855,7 @@ pub fn run() -> anyhow::Result<()> {
 
     for i in [
         &start,
+        &mic_only,
         &stop,
         &settings,
         &open,
@@ -852,6 +879,7 @@ pub fn run() -> anyhow::Result<()> {
         menu.addItem(&record_call);
         menu.addItem(&decline);
         menu.addItem(&start);
+        menu.addItem(&mic_only);
         menu.addItem(&stop);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&level);
@@ -868,6 +896,7 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     *delegate.ivars().start_item.borrow_mut() = Some(start);
+    *delegate.ivars().mic_only_item.borrow_mut() = Some(mic_only);
     *delegate.ivars().stop_item.borrow_mut() = Some(stop);
     *delegate.ivars().level_item.borrow_mut() = Some(level);
     *delegate.ivars().queue_item.borrow_mut() = Some(queue_line);

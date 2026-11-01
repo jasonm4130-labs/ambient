@@ -506,6 +506,7 @@ impl Watch {
             "watching": id,
             "you_are": cfg.assistant.name,
             "notice_spoken": consent_notice(&cfg.assistant.name),
+            "capture": crate::session::capture_mode(&self.paths.root().join(&id)).as_str(),
             "recent": recent,
             "limits": {
                 "cooldown_s": cfg.assistant.cooldown_s,

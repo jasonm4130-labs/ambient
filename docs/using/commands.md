@@ -87,7 +87,7 @@ bundle's audio-capture grant.
 ## record
 
 ```sh
-ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>] [--seconds <n>]
+ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>] [--seconds <n>] [--mic-only]
 ```
 
 Captures until stopped and publishes completed speech turns during recording.
@@ -96,7 +96,10 @@ session directory on stdout. `--app` may be repeated; with no `--app`
 the `apps` setting decides. `--model` overrides the ASR directory, which
 otherwise defaults to `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` under the
 models root; a missing ASR or VAD model is a hard error before any audio is
-captured. `--seconds` bounds an unattended run.
+captured. `--seconds` bounds an unattended run. `--mic-only` records the
+microphone alone for this recording, overriding the `capture` setting: no
+system-audio tap is created, so the session has a `room` track and no `call`
+track. It cannot be combined with `--app`, which would have nothing to select.
 
 Turn segmentation here is `Vad::turns`, not the chunking `transcribe` uses —
 one record per turn, because a record spanning two people cannot carry a

@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::capture::ProcessTap;
+use crate::config::CaptureMode;
 use crate::resample;
 
 /// Which of the two captured tracks a line of speech came from. This is the
@@ -114,6 +115,31 @@ pub struct SessionMeta {
     pub notes: String,
     #[serde(default)]
     pub pinned: bool,
+    /// What this recording captured. `all` for every session written before
+    /// the field existed; `mic` means there is no `call` track.
+    #[serde(default)]
+    pub capture: CaptureMode,
+}
+
+/// Written at the start of a capture, because `session.json` only appears at
+/// the end: whoever watches a recording live needs to know whether a call
+/// track will ever exist.
+const CAPTURE_FILE: &str = "capture";
+
+/// How a session captured audio: the live marker first, then `session.json`,
+/// and `all` for a session that has neither (older ones).
+pub fn capture_mode(dir: &Path) -> CaptureMode {
+    if let Some(m) = std::fs::read_to_string(dir.join(CAPTURE_FILE))
+        .ok()
+        .and_then(|t| t.parse().ok())
+    {
+        return m;
+    }
+    std::fs::read_to_string(dir.join("session.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<SessionMeta>(&t).ok())
+        .map(|m| m.capture)
+        .unwrap_or_default()
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -510,9 +536,10 @@ pub fn record(
     bundles: &[String],
     model_dir: Option<&str>,
     seconds: Option<u64>,
+    capture: Option<CaptureMode>,
 ) -> Result<PathBuf> {
     let dir = SessionDir::claim(&home(), name)?;
-    record_into(&dir, name, bundles, model_dir, seconds, None)
+    record_into(&dir, name, bundles, model_dir, seconds, capture, None)
 }
 
 /// Record into a directory that has already been claimed, then transcribe
@@ -530,9 +557,18 @@ pub fn record_into(
     bundles: &[String],
     model_dir: Option<&str>,
     seconds: Option<u64>,
+    capture: Option<CaptureMode>,
     meter: Option<std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
-    let path = capture_into(dir, name, bundles, model_dir, seconds, meter.clone())?;
+    let path = capture_into(
+        dir,
+        name,
+        bundles,
+        model_dir,
+        seconds,
+        capture,
+        meter.clone(),
+    )?;
     transcribe_session(&path, model_dir, meter)
 }
 
@@ -587,7 +623,9 @@ pub fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
 /// `session.json`, and `status` reading `captured`.
 ///
 /// `name` is the human title stored in `session.json`; the id is the claimed
-/// directory's own name and comes from `dir`. `meter`, when given, is written
+/// directory's own name and comes from `dir`. `capture` overrides the
+/// `capture` setting for this recording; in `mic` mode no process tap is
+/// created and no `call` files are written. `meter`, when given, is written
 /// alongside the status file for a live UI to read without touching the
 /// filesystem.
 pub fn capture_into(
@@ -596,6 +634,7 @@ pub fn capture_into(
     bundles: &[String],
     model_dir: Option<&str>,
     seconds: Option<u64>,
+    capture: Option<CaptureMode>,
     meter: Option<std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
     let mut guard = ClaimGuard(Some(dir.path()));
@@ -606,12 +645,18 @@ pub fn capture_into(
     // A `--app` on the command line beats the stored setting; with no flag the
     // settings window decides.
     let cfg = crate::config::Config::load();
-    let bundles: &[String] = if bundles.is_empty() {
+    let mode = capture.unwrap_or(cfg.capture);
+    let mic_only = mode == CaptureMode::Mic;
+    let bundles: &[String] = if mic_only {
+        &[]
+    } else if bundles.is_empty() {
         &cfg.apps
     } else {
         bundles
     };
-    if !bundles.is_empty() {
+    if mic_only {
+        eprintln!("  capturing the microphone only");
+    } else if !bundles.is_empty() {
         eprintln!("  capturing only: {}", bundles.join(", "));
     }
 
@@ -623,7 +668,11 @@ pub fn capture_into(
     std::fs::write(dir.join(STARTED_FILE), started.to_rfc3339())
         .with_context(|| format!("writing {}", dir.join(STARTED_FILE).display()))?;
 
-    let tap = ProcessTap::start(bundles, 60, true, cfg.input_device.as_deref())?;
+    let tap = if mic_only {
+        ProcessTap::start_mic_only(60, cfg.input_device.as_deref())?
+    } else {
+        ProcessTap::start(bundles, 60, true, cfg.input_device.as_deref())?
+    };
     // Two devices, two clocks: the mic is on the input device and the call on
     // the tap's aggregate, so they need not share a sample rate.
     let mic_hz = tap.mic_rate as u32;
@@ -632,15 +681,26 @@ pub fn capture_into(
     if call_ch == 0 && mic_ch == 0 {
         bail!("capture started with no channels");
     }
+    std::fs::write(dir.join(CAPTURE_FILE), format!("{}\n", mode.as_str()))
+        .with_context(|| format!("writing {}", dir.join(CAPTURE_FILE).display()))?;
 
-    eprintln!(
-        "recording to {}\n  room {} Hz × {} ch, call {} Hz × {} ch — Ctrl-C, or `ambient stop`",
-        dir.display(),
-        mic_hz,
-        mic_ch,
-        call_hz,
-        call_ch
-    );
+    if mic_only {
+        eprintln!(
+            "recording to {}\n  room {} Hz × {} ch, no call track — Ctrl-C, or `ambient stop`",
+            dir.display(),
+            mic_hz,
+            mic_ch
+        );
+    } else {
+        eprintln!(
+            "recording to {}\n  room {} Hz × {} ch, call {} Hz × {} ch — Ctrl-C, or `ambient stop`",
+            dir.display(),
+            mic_hz,
+            mic_ch,
+            call_hz,
+            call_ch
+        );
+    }
 
     // Native-rate scratch remains the recoverable source. The live worker
     // resamples its disk queue; finalized 16 kHz tracks are written after Stop.
@@ -653,7 +713,11 @@ pub fn capture_into(
         sample_format: hound::SampleFormat::Int,
     };
     let mut room_w = hound::WavWriter::create(&room_native, spec(mic_hz))?;
-    let mut call_w = hound::WavWriter::create(&call_native, spec(call_hz))?;
+    let mut call_w = if mic_only {
+        None
+    } else {
+        Some(hound::WavWriter::create(&call_native, spec(call_hz))?)
+    };
     // Everything that can fail before this point fails with nothing recorded.
     // Everything after it may be sitting on audio, so the directory stays.
     guard.disarm();
@@ -665,7 +729,9 @@ pub fn capture_into(
     let mut live_spooling = true;
     let mut live = match crate::live::LiveTranscriber::start(
         dir,
-        [mic_hz, call_hz],
+        // The call lane stays in the worker's state but never receives audio
+        // in mic mode, so its rate only has to be non-zero.
+        [mic_hz, if mic_only { mic_hz } else { call_hz }],
         asr_dir.clone(),
         vad_path,
     ) {
@@ -720,6 +786,8 @@ pub fn capture_into(
             let (mic_real, _, call_real, _) = tap.real_seconds(&drain);
             let line = if mic_real + call_real <= 0.0 {
                 format!("{:02}:{:02}  no audio arriving", secs / 60, secs % 60)
+            } else if mic_only {
+                format!("{:02}:{:02}  room {room_peak:.3}", secs / 60, secs % 60)
             } else {
                 format!(
                     "{:02}:{:02}  room {room_peak:.3}  call {call_peak:.3}",
@@ -767,9 +835,11 @@ pub fn capture_into(
         for s in &call {
             call_peak = call_peak.max(s.abs());
             interval_call_peak = interval_call_peak.max(s.abs());
-            call_w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
+            if let Some(w) = call_w.as_mut() {
+                w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
+            }
         }
-        if live_spooling {
+        if live_spooling && !call.is_empty() {
             if let Some(worker) = &mut live {
                 if let Err(e) = worker.append(Track::Call, &call) {
                     live_error = Some(format!("live call spool failed: {e:#}"));
@@ -780,7 +850,9 @@ pub fn capture_into(
     }
 
     room_w.finalize()?;
-    call_w.finalize()?;
+    if let Some(w) = call_w.take() {
+        w.finalize()?;
+    }
     // Read before the tap goes away: `frames` counts the silence `drain`
     // inserts to keep the tracks level, so it cannot tell a stalled capture
     // from a working one.
@@ -798,7 +870,7 @@ pub fn capture_into(
     let ended = chrono::Local::now();
     let duration_s = frames as f64 / mic_hz.max(call_hz).max(1) as f64;
     eprintln!("\n  stopped after {duration_s:.1}s — writing audio");
-    if call_total - call_real > 1.0 {
+    if !mic_only && call_total - call_real > 1.0 {
         eprintln!(
             "  the call track was idle for {:.1}s of that — padded with silence to stay \
              level with the room",
@@ -829,9 +901,12 @@ pub fn capture_into(
         eprintln!("  WARNING: the room track is silent — check the microphone grant.");
         warnings.push("the room track is silent — check the microphone grant.".into());
     }
-    if let Some(advice) = crate::capture::silent_tap_advice(call_peak, max_rendering, bundles) {
-        eprintln!("\n  WARNING: {advice}\n");
-        warnings.push(advice);
+    // No tap in mic mode, so a silent call track means nothing there.
+    if !mic_only {
+        if let Some(advice) = crate::capture::silent_tap_advice(call_peak, max_rendering, bundles) {
+            eprintln!("\n  WARNING: {advice}\n");
+            warnings.push(advice);
+        }
     }
 
     // Finalize one track at a time so both full native buffers are never
@@ -840,6 +915,9 @@ pub fn capture_into(
         (Track::Room, &room_native, audio.join("room.wav")),
         (Track::Call, &call_native, audio.join("call.wav")),
     ] {
+        if track == Track::Call && mic_only {
+            continue;
+        }
         let (samples, rate) = resample::read_wav_any(native)?;
         let spool_repaired = match crate::live::repair_spool(dir, track, &samples) {
             Ok(()) => true,
@@ -897,6 +975,7 @@ pub fn capture_into(
         tags: Vec::new(),
         notes: String::new(),
         pinned: false,
+        capture: mode,
     };
     std::fs::write(
         dir.join("session.json"),
@@ -981,6 +1060,10 @@ fn transcribe_inner(
             (Track::Room, audio.join("room.wav")),
             (Track::Call, audio.join("call.wav")),
         ] {
+            // A mic-only session has no call track at all.
+            if !wav.exists() {
+                continue;
+            }
             let (samples, _) = resample::read_wav_any(&wav)?;
             if samples.is_empty() {
                 continue;
@@ -3245,6 +3328,7 @@ mod meta_tests {
             tags: Vec::new(),
             notes: String::new(),
             pinned: false,
+            capture: CaptureMode::All,
         };
         std::fs::write(
             dir.join("session.json"),
@@ -3432,6 +3516,7 @@ mod delete_tests {
             tags: Vec::new(),
             notes: String::new(),
             pinned: false,
+            capture: CaptureMode::All,
         };
         std::fs::write(
             dir.join("session.json"),
@@ -3582,5 +3667,40 @@ mod delete_tests {
         assert!(dir.exists());
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_capture_mode_is_stored_in_the_metadata_and_defaults_to_all() {
+        let mut meta: SessionMeta = serde_json::from_str(
+            r#"{"id":"x","name":null,"started_at":"","ended_at":"","duration_s":1.0,
+                "device_hz":48000,"channels":1,"mic_channels":1,"apps":[],"model":""}"#,
+        )
+        .unwrap();
+        assert_eq!(meta.capture, CaptureMode::All, "an older session is `all`");
+        meta.capture = CaptureMode::Mic;
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains(r#""capture":"mic""#), "{json}");
+        let back: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.capture, CaptureMode::Mic);
+    }
+
+    #[test]
+    fn capture_mode_reads_the_live_marker_then_the_metadata() {
+        let dir = std::env::temp_dir().join(format!("ambient-capmode-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(capture_mode(&dir), CaptureMode::All);
+        std::fs::write(dir.join("capture"), "mic\n").unwrap();
+        assert_eq!(capture_mode(&dir), CaptureMode::Mic);
+        std::fs::remove_file(dir.join("capture")).unwrap();
+        std::fs::write(
+            dir.join("session.json"),
+            r#"{"id":"x","name":null,"started_at":"","ended_at":"","duration_s":1.0,
+                "device_hz":0,"channels":0,"mic_channels":1,"apps":[],"model":"",
+                "capture":"mic"}"#,
+        )
+        .unwrap();
+        assert_eq!(capture_mode(&dir), CaptureMode::Mic);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

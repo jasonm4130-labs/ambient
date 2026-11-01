@@ -857,7 +857,8 @@ mod tests {
                 "warnings": [],
                 "tags": ["1:1"],
                 "notes": "",
-                "pinned": true
+                "pinned": true,
+                "capture": "all"
             })
         );
     }

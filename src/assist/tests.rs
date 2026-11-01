@@ -950,3 +950,20 @@ fn a_line_heard_on_both_tracks_is_handed_over_once() {
     room.line("m1", "room", 70_100, 71_500, "The deploy one.");
     assert_eq!(lines(&w.wait(Duration::from_secs(5)).unwrap()).len(), 2);
 }
+
+#[test]
+fn watching_reports_whether_a_call_track_exists() {
+    for (test, marker, want) in [
+        ("cap-default", None, "all"),
+        ("cap-all", Some("all\n"), "all"),
+        ("cap-mic", Some("mic\n"), "mic"),
+    ] {
+        let room = Room::new(test, true);
+        let dir = room.live("m1");
+        if let Some(m) = marker {
+            std::fs::write(dir.join("capture"), m).unwrap();
+        }
+        let v = room.watch().watch(None).unwrap();
+        assert_eq!(v["capture"], want, "{test}");
+    }
+}
