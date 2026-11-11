@@ -48,6 +48,13 @@ export default defineConfig({
   vite: {
     plugins: [tailwindcss()],
   },
+  // `docs/index.md` was published at /index/ until Nimbus 0.13 normalized index
+  // entries to their directory route, where it collides with the homepage. Its
+  // `slug: overview` moves it aside; this keeps the old URL working. Astro does
+  // not add `base` to a redirect destination, so it is written in.
+  redirects: {
+    "/index/": "/ambient/overview/",
+  },
   // Hover-prefetch link targets so full-page navigations feel instant without
   // a client-side router.
   prefetch: {

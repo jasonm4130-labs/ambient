@@ -1,6 +1,7 @@
 ---
 title: "Ambient"
 description: "Install Ambient, record locally, and work with your transcripts."
+slug: overview
 sidebar:
   order: 0
 ---
