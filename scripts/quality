@@ -9,9 +9,8 @@
 #   scripts/quality             # ✓ per step, then QUALITY OK clean=<wer> calls=<wer> der=<der> der_full=<der> memory=<MiB>
 #   scripts/quality --update    # record this run as the new baseline
 #
-# The unattended landing loop (docs/developing/landing.md) runs this after the
-# verifier, so a task that makes the transcript or the speaker attribution
-# worse cannot merge. A row may drift up by half a point of WER, or a point of
+# Run this after the verifier, so a change that makes the transcript or the
+# speaker attribution worse cannot merge. A row may drift up by half a point of WER, or a point of
 # DER, before it counts as a regression: both are deterministic on one machine
 # but not across model or runtime versions, and a gate that fires on noise is a
 # gate someone turns off. DER gets the wider band because the diarizer's

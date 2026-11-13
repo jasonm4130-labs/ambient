@@ -5,10 +5,9 @@
 #   scripts/check            # prints "✓ <step>" per step, then CHECK OK
 #
 # Why quiet: a verifier that prints thousands of lines on success eats the
-# context of whatever reads it. The unattended landing loop (docs/developing/
-# landing.md) runs this before every commit and again after, and greps for the
-# last line. On failure the line is "ERROR <step>" followed by that step's full
-# output, so grep finds the failure and the log explains it.
+# context of whatever reads it. A caller can grep for the last line. On
+# failure the line is "ERROR <step>" followed by that step's full output, so
+# grep finds the failure and the log explains it.
 #
 # Deliberately narrower than CI: typos, cargo-deny, the ui job, the settings
 # bundle drift check and make-app.sh only run on the pull request. That gap is
