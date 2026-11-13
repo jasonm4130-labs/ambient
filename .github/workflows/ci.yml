@@ -91,8 +91,6 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-      # The PreToolUse guards the landing loop runs under; see docs/developing/landing.md.
-      - run: node --test ".claude/hooks/*.test.mjs"
       - run: node --test scripts/packaging.test.mjs
       - uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
@@ -198,8 +196,8 @@ jobs:
           ./scripts/check-bundle build/Ambient.app
 
   # The docs site. Its own workflow until 2026-09-04; folded in so that one
-  # workflow's conclusion covers every check, which is what the landing loop's
-  # merge gate (land.yml) and merge-pr.sh wait on. The paths: filter that kept
+  # workflow's conclusion covers every check, which is what merge-pr.sh
+  # waits on. The paths: filter that kept
   # docs commits off the macOS runner is now the `changes` job below.
   docs:
     timeout-minutes: 15
@@ -354,7 +352,7 @@ jobs:
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
   # The one check to wait on. Every job above either succeeded or was skipped
-  # by `changes`; anything else fails here. merge-pr.sh and land.yml read this
+  # by `changes`; anything else fails here. merge-pr.sh reads this
   # instead of a per-job list, which is what removes the "a check never
   # registered" failure: a job that does not run is a skip, and a skip passes.
   gate:
