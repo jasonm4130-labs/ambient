@@ -1,7 +1,7 @@
 //! Pre-host-swap projection regressions, compiled only by the test runner.
 use crate::session::{self, MeterPhase, SessionMeta};
 use crate::state::{Live, PhaseKind};
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
+use jiff::{civil::DateTime, fmt::strtime, tz::TimeZone, SignedDuration, Zoned};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -148,26 +148,28 @@ fn meta_of(dir: &Path) -> Option<SessionMeta> {
 
 /// When the session started: the stored timestamp when there is one, else the
 /// directory name, which is a `%Y-%m-%dT%H%M` stamp by construction.
-fn started_at(id: &str, meta: Option<&SessionMeta>) -> Option<DateTime<Local>> {
+fn started_at(id: &str, meta: Option<&SessionMeta>) -> Option<Zoned> {
     if let Some(t) = meta
-        .and_then(|m| DateTime::parse_from_rfc3339(&m.started_at).ok())
-        .map(|t| t.with_timezone(&Local))
+        .and_then(|m| crate::clock::parse_rfc3339(&m.started_at))
+        .map(|t| t.to_zoned(TimeZone::system()))
     {
         return Some(t);
     }
     let head = id.get(..15)?;
-    NaiveDateTime::parse_from_str(head, "%Y-%m-%dT%H%M")
+    strtime::parse("%Y-%m-%dT%H%M", head)
         .ok()
-        .and_then(|n| Local.from_local_datetime(&n).single())
+        .and_then(|b| b.to_datetime().ok())
+        .and_then(|n: DateTime| n.to_zoned(TimeZone::system()).ok())
 }
 
-fn relative(t: DateTime<Local>) -> String {
-    let days = (Local::now().date_naive() - t.date_naive()).num_days();
+fn relative(t: Zoned) -> String {
+    let fmt = |f: &str| strtime::format(f, &t).unwrap();
+    let days = (Zoned::now().date() - t.date()).get_days();
     match days {
-        0 => format!("Today {}", t.format("%H:%M")),
-        1 => format!("Yesterday {}", t.format("%H:%M")),
-        2..=6 => t.format("%a %H:%M").to_string(),
-        _ => t.format("%-d %b %Y").to_string(),
+        0 => format!("Today {}", fmt("%H:%M")),
+        1 => format!("Yesterday {}", fmt("%H:%M")),
+        2..=6 => fmt("%a %H:%M"),
+        _ => fmt("%-d %b %Y"),
     }
 }
 
@@ -562,10 +564,17 @@ fn stop_is_offered_only_while_the_phase_is_recording() {
 
 #[test]
 fn relative_dates_read_like_dates() {
-    let now = Local::now();
-    assert!(relative(now).starts_with("Today "));
-    assert!(relative(now - chrono::Duration::days(1)).starts_with("Yesterday "));
-    assert!(!relative(now - chrono::Duration::days(400)).contains("Today"));
+    let now = Zoned::now();
+    assert!(relative(now.clone()).starts_with("Today "));
+    assert!(
+        relative(now.checked_sub(SignedDuration::from_hours(24)).unwrap())
+            .starts_with("Yesterday ")
+    );
+    assert!(!relative(
+        now.checked_sub(SignedDuration::from_hours(24 * 400))
+            .unwrap()
+    )
+    .contains("Today"));
 }
 
 /// `libc::utimes` rather than a dev-dependency: one call, and the tests
