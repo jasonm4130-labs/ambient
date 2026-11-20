@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::anyhow;
-use chrono::{DateTime, Local};
+use jiff::Zoned;
 
 use crate::session::{self, SessionDir, StopSignalled};
 
@@ -108,7 +108,7 @@ pub enum Phase {
     Failed {
         dir: Option<PathBuf>,
         error: String,
-        at: DateTime<Local>,
+        at: Zoned,
         declined: Declined,
     },
 }
@@ -314,7 +314,7 @@ impl Phase {
             Err(e) => Phase::Failed {
                 dir,
                 error: format!("{e:#}"),
-                at: Local::now(),
+                at: crate::clock::now(),
                 declined,
             },
         }
@@ -330,7 +330,7 @@ impl Phase {
             Phase::Idle { declined } => Phase::Failed {
                 dir: Some(dir),
                 error: format!("{error:#}"),
-                at: Local::now(),
+                at: crate::clock::now(),
                 declined,
             },
             other => other,
@@ -560,7 +560,7 @@ mod tests {
             Phase::Failed {
                 dir: None,
                 error: "the models did not load".into(),
-                at: Local::now(),
+                at: crate::clock::now(),
                 declined: Declined::default(),
             },
         ] {
@@ -701,7 +701,7 @@ mod tests {
             Phase::Failed {
                 dir: None,
                 error: "boom".into(),
-                at: Local::now(),
+                at: crate::clock::now(),
                 declined: Declined::default(),
             },
         ] {

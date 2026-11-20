@@ -372,11 +372,11 @@ impl SessionDir {
     /// `-10` sorts before `-2`.
     pub fn claim(home: &Path, name: Option<&str>) -> Result<Self> {
         std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
-        let started = chrono::Local::now();
+        let started = crate::clock::now();
         let slug = name.map(slugify).filter(|s| !s.is_empty());
         let base = match &slug {
-            Some(s) => format!("{}-{}", started.format("%Y-%m-%dT%H%M"), s),
-            None => started.format("%Y-%m-%dT%H%M").to_string(),
+            Some(s) => format!("{}-{}", crate::clock::dir_stamp(&started), s),
+            None => crate::clock::dir_stamp(&started),
         };
         for n in 1..=99u32 {
             let id = if n == 1 {
@@ -660,12 +660,12 @@ pub fn capture_into(
         eprintln!("  capturing only: {}", bundles.join(", "));
     }
 
-    let started = chrono::Local::now();
+    let started = crate::clock::now();
     let audio = dir.join("audio");
     std::fs::create_dir_all(&audio).with_context(|| format!("creating {}", audio.display()))?;
     // `session.json` is written only once capture ends; the live assistant
     // needs the start now, to place its own speech on the transcript's clock.
-    std::fs::write(dir.join(STARTED_FILE), started.to_rfc3339())
+    std::fs::write(dir.join(STARTED_FILE), crate::clock::rfc3339(&started))
         .with_context(|| format!("writing {}", dir.join(STARTED_FILE).display()))?;
 
     let tap = if mic_only {
@@ -867,7 +867,7 @@ pub fn capture_into(
     if let Some(m) = &meter {
         m.set_phase(MeterPhase::Done);
     }
-    let ended = chrono::Local::now();
+    let ended = crate::clock::now();
     let duration_s = frames as f64 / mic_hz.max(call_hz).max(1) as f64;
     eprintln!("\n  stopped after {duration_s:.1}s — writing audio");
     if !mic_only && call_total - call_real > 1.0 {
@@ -959,8 +959,8 @@ pub fn capture_into(
     let meta = SessionMeta {
         id: id.clone(),
         name: name.map(str::to_string),
-        started_at: started.to_rfc3339(),
-        ended_at: ended.to_rfc3339(),
+        started_at: crate::clock::rfc3339(&started),
+        ended_at: crate::clock::rfc3339(&ended),
         duration_s,
         device_hz: call_hz,
         mic_hz,
@@ -1775,7 +1775,7 @@ pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
     }
     let mut diar = crate::diarize::Diarizer::load(utf8_path(&seg)?, utf8_path(&emb)?)?;
 
-    let now = chrono::Local::now().to_rfc3339();
+    let now = crate::clock::now_rfc3339();
     let mut appended: Vec<Edit> = Vec::new();
     let mut protected: std::collections::HashSet<(&str, u64)> = std::collections::HashSet::new();
 
@@ -1935,7 +1935,7 @@ pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
         bail!("no lines labelled {label:?} (available: {known})");
     }
 
-    let now = chrono::Local::now().to_rfc3339();
+    let now = crate::clock::now_rfc3339();
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1989,7 +1989,7 @@ fn reverted_seqs(edits: &[Edit]) -> std::collections::HashSet<usize> {
 /// Append one `revert` per seq, all sharing an `at` so a batch stays legible
 /// as a batch, then rewrite `transcript.md` the way [`name_speaker`] does.
 fn append_reverts(dir: &Path, seqs: &[usize]) -> Result<()> {
-    let now = chrono::Local::now().to_rfc3339();
+    let now = crate::clock::now_rfc3339();
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
