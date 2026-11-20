@@ -730,7 +730,7 @@ impl Delegate {
 /// One line to stderr and to the app log at `path`.
 fn append_log(path: &Path, msg: &str) {
     eprintln!("{msg}");
-    let line = format!("{}  {msg}\n", chrono::Local::now().to_rfc3339());
+    let line = format!("{}  {msg}\n", crate::clock::now_rfc3339());
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -1138,7 +1138,7 @@ mod tests {
         let failed = Phase::Failed {
             dir: None,
             error: "the models did not load".into(),
-            at: chrono::Local::now(),
+            at: crate::clock::now(),
             declined: Declined::default(),
         };
         assert_eq!(

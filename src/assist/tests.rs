@@ -135,11 +135,13 @@ impl Room {
 
     /// Give the session a clock: recording began `ago_ms` before now.
     fn started(&self, id: &str, ago_ms: i64) {
-        let at = chrono::Local::now().fixed_offset() - chrono::Duration::milliseconds(ago_ms);
+        let at = crate::clock::now()
+            .checked_sub(jiff::SignedDuration::from_millis(ago_ms))
+            .unwrap();
         // As capture writes it while recording; `session.json` comes later.
         std::fs::write(
             self.root.join(id).join(crate::session::STARTED_FILE),
-            at.to_rfc3339(),
+            crate::clock::rfc3339(&at),
         )
         .unwrap();
     }
