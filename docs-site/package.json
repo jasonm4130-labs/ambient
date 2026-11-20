@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.28.12",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
@@ -10,7 +11,7 @@
     "typecheck": "astro check",
     "lint:docs": "nimbus-docs lint",
     "lint:docs:fix": "nimbus-docs lint --fix",
-    "prepreview": "npm run build",
+    "prepreview": "pnpm run build",
     "postbuild": "node scripts/copy-notices.mjs"
   },
   "dependencies": {
@@ -23,6 +24,8 @@
     "astro-og-canvas": "^0.13.2",
     "canvaskit-wasm": "^0.42.0",
     "clsx": "^2.1.1",
+    "satteri": "^0.9.5",
+    "sharp": "^0.35.4",
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {

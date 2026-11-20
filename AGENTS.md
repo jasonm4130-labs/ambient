@@ -7,8 +7,8 @@ Preserve the pre-existing untracked `.codex/` files; they are not part of a PR.
   `CARGO_TARGET_DIR` if a shared Cargo cache serves stale artifacts.
 - UI checks: in `ui/`, run `pnpm run check`, `pnpm run lint`, `pnpm run test`
   and `pnpm run build`. Commit the generated `assets/settings.html` with UI edits.
-- Docs checks: in `docs-site/`, run `npm run typecheck`, `npm run build` and
-  `npm run lint:docs`; then run the three `.github/scripts/check-*.mjs` scripts
+- Docs checks: in `docs-site/`, run `pnpm run typecheck`, `pnpm run build` and
+  `pnpm run lint:docs`; then run the three `.github/scripts/check-*.mjs` scripts
   from the repository root. `docs/` is the canonical Markdown source.
 - Capture requires a signed app launched through LaunchServices. A build or
   synthetic test does not prove live audio capture. Never record real audio as
