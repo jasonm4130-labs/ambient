@@ -215,7 +215,7 @@ struct Meeting {
     /// When recording began, from `session.json`: puts the assistant's own
     /// speech on the transcript's clock. Without it, echo is judged by
     /// words alone.
-    started: Option<chrono::DateTime<chrono::FixedOffset>>,
+    started: Option<jiff::Timestamp>,
     /// What it said, for echo detection.
     said: Vec<Said>,
     /// The consent notice, for echo detection.
@@ -228,7 +228,7 @@ impl Meeting {
     /// Now, on the meeting's clock.
     fn now_ms(&self) -> Option<u64> {
         let started = self.started?;
-        let ms = (chrono::Local::now().fixed_offset() - started).num_milliseconds();
+        let ms = crate::clock::millis_between(started, jiff::Timestamp::now());
         u64::try_from(ms).ok()
     }
 
@@ -932,8 +932,8 @@ fn trails_off(text: &str) -> bool {
 /// as it starts, or `session.json` once it has ended. Measured on the trial
 /// of 2026-11-01, this puts the assistant's speech within about 0.2 s of where
 /// the transcript hears it back.
-fn started_at(dir: &Path) -> Option<chrono::DateTime<chrono::FixedOffset>> {
-    let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s.trim()).ok();
+fn started_at(dir: &Path) -> Option<jiff::Timestamp> {
+    let parse = crate::clock::parse_rfc3339;
     if let Some(at) = std::fs::read_to_string(dir.join(crate::session::STARTED_FILE))
         .ok()
         .and_then(|t| parse(&t))
@@ -956,7 +956,7 @@ fn spoken_before(dir: &Path) -> (u32, Option<Instant>) {
     // `speaking` events not yet ended by a `spoke` or voice `error`. A log
     // written before `speaking` existed has none, so each end counts.
     let mut started = 0u32;
-    let mut last: Option<chrono::DateTime<chrono::FixedOffset>> = None;
+    let mut last: Option<jiff::Timestamp> = None;
     for event in text
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -973,17 +973,14 @@ fn spoken_before(dir: &Path) -> (u32, Option<Instant>) {
         } else {
             continue;
         }
-        if let Some(at) = event["at"]
-            .as_str()
-            .and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok())
-        {
+        if let Some(at) = event["at"].as_str().and_then(crate::clock::parse_rfc3339) {
             last = last.max(Some(at));
         }
     }
     let last = last.and_then(|at| {
-        let ago = (chrono::Local::now().fixed_offset() - at)
-            .to_std()
-            .unwrap_or_default();
+        let ago = std::time::Duration::from_millis(
+            crate::clock::millis_between(at, jiff::Timestamp::now()).max(0) as u64,
+        );
         Instant::now().checked_sub(ago)
     });
     (spoken, last)
@@ -992,7 +989,7 @@ fn spoken_before(dir: &Path) -> (u32, Option<Instant>) {
 /// Append one event to the session's `assistant.jsonl`, so what the assistant
 /// said is kept with the meeting and deleted with it.
 fn log(dir: &Path, mut event: Value) {
-    event["at"] = json!(chrono::Local::now().to_rfc3339());
+    event["at"] = json!(crate::clock::now_rfc3339());
     let line = event.to_string() + "\n";
     let _ = std::fs::OpenOptions::new()
         .create(true)
