@@ -9,13 +9,7 @@ import { sessionState, type SessionSummary } from "./SessionList";
 
 export interface SessionHeaderProps {
   summary: SessionSummary;
-  /// Fired after any mutation resolves — rename, pin, tag, notes — so the
-  /// caller re-requests `sessions` rather than this component keeping the
-  /// reply's fields in local state. Matches `NamingStrip`'s shape.
   onChanged: () => void;
-  /// Fired instead of `onChanged` once `session.delete` resolves: the
-  /// caller must drop the selection *before* it refreshes, or `Transcript`
-  /// re-requests a session that no longer exists.
   onDeleted?: () => void;
 }
 
@@ -27,12 +21,7 @@ function formatDuration(seconds: number | null): string | null {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/// The inline-editable name: `Enter` or blur commits with
-/// `session.update {name}`; `Escape`, or committing a blank draft, reverts to
-/// the last committed name. A draft equal to the last committed name is never
-/// re-sent, so Enter-then-blur is one call. Draft state is resynced from
-/// `summary.name` whenever it changes underneath — the only way the load-bearing "renders
-/// from the `sessions` reply" test can pass.
+/// A draft equal to the last committed name is never re-sent, so Enter-then-blur is one call.
 function NameField({
   summary,
   disabled,
@@ -90,9 +79,7 @@ function NameField({
   );
 }
 
-/// Tag chips from `summary.tags` plus a one-tag-at-a-time add control — never
-/// a whole-array `session.update`, so a tag the CLI added while the page was
-/// open survives.
+/// Adds one tag at a time, never the whole array, so a tag the CLI added meanwhile survives.
 function TagsRow({
   summary,
   disabled,
@@ -153,8 +140,7 @@ function TagsRow({
   );
 }
 
-/// Notes start from the saved metadata and save on blur. A failed save keeps
-/// the draft available for retry instead of marking it as already saved.
+/// A failed save keeps the draft dirty for retry.
 function NotesField({
   summary,
   disabled,
@@ -207,11 +193,6 @@ function NotesField({
   );
 }
 
-/// The confirmation dialog naming the session and its duration, and the
-/// `…` menu it hangs off of. Only one of the two is on screen at a time —
-/// opening the dialog replaces the menu rather than layering over it — so
-/// "Delete session…" (the menu item) and "Delete" (the dialog's confirm
-/// button) never collide in the same query.
 function DeleteConfirm({
   summary,
   onDeleted,
@@ -333,12 +314,6 @@ function DeleteMenu({
   );
 }
 
-/// The bar above `Transcript`: rename, pin, tag, annotate and delete the
-/// selected session. Issues zero bridge calls on mount — everything it
-/// shows comes from the `summary` prop — and every mutation calls
-/// `onChanged` (or, for delete, `onDeleted`) rather than updating local
-/// state, so the page's "re-request after every mutation" rule holds here
-/// too.
 export function SessionHeader({ summary, onChanged, onDeleted }: SessionHeaderProps) {
   const bridge = useBridge();
   const [error, setError] = useState<string>();

@@ -3,11 +3,6 @@ import { SidebarFilters } from "./SidebarFilters";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-/// The wire shape of one `sessions` entry (`session::SessionSummary`,
-/// `src/session.rs:975`), which derives plain `Serialize`: there is no
-/// `state` field. [`sessionState`] below reproduces
-/// `SessionSummary::state()`'s precedence in TypeScript instead of trusting
-/// the reply to carry one.
 export interface SessionSummary {
   id: string;
   dir: string;
@@ -25,9 +20,7 @@ export interface SessionSummary {
   pinned: boolean;
 }
 
-/// `SessionSummary::state()` (`src/session.rs:994`), reproduced exactly: a
-/// capture in flight outranks everything else, and a session with an `error`
-/// reads `broken` even if it also has a `transcript.md`.
+/// Mirrors `SessionSummary::state()` in Rust; keep the precedence in sync.
 export function sessionState(s: SessionSummary): string {
   if (s.live) return "live";
   if (s.transcribing) return "transcribing";
@@ -44,8 +37,6 @@ function formatDuration(seconds: number | null): string | null {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/// `started_at` as a short local date and time ("Oct 8, 14:05"), or null
-/// when absent or unparsable.
 export function formatStarted(startedAt: string | null): string | null {
   if (startedAt === null) return null;
   const date = new Date(startedAt);
@@ -97,8 +88,6 @@ function entriesFor(sessions: SessionSummary[]): Entry[] {
   return entries;
 }
 
-// Fixed geometry lets the viewport render only intersecting rows and twenty
-// neighbours. Pinned sessions retain the order returned by the API.
 export function SessionList({ sessions, selectedId, onSelect }: SessionListProps) {
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState<string | null>(null);

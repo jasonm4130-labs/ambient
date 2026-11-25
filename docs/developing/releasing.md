@@ -23,19 +23,20 @@ plutil -lint build/preview/Ambient.app/Contents/Info.plist
 ```
 
 `make-app.sh` invokes `scripts/build-release`, which remaps the repository and
-builder's home paths in Rust compiler output. It checks the executable for the
-builder's home path before packaging. The exact generic ONNX Runtime upstream
-CI prefix `/Users/runner/work/ort-artifacts/ort-artifacts/` is exempt: it is
-already embedded in the downloaded native archive, not an Ambient owner path. This applies to newly built executables;
+builder's home paths in Rust compiler output. It checks both executables for the
+builder's home path before packaging. `ambient-engine` is checked with
+`--helper`, which exempts only the upstream CI cargo-registry paths inside
+FluidAudio's precompiled Rust archive. This applies to newly built executables;
 it cannot remove paths from an already-published ZIP.
 
 The committed icon is reused by default. Set `AMBIENT_REBUILD_ICON=1` only when
 regenerating it from the SVG with Inkscape.
 
 The bundle includes `LICENSE`, `THIRD_PARTY_NOTICES.md` and `licenses/` in
-`Contents/Resources/`. Its model payload contains only the seven default runtime
-files. Upstream test WAVs are omitted. An alternative ASR model needs its own
-provenance and notices before the packaging script accepts it.
+`Contents/Resources/`. Its model payload is the two models `ambient-engine`
+loads, Parakeet Ultra and Nemotron 3 Diarization `fast32`, and nothing else from
+`models/`. A different model needs its own provenance and notices before the
+packaging script accepts it.
 
 Check model integrity against the recorded inventory:
 
@@ -50,7 +51,11 @@ do not refresh it merely to make the check pass.
 ## Prepare a version
 
 1. Choose the version and update `Cargo.toml` and `Cargo.lock`.
-2. Review model provenance, licenses and hashes.
+2. Review model provenance, licenses and hashes. `scripts/check-rust-notices`
+   says whether `licenses/Rust-Dependencies.txt` still matches `Cargo.lock`;
+   `release.sh` refuses to build until it does. `scripts/update-rust-notices`
+   brings it up to date from the cargo cache and names any package whose
+   notice must be found by hand.
 3. Run local checks and the required hosted CI jobs.
 4. Commit and review the exact release source.
 5. Obtain authorization to notarize and publish that version.

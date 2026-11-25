@@ -1,20 +1,9 @@
-//! Drives the built page in a real WKWebView and reports what the bridge
-//! receives. Compiling and type-checking prove the page *says* the right
-//! thing; only this proves it does anything.
+//! Drives the built page in a real WKWebView with a canned responder and
+//! prints every message the bridge receives, plus a PNG snapshot.
 //!
-//! A canned responder answers the page's requests the way Rust would —
-//! `init`, `sessions`, `transcript`, `export`, `config.get`, `devices`,
-//! `speakers.unnamed`, and `{}` for anything else — then drives the page
-//! through: selecting a session, clicking Copy Markdown (exercising `export`
-//! then `clipboard.write`), opening the export menu and clicking Copy for an
-//! assistant (the same two calls, with `format: "assistant"`), navigating to
-//! Settings, reading back what Settings rendered, and clicking the diarize
-//! switch. Prints every message the bridge receives, and snapshots a PNG so
-//! the rendering can be looked at too.
-//!
-//! Does not click "+ Add", "Change…" or "Save as…": all three open a modal
-//! `NSOpenPanel` or `NSSavePanel` that nothing here would dismiss, and the
-//! run would hang.
+//! Does not click "+ Add", "Change…" or "Save as…": each opens a modal
+//! `NSOpenPanel` or `NSSavePanel` that nothing here dismisses, so the run would
+//! hang.
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -39,24 +28,20 @@ use serde_json::{json, Value};
 
 const PAGE: &str = include_str!("../../assets/settings.html");
 
-/// A routed request from the page, the same shape `src/settings.rs` reads:
-/// `{id, method, params}`. `params` is not read here — every canned reply is
-/// keyed on `method` alone.
+/// `params` is unread: every canned reply keys on `method`.
 #[derive(Debug, Deserialize)]
 struct Request {
     id: u64,
     method: String,
 }
 
-/// The `config.get` payload this probe hands back: apps non-empty so the
-/// scope select renders as "Selected apps" with a chip, and `latest_session`
-/// non-null so the page asks `speakers.unnamed` at all.
+/// Non-empty apps so the scope renders as "Selected apps" with a chip, and a
+/// non-null `latest_session` so the page asks `speakers.unnamed` at all.
 fn config_payload() -> Value {
     json!({
         "apps": ["us.zoom.xos"],
         "input_device": "MacBook Pro Microphone",
         "diarize": true,
-        "threshold": 0.5,
         "sessions_dir": null,
         "devices": ["MacBook Pro Microphone", "Iriun Webcam Audio"],
         "default_dir": "/Users/x/Documents/Ambient",
@@ -67,9 +52,8 @@ fn config_payload() -> Value {
     })
 }
 
-/// The `sessions` payload, in the real wire shape `session::SessionSummary`
-/// derives — `live`/`transcribing`/`error`/`transcribed` booleans and **no**
-/// `state` field, so this probe would catch a page that assumed one.
+/// The real `session::SessionSummary` shape, with no `state` field, so a page
+/// that assumed one fails here.
 fn sessions_payload() -> Value {
     let mut sessions = json!([
         {
@@ -130,7 +114,6 @@ fn export_payload() -> Value {
     })
 }
 
-/// What the responder answers `method` with, mirroring what Rust would.
 fn canned(method: &str) -> Value {
     match method {
         "init" => json!({"route": "sessions"}),
@@ -323,7 +306,6 @@ fn main() {
                           mic: t("mic-select").value,
                           chips: chip(t("app-chips") ?? document.createElement("div")),
                           diarize: t("diarize-switch").getAttribute("aria-checked"),
-                          sensitivity: t("sensitivity-slider").value,
                           folder: t("sessions-dir").textContent,
                           retention: t("retention-select").value,
                           people: chip(t("roster-chips")),

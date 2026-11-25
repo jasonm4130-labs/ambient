@@ -19,11 +19,6 @@ read, and that is the whole surface for sessions. Ambient supplies the ears and
 nothing else: no lookups, no summaries. The assistant on the other end brings
 its own.
 
-The same server also carries [the live assistant](assistant.md): four tools
-that let an agent watch the meeting being recorded and speak in it, and a
-`watch` prompt that tells it how. Those tools do nothing while the assistant is
-turned off; see that page for what they write and say.
-
 ## Access and privacy
 
 The MCP server can read sessions available to the Ambient process. It does not
@@ -71,7 +66,7 @@ server answers one line per request:
 
 ```sh
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ambient mcp | jq -c '[.result.tools[].name]'
-["sessions","transcript","status","watch_meeting","wait_for_transcript","speak","stop_watching"]
+["sessions","transcript","status"]
 ```
 
 Without `jq`, the answer is one JSON-RPC line holding each tool's name,
@@ -181,28 +176,25 @@ with the previous reply's `next`.
 | `state` | What it means | Ask again? |
 | --- | --- | --- |
 | `live` | Audio is being captured right now. | Yes |
-| `transcribing` | Capture finished; remaining text or speaker labels are being processed. | Yes |
+| `transcribing` | Capture finished; words and speaker labels are being worked out. | Yes |
 | `pending` | Captured, waiting its turn in the queue. | Yes |
 | `done` | `transcript.md` is written. `next` will not move. | No |
 
 The cursor counts lines rather than milliseconds because the two tracks' clocks
 run independently. A cursor on `start_ms` would skip a call line that arrived
-after a room line with a later timestamp. The published line order stays stable
-when recording stops and finalization completes.
+after a room line with a later timestamp.
 
-During recording, Ambient processes audio in roughly 10-second blocks and
-appends completed speech turns to `raw.jsonl`. A `live` reply can therefore
-contain new lines. An empty reply means no new completed turn is available yet:
+Nothing is transcribed while recording, so a session that is `live`, or waiting
+for its first transcript, has no lines yet:
 
 ```json
 {"lines":[],"next":0,"session":"2026-09-05T1608","state":"live"}
 ```
 
-This is completed-turn transcription, not word-by-word streaming. Model loading,
-ongoing speech and other transcription work can delay the first lines. Continue
-polling through Stop: the final speech tail and speaker separation finish
-afterward. To refresh speaker labels on earlier lines, read again with `since: 0`
-once the session is `done`.
+Every line arrives at once when the transcription job writes the session's
+transcript after Stop, with speaker labels if voices were separated. Keep
+polling until the state is `done`. A re-run (`ambient rerun`, or *Transcribe again* in the window) replaces
+the lines when it finishes, so read again with `since: 0` after one.
 
 ## When it will not answer
 

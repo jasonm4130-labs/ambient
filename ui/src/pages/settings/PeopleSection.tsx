@@ -8,8 +8,6 @@ interface PeopleSectionProps {
   onRemove: (name: string) => void;
 }
 
-// Named once here, then offered whenever a recording needs its speakers
-// named. No voice is stored.
 export function PeopleSection({ roster, onAdd, onRemove }: PeopleSectionProps) {
   const [name, setName] = useState("");
 
@@ -28,10 +26,7 @@ export function PeopleSection({ roster, onAdd, onRemove }: PeopleSectionProps) {
       <div className="flex flex-wrap gap-2" data-testid="roster-chips">
         {roster.length === 0 && <span className="text-muted-foreground text-xs">Nobody yet.</span>}
         {roster.map((who) => (
-          <span
-            key={who}
-            className="bg-muted flex items-center gap-2 rounded-md px-2 py-1 text-xs"
-          >
+          <span key={who} className="bg-muted flex items-center gap-2 rounded-md px-2 py-1 text-xs">
             {who}
             <button
               type="button"
