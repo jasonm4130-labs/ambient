@@ -31,6 +31,9 @@ pub const ASR_DIR: &str = "parakeet-ultra";
 pub const DIAR_DIR: &str = "nemotron-3-diarization/monolithic/v2";
 
 pub const STAGES_DIR: &str = "stages";
+/// How the fallback's warning in `session.json` begins, so a later labelled
+/// run can clear it and the audio sweep can leave that session's audio alone.
+pub const UNLABELLED_WARNING: &str = "voices were not separated";
 /// Failures of this session's job that a running app or CLI saw, one number.
 pub const ATTEMPTS_FILE: &str = "attempts";
 /// Names the archive under `previous/` that this run carries typed names from.
@@ -68,6 +71,18 @@ impl Engine {
             binary: engine::locate()?,
             models: crate::session::models_root()?,
         })
+    }
+
+    /// The models the helper loads are on disk. A missing one fails before
+    /// any stage, where it is the machine's fault rather than the session's.
+    pub fn check(&self) -> Result<()> {
+        for dir in [ASR_DIR, DIAR_DIR] {
+            let p = self.models.join(dir);
+            if !p.is_dir() {
+                bail!("no model at {} — run ./fetch-models.sh", p.display());
+            }
+        }
+        Ok(())
     }
 
     /// One stage over one 16 kHz mono wav, outside any session and with no
@@ -487,6 +502,35 @@ fn has_typed_edits(dir: &Path) -> Result<bool> {
     }))
 }
 
+/// Archive the transcript files now in `dir` unless the archive `carry-from`
+/// names already holds exactly them, so nothing a person wrote is ever
+/// overwritten unarchived: not after a re-run that died, and not after a name
+/// typed while it was waiting. `carry-from` moves to the new archive when it
+/// holds typed edits; otherwise it keeps pointing at the older one that does.
+fn archive_if_changed(dir: &Path) -> Result<()> {
+    if !is_nonempty(&dir.join("raw.jsonl")) && !is_nonempty(&dir.join("edits.jsonl")) {
+        return Ok(());
+    }
+    let carry_file = dir.join(CARRY_FILE);
+    if let Ok(name) = std::fs::read_to_string(&carry_file) {
+        let from = dir.join(PREVIOUS_DIR).join(name.trim());
+        let same = |f: &str| {
+            std::fs::read(dir.join(f)).unwrap_or_default()
+                == std::fs::read(from.join(f)).unwrap_or_default()
+        };
+        if same("raw.jsonl") && same("edits.jsonl") {
+            return Ok(());
+        }
+    }
+    let typed = has_typed_edits(dir)?;
+    if let Some(name) = archive(dir)? {
+        if typed {
+            write_atomically(&carry_file, name.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
 /// Run the whole job over a session whose transcription lock the caller
 /// holds. `diarize` is the setting. A failed diarize stage fails the job,
 /// unless this is the attempt that reaches the retry cap: then the words are
@@ -537,8 +581,8 @@ pub(crate) fn run(
                 // retry resumes here from the transcribe checkpoint.
                 Err(e) if attempts(dir) + 1 >= RETRY_CAP => {
                     warning = Some(format!(
-                        "voices were not separated ({e:#}); the transcript is unlabelled — \
-                         re-run the session to try again"
+                        "{UNLABELLED_WARNING} ({e:#}); the transcript is unlabelled — \
+                         transcribe it again to try once more"
                     ));
                     turns.clear();
                     break;
@@ -556,21 +600,9 @@ pub(crate) fn run(
         speakers.extend(s);
     }
 
-    // Nothing a person wrote is ever overwritten. A re-run archived it already
-    // and left `carry-from`; anything else here with a typed edit in it (a
-    // session from the live pipeline that was named before its transcript
-    // finished) is archived now and carried the same way.
+    // Nothing a person wrote is ever overwritten unarchived.
+    archive_if_changed(dir)?;
     let carry_file = dir.join(CARRY_FILE);
-    if !carry_file.exists()
-        && (is_nonempty(&dir.join("raw.jsonl")) || is_nonempty(&dir.join("edits.jsonl")))
-    {
-        let typed = has_typed_edits(dir)?;
-        if let Some(name) = archive(dir)? {
-            if typed {
-                write_atomically(&carry_file, name.as_bytes())?;
-            }
-        }
-    }
 
     let now = crate::clock::now_rfc3339();
     let mut edits: Vec<Edit> = raw
@@ -597,13 +629,21 @@ pub(crate) fn run(
 
     write_atomically(&dir.join("raw.jsonl"), &jsonl(&raw)?)?;
     write_atomically(&dir.join("edits.jsonl"), &jsonl(&edits)?)?;
-    if let Some(w) = warning {
-        crate::session::add_warning(dir, &w)?;
+    let labelled = speakers.iter().any(Option::is_some);
+    match warning {
+        Some(w) => crate::session::add_warning(dir, &w)?,
+        None if labelled => crate::session::clear_warnings(dir, UNLABELLED_WARNING)?,
+        None => {}
     }
     let md = dir.join("transcript.md");
     write_atomically(&md, crate::session::markdown(dir)?.as_bytes())?;
 
-    std::fs::remove_file(&carry_file).ok();
+    // Names carry only onto speakers. A run that labelled nobody (the
+    // fallback, or diarize off) keeps `carry-from`, so the next run that does
+    // label can still bring them across.
+    if labelled {
+        std::fs::remove_file(&carry_file).ok();
+    }
     std::fs::remove_file(dir.join(ATTEMPTS_FILE)).ok();
     remove_live_leftovers(dir);
     set_status(dir, "done", meter, MeterPhase::Done);
@@ -647,11 +687,12 @@ pub fn reset_attempts(dir: &Path) {
 }
 
 /// Set a finished session up to be transcribed again from its audio. The
-/// three transcript files are copied to `previous/<timestamp>/` first; then
-/// `transcript.md` is removed, which is the moment the session stops being
-/// finished. A crash on either side of that leaves it consistent: still
-/// finished, or awaiting a transcript with its archive named in
-/// `carry-from`. The caller holds the transcription lock.
+/// transcript files are copied to `previous/<timestamp>/` first, unless the
+/// archive `carry-from` names already holds them; then `transcript.md` is
+/// removed, which is the moment the session stops being finished. A crash on
+/// either side of that leaves it consistent: still finished, or awaiting a
+/// transcript with every typed edit archived. The caller holds the
+/// transcription lock.
 pub(crate) fn prepare_rerun(dir: &Path) -> Result<()> {
     let audio = dir.join("audio");
     if !audio.join("room.wav").is_file() && !audio.join("call.wav").is_file() {
@@ -660,11 +701,7 @@ pub(crate) fn prepare_rerun(dir: &Path) -> Result<()> {
             dir.display()
         );
     }
-    if !dir.join(CARRY_FILE).exists() {
-        if let Some(name) = archive(dir)? {
-            write_atomically(&dir.join(CARRY_FILE), name.as_bytes())?;
-        }
-    }
+    archive_if_changed(dir)?;
     match std::fs::remove_file(dir.join("transcript.md")) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

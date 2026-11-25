@@ -500,12 +500,13 @@ impl Bridge {
         let worker_dir = dir.clone();
         std::thread::spawn(move || {
             // A finished session is transcribed again from its audio; one
-            // whose job failed is retried, which also clears its failure
-            // count so the app queues it again at launch if this one dies.
+            // whose job failed is retried from its last finished stage. The
+            // failure count stays, so a retry at the cap still falls back to
+            // an unlabelled transcript if the diariser fails again; success
+            // clears it.
             let result = if worker_dir.join("transcript.md").is_file() {
                 session::rerun_session(&worker_dir, None)
             } else {
-                crate::pipeline::reset_attempts(&worker_dir);
                 session::transcribe_session(&worker_dir, None)
             };
             tx.send(result.map(|_| 0)).ok();

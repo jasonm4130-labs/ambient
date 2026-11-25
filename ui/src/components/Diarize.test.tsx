@@ -92,4 +92,12 @@ describe("Transcript — Transcribe again and Retry", () => {
     });
     expect(screen.getByTestId("separate-voices")).toHaveTextContent("Transcribing…");
   });
+
+  it("a session waiting its turn cannot be started beside the queue", async () => {
+    const fake = new FakeBridge();
+    fake.answer("transcript", { session: "x", state: "pending", next: 0, lines: [] });
+    renderTranscript(fake, "x");
+    await screen.findByText(/waiting its turn/);
+    expect(screen.getByTestId("separate-voices")).toBeDisabled();
+  });
 });

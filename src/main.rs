@@ -374,7 +374,6 @@ fn main() -> Result<()> {
             }
             let path = std::path::Path::new(&dir);
             if verb == "retry" {
-                ambient::pipeline::reset_attempts(path);
                 ambient::session::transcribe_session(path, None)?;
             } else {
                 ambient::session::rerun_session(path, None)?;

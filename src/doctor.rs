@@ -126,12 +126,29 @@ pub fn run(
     checks.push(sessions_writable(sessions));
 
     let awaiting = session::captured_awaiting_transcript(sessions).len();
-    let awaiting_detail = match awaiting {
+    let mut awaiting_detail = match awaiting {
         0 => "none".to_string(),
         1 => "1 session".to_string(),
         n => format!("{n} sessions"),
     };
-    checks.push(check("sessions/awaiting-transcript", true, awaiting_detail));
+    // Sessions the app stopped re-queueing after two failures. They are not
+    // waiting for anything but a person, so they fail this check.
+    let parked = session::list(sessions)
+        .into_iter()
+        .filter(|d| {
+            !d.join("transcript.md").is_file() && pipeline::attempts(d) >= pipeline::RETRY_CAP
+        })
+        .count();
+    if parked > 0 {
+        awaiting_detail.push_str(&format!(
+            "; {parked} failed twice and wait for Retry (the window, or `ambient retry`)"
+        ));
+    }
+    checks.push(check(
+        "sessions/awaiting-transcript",
+        parked == 0,
+        awaiting_detail,
+    ));
 
     let live_detail = match session::live_session_in(sessions) {
         Some(dir) => dir.display().to_string(),

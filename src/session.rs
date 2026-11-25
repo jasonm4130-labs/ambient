@@ -715,6 +715,18 @@ pub fn capture_into(
     unsafe {
         libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
     }
+    // Ctrl-C means stop only while capturing. Afterwards it is the default
+    // again, so one during `record`'s transcription ends the CLI and its
+    // helper together, which is an abandoned job and not a counted failure.
+    struct DefaultSigint;
+    impl Drop for DefaultSigint {
+        fn drop(&mut self) {
+            unsafe {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+            }
+        }
+    }
+    let _sigint = DefaultSigint;
 
     let stop_file = dir.join(STOP_FILE);
     let status_file = dir.join(STATUS_FILE);
@@ -917,15 +929,21 @@ pub fn capture_into(
 /// thread calls it — the CLI's, or the menu bar app's transcription queue —
 /// and the models run in the helper's process, not this one.
 pub fn transcribe_session(dir: &Path, meter: Option<std::sync::Arc<Meter>>) -> Result<PathBuf> {
-    let engine = crate::pipeline::Engine::locate();
-    let diarize = crate::config::Config::load().diarize;
-    let done = match engine {
-        Ok(engine) => transcribe_with(dir, &engine, diarize, meter.as_ref())?,
+    // A missing helper or model is this machine's fault, not the session's:
+    // it is reported, and not counted toward the retry cap, or two launches
+    // without the models would park every session waiting for a transcript.
+    let engine = match crate::pipeline::Engine::locate().and_then(|e| e.check().map(|()| e)) {
+        Ok(engine) => engine,
         Err(e) => {
-            fail(dir, &e, meter.as_ref());
+            std::fs::write(dir.join(STATUS_FILE), format!("failed: {e:#}\n")).ok();
+            if let Some(m) = &meter {
+                m.set_phase(MeterPhase::Failed);
+            }
             return Err(e);
         }
     };
+    let diarize = crate::config::Config::load().diarize;
+    let done = transcribe_with(dir, &engine, diarize, meter.as_ref())?;
     // Only now that the text exists is the audio safe to age out. This covers
     // the session just recorded as well as every older one, which is why there
     // is no launchd agent: the app runs whenever a recording happens.
@@ -948,6 +966,11 @@ pub fn transcribe_with(
     // refused here rather than racing it, and that refusal is not a failure
     // of this session's job.
     let _lock = claim_transcription(dir)?;
+    // Finished while this waited (the queue, the window and the CLI can each
+    // ask): there is nothing to do, and running again would re-transcribe it.
+    if dir.join("transcript.md").is_file() {
+        return Ok(dir.to_path_buf());
+    }
     run_locked(dir, engine, diarize, meter)
 }
 
@@ -1005,6 +1028,40 @@ fn fail(dir: &Path, e: &anyhow::Error, meter: Option<&std::sync::Arc<Meter>>) {
     if let Some(m) = meter {
         m.set_phase(MeterPhase::Failed);
     }
+}
+
+/// Rewrite `transcript.md` after an edit, but only on a finished session: on
+/// one still waiting for its transcript, writing it would mark the session
+/// finished and take it off the queue.
+fn refresh_transcript(dir: &Path) -> Result<()> {
+    let md = dir.join("transcript.md");
+    if md.is_file() {
+        std::fs::write(md, markdown(dir)?)?;
+    }
+    Ok(())
+}
+
+/// Remove the warnings that begin with `prefix` from the session's metadata.
+pub fn clear_warnings(dir: &Path, prefix: &str) -> Result<()> {
+    let path = dir.join("session.json");
+    let text = std::fs::read_to_string(&path)?;
+    let mut meta: SessionMeta = serde_json::from_str(&text)?;
+    let before = meta.warnings.len();
+    meta.warnings.retain(|w| !w.starts_with(prefix));
+    if meta.warnings.len() != before {
+        let tmp = dir.join(format!(".session.json.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_string_pretty(&meta)?)?;
+        std::fs::rename(&tmp, &path)?;
+    }
+    Ok(())
+}
+
+/// Whether the session carries a warning that begins with `prefix`.
+fn has_warning(dir: &Path, prefix: &str) -> bool {
+    std::fs::read_to_string(dir.join("session.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<SessionMeta>(&t).ok())
+        .is_some_and(|m| m.warnings.iter().any(|w| w.starts_with(prefix)))
 }
 
 /// Append a warning to the session's metadata, where the window shows it.
@@ -1322,7 +1379,12 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
         // - a `transcript.md` with no words behind it means ASR found nothing,
         //   which is exactly when the audio is still the only record. `markdown`
         //   writes a transcript saying so, so the file alone proves nothing.
-        if !session.join("transcript.md").is_file() || !has_transcribed_words(&session) {
+        // - a transcript written without speakers after the diariser failed
+        //   is one a person is likely to transcribe again, which needs it.
+        if !session.join("transcript.md").is_file()
+            || !has_transcribed_words(&session)
+            || has_warning(&session, crate::pipeline::UNLABELLED_WARNING)
+        {
             continue;
         }
         let Ok(tracks) = std::fs::read_dir(&audio) else {
@@ -1680,7 +1742,7 @@ pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
     }
     f.flush()?;
     drop(f);
-    std::fs::write(dir.join("transcript.md"), markdown(dir)?)?;
+    refresh_transcript(dir)?;
     Ok(targets.len())
 }
 
@@ -1730,7 +1792,7 @@ fn append_reverts(dir: &Path, seqs: &[usize]) -> Result<()> {
     }
     f.flush()?;
     drop(f);
-    std::fs::write(dir.join("transcript.md"), markdown(dir)?)?;
+    refresh_transcript(dir)?;
     Ok(())
 }
 

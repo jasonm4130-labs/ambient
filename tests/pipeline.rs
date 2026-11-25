@@ -350,3 +350,98 @@ fn a_second_transcriber_is_refused_without_counting_a_failure() {
     assert!(e.is_err());
     assert_eq!(pipeline::attempts(&f.dir()), 0);
 }
+
+#[test]
+fn a_name_typed_while_a_failed_rerun_waits_is_kept_and_does_not_finish_it() {
+    let f = Fixture::new("rerun-named-while-waiting");
+    f.transcribe().unwrap();
+    session::name_speaker(&f.dir(), "room-1", "Ana").unwrap();
+    std::fs::remove_dir_all(f.dir().join("stages")).unwrap();
+    f.steer("fail", "transcribe");
+    session::rerun_with(&f.dir(), &f.engine, true, None).unwrap_err();
+
+    // The old lines are still on screen, and someone names another speaker.
+    session::name_speaker(&f.dir(), "call-2", "Priya").unwrap();
+    assert!(
+        !f.finished(),
+        "naming must not mark a waiting session finished"
+    );
+    assert!(f.requeued());
+
+    f.unsteer("fail", "transcribe");
+    f.transcribe().unwrap();
+    let mut typed: Vec<_> = speaker_names(&f.edits())
+        .into_iter()
+        .filter(|n| n.3 == USER_BY)
+        .map(|n| n.2)
+        .collect();
+    typed.sort();
+    assert_eq!(typed, ["Ana", "Priya"]);
+    let archives = std::fs::read_dir(f.dir().join(PREVIOUS_DIR))
+        .unwrap()
+        .count();
+    assert_eq!(
+        archives, 2,
+        "the edits typed while waiting were archived too"
+    );
+}
+
+#[test]
+fn transcribing_a_finished_session_does_nothing() {
+    let f = Fixture::new("already-done");
+    f.transcribe().unwrap();
+    session::name_speaker(&f.dir(), "room-1", "Ana").unwrap();
+    let edits = std::fs::read_to_string(f.dir().join("edits.jsonl")).unwrap();
+    f.calls();
+    f.transcribe().unwrap();
+    assert!(f.calls().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(f.dir().join("edits.jsonl")).unwrap(),
+        edits
+    );
+    assert!(!f.dir().join(PREVIOUS_DIR).exists());
+}
+
+#[test]
+fn an_unlabelled_fallback_keeps_names_its_audio_and_clears_its_warning_later() {
+    let f = Fixture::new("fallback-carry");
+    f.transcribe().unwrap();
+    session::name_speaker(&f.dir(), "call-2", "Priya").unwrap();
+    std::fs::remove_dir_all(f.dir().join("stages")).unwrap();
+
+    // The rerun's diariser fails twice; the second time falls back.
+    f.steer("fail", "diarize");
+    session::rerun_with(&f.dir(), &f.engine, true, None).unwrap_err();
+    f.transcribe().unwrap();
+    assert!(f.finished());
+    assert!(speaker_names(&f.edits()).is_empty());
+    assert!(
+        f.dir().join(CARRY_FILE).exists(),
+        "nothing was carried, so the names wait for a labelled run"
+    );
+    // The fallback asks for another run, which needs the audio.
+    let sessions = f.root.join("sessions");
+    assert_eq!(
+        session::sweep_audio_at(&sessions, Some(0), std::time::SystemTime::now()),
+        0
+    );
+
+    f.unsteer("fail", "diarize");
+    session::rerun_with(&f.dir(), &f.engine, true, None).unwrap();
+    let typed: Vec<_> = speaker_names(&f.edits())
+        .into_iter()
+        .filter(|n| n.3 == USER_BY)
+        .map(|n| n.2)
+        .collect();
+    assert_eq!(typed, ["Priya"]);
+    let meta = std::fs::read_to_string(f.dir().join("session.json")).unwrap();
+    assert!(!meta.contains(pipeline::UNLABELLED_WARNING), "{meta}");
+    assert!(!f.dir().join(CARRY_FILE).exists());
+}
+
+#[test]
+fn missing_models_are_caught_before_any_stage() {
+    let f = Fixture::new("no-models");
+    let e = f.engine.check().unwrap_err();
+    assert!(format!("{e:#}").contains("fetch-models"), "{e:#}");
+}

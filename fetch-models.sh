@@ -27,8 +27,12 @@ mkdir -p models
 echo "fetching the app's models ..."
 # A closed stdin is fine: `fetch` does not watch it.
 "$engine" fetch --models models </dev/null
-(grep -v '^#' licenses/model-sha256.txt | shasum -a 256 -c --quiet -) &&
-  echo "ready: models/parakeet-ultra, models/nemotron-3-diarization (checksums verified)"
+# An `if`, not `&&`: set -e does not stop a script at a failed `a && b`.
+if ! grep -v '^#' licenses/model-sha256.txt | shasum -a 256 -c --quiet -; then
+  echo "a model file does not match licenses/model-sha256.txt" >&2
+  exit 1
+fi
+echo "ready: models/parakeet-ultra, models/nemotron-3-diarization (checksums verified)"
 
 [ "$onnx" = 1 ] || exit 0
 cd models

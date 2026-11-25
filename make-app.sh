@@ -108,8 +108,12 @@ if [ "${AMBIENT_BUNDLE_MODELS:-0}" = "1" ]; then
     ditto "$m" "$APP/Contents/Resources/$m"
   done < <(grep -v '^#' licenses/model-sha256.txt)
   echo "  bundled $(du -sh "$APP/Contents/Resources/models" | cut -f1)"
-  (cd "$APP/Contents/Resources" && shasum -a 256 -c --quiet licenses/model-sha256.txt) &&
-    echo "  model checksums: verified"
+  # An `if`, not `&&`: set -e does not stop a script at a failed `a && b`.
+  if ! (cd "$APP/Contents/Resources" && shasum -a 256 -c --quiet licenses/model-sha256.txt); then
+    echo "  a bundled model does not match licenses/model-sha256.txt" >&2
+    exit 1
+  fi
+  echo "  model checksums: verified"
 fi
 
 # Signing identity is load-bearing, not cosmetic. An ad-hoc signature's
