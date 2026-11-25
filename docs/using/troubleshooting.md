@@ -234,9 +234,7 @@ sight of a failure — the window shows the failure in its banner, and the menu
 bar sits in a `Failed` state until it is dismissed — but it is still the first
 file to open when a recording ends with no transcript.
 
-None of this weakens the append-only guarantee. `raw.jsonl` is created after the
-capture loop, after both `finalize()` calls and after the resample, and
-`edits.jsonl` a few lines after that, so a write failure during capture returns
-before either file exists. There is no half-written record layer to fold, and
-what is left behind is the corpse described above. See
-[ADR-0008](../adr/0008-append-only-raw.md).
+None of this can leave a half-written transcript. `raw.jsonl` and
+`edits.jsonl` are written only after transcription finishes, each in one
+atomic write, so a failure during capture returns before either file exists,
+and what is left behind is the corpse described above.
