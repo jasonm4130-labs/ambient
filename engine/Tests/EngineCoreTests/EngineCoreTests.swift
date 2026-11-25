@@ -4,11 +4,11 @@ import Testing
 
 @Test func tokensMergeAtLeadingWhitespace() {
     let words = mergeTokens([
-        Token(text: " Hel", start: 0.0, end: 0.1, confidence: 0.8),
-        Token(text: "lo", start: 0.1, end: 0.2, confidence: 1.0),
+        Token(text: " Good", start: 0.0, end: 0.1, confidence: 0.8),
+        Token(text: "bye", start: 0.1, end: 0.2, confidence: 1.0),
         Token(text: " world", start: 0.3, end: 0.6, confidence: 0.6),
     ])
-    #expect(words.map(\.text) == ["Hello", "world"])
+    #expect(words.map(\.text) == ["Goodbye", "world"])
     #expect(words[0].start == 0.0)
     #expect(words[0].end == 0.2)
     #expect(abs(words[0].confidence - 0.9) < 1e-6)

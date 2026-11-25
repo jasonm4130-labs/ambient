@@ -9,4 +9,4 @@ if [ "$(xcode-select -p)" = /Library/Developer/CommandLineTools ] && [ -d "$clt/
   extra=(-Xswiftc "-F$clt/Frameworks" -Xlinker "-F$clt/Frameworks"
          -Xlinker -rpath -Xlinker "$clt/Frameworks" -Xlinker -rpath -Xlinker "$clt/usr/lib")
 fi
-exec swift test --package-path engine "${extra[@]}"
+exec swift test --package-path engine ${extra[@]+"${extra[@]}"}
