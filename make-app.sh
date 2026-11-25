@@ -30,7 +30,7 @@ cp "$ENGINE" "$APP/Contents/MacOS/ambient-engine"
 
 # Do not silently ship an owner path from a dependency or a stale Cargo cache.
 ./scripts/check-build-paths "$APP/Contents/MacOS/ambient"
-./scripts/check-build-paths "$APP/Contents/MacOS/ambient-engine"
+./scripts/check-build-paths --helper "$APP/Contents/MacOS/ambient-engine"
 
 # Licenses are part of the signed payload, even for a model-free dev bundle.
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"

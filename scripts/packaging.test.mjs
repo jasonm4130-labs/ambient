@@ -188,3 +188,17 @@ test("build path check allows only the exact precompiled ONNX runner prefix", ()
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("only the helper may carry upstream's precompiled cargo registry paths", () => {
+  const dir = tempDir("helper-paths");
+  try {
+    const binary = join(dir, "binary");
+    writeFileSync(binary, "/Users/runner/.cargo/registry/src/index.crates.io-1/regex-1.0/src/lib.rs\0");
+    assert.equal(runScript("check-build-paths", ["--helper", binary, "/Users/runner"]).status, 0);
+    assert.notEqual(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
+    writeFileSync(binary, "/Users/runner/_work/ambient/ambient/engine/main.swift\0");
+    assert.notEqual(runScript("check-build-paths", ["--helper", binary, "/Users/runner"]).status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
