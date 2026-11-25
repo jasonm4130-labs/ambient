@@ -1,12 +1,3 @@
-/// A stand-in for `ui/src/lib/bridge.ts` used by component tests in units 3–6.
-/// Answers `call(method, params)` from a method→value map, and can hold a
-/// reply until the test releases it — so a test can render a component,
-/// select something else, and only then let the first request's answer land,
-/// to check that the later selection won it.
-///
-/// `bridge.test.ts` does not use this: it exercises the real wire by spying on
-/// `window.webkit.messageHandlers.ambient` and driving `window.ambient.reply`
-/// directly.
 type Answer = unknown | (() => unknown);
 
 function noop(): void {}
@@ -17,14 +8,11 @@ export class FakeBridge {
   private readonly eventHandlers = new Map<string, Set<(payload: unknown) => void>>();
   readonly calls: { method: string; params: object | undefined }[] = [];
 
-  /// Sets the value (or a thunk producing it) that `call(method, …)` resolves
-  /// to.
   answer(method: string, value: Answer): void {
     this.answers.set(method, value);
   }
 
-  /// The *next* call to `method` resolves only once the returned function is
-  /// invoked.
+  /// Gates the *next* call to `method` until the returned function is invoked.
   hold(method: string): () => void {
     let release = noop;
     const gate = new Promise<void>((resolve) => {
@@ -59,8 +47,6 @@ export class FakeBridge {
     };
   };
 
-  /// Fires `event(name, payload)` to every registered handler, as
-  /// `window.ambient.event` would.
   emit(name: string, payload: unknown): void {
     const set = this.eventHandlers.get(name);
     if (set === undefined) return;

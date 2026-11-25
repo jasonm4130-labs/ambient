@@ -75,8 +75,6 @@ describe("Transcript — Transcribe again and Retry", () => {
     fake.emit("diarize", { session: "other-session", state: "failed", error: "boom" });
 
     expect(screen.queryByText("boom")).not.toBeInTheDocument();
-    // Still separating: the event named a session other than the one on
-    // screen, so it must not have cleared this button's in-flight state.
     expect(screen.getByTestId("separate-voices")).toBeDisabled();
   });
 

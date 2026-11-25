@@ -1,16 +1,6 @@
-//! The serial transcription queue.
-//!
-//! Capture and transcription are separate work — [`crate::session::capture_into`]
-//! on the thread that owns the tap, [`crate::session::transcribe_session`]
-//! here — so a new recording can start the moment the last one's audio is on
-//! disk, rather than after its transcript is. One transcription at a time, on
-//! one thread that lives as long as the process (the models themselves run in
-//! the `ambient-engine` helper, see [`crate::engine`]): ASR and diarisation are
-//! heavy, and running two of them beside a live tap risks dropped audio, which
-//! costs more than the wait does.
-//!
-//! Nothing here touches AppKit, and the worker is injected, so the queue is
-//! tested with a fake that never loads a model.
+//! Serial transcription queue: one job at a time on one long-lived thread,
+//! because two heavy jobs beside a live tap risk dropped audio. The worker is
+//! injected so tests run a fake.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -19,12 +9,8 @@ use std::sync::Arc;
 
 use crate::session::{Meter, MeterPhase};
 
-/// A session whose audio is written and whose transcript is not yet.
 pub struct Job {
     pub dir: PathBuf,
-    /// Written by the worker as it moves through ASR and diarisation, read by
-    /// whichever UI is drawing the queue — the same `Meter` a live capture
-    /// shares with the menu, so the words are the same too.
     pub meter: Arc<Meter>,
 }
 
@@ -37,31 +23,24 @@ impl Job {
     }
 }
 
-/// What the worker hands back: which session, and how it went.
 pub type Outcome = (PathBuf, anyhow::Result<PathBuf>);
 
 pub struct Queue {
     tx: Sender<Job>,
     done: Receiver<Outcome>,
-    /// Oldest first. The front is the job the worker is on; everything
-    /// behind it is waiting. Kept here rather than asked of the thread so
-    /// the menu can say how many without a round trip.
+    /// Oldest first; the front is the job in progress.
     pending: VecDeque<Job>,
 }
 
 impl Queue {
-    /// Start the worker thread. `work` is called once per job, in order, and
-    /// its result comes back through [`Queue::poll`].
     pub fn spawn(
         work: impl Fn(&Path, &Arc<Meter>) -> anyhow::Result<PathBuf> + Send + 'static,
     ) -> Queue {
         let (tx, rx) = channel::<Job>();
         let (done_tx, done) = channel::<Outcome>();
         std::thread::spawn(move || {
-            // Background QoS: during back-to-back meetings this thread runs
-            // ASR beside a live capture, and the capture's drain loop must
-            // win every contest for a core. `drainbench` measures what the
-            // loop actually loses with this set.
+            // Background QoS so the capture's drain loop wins every contest
+            // for a core; `drainbench` measures what it loses.
             #[cfg(target_os = "macos")]
             unsafe {
                 libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
@@ -80,9 +59,8 @@ impl Queue {
         }
     }
 
-    /// Queue a session for transcription. The meter starts at `Transcribing`
-    /// rather than the default `Capturing`, so a job read before the worker
-    /// has touched it is never drawn as a recording.
+    /// The meter starts at `Transcribing`, not `Capturing`, so a job the
+    /// worker has not touched is never drawn as a recording.
     pub fn push(&mut self, dir: PathBuf) {
         let meter = Arc::new(Meter::default());
         meter.set_phase(MeterPhase::Transcribing);
@@ -90,14 +68,12 @@ impl Queue {
             dir: dir.clone(),
             meter: meter.clone(),
         };
-        // A send can only fail once the worker thread is gone, and `poll`
-        // reports that for every job still pending; nothing to do here.
+        // Fails only once the worker is gone, which `poll` reports per job.
         self.tx.send(Job { dir, meter }).ok();
         self.pending.push_back(job);
     }
 
-    /// Whether a result has arrived. Serial and first-in-first-out, so a
-    /// result always belongs to the front of `pending`.
+    /// Serial and FIFO, so a result always belongs to the front of `pending`.
     pub fn poll(&mut self) -> Option<Outcome> {
         match self.done.try_recv() {
             Ok(o) => {
@@ -105,8 +81,8 @@ impl Queue {
                 Some(o)
             }
             Err(TryRecvError::Empty) => None,
-            // The thread is gone. Every pending job is now a failure, surfaced
-            // one per poll so each is reported against its own session.
+            // The worker is gone: fail pending jobs one per poll, each against
+            // its own session.
             Err(TryRecvError::Disconnected) => self.pending.pop_front().map(|j| {
                 (
                     j.dir,
@@ -124,8 +100,6 @@ impl Queue {
         self.pending.len()
     }
 
-    /// One line for the menu: what the worker is doing to which session, and
-    /// how many are behind it. `None` when there is nothing to say.
     pub fn summary(&self) -> Option<String> {
         let front = self.pending.front()?;
         let verb = match front.meter.phase() {
@@ -150,8 +124,6 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    /// A worker that finishes a job only when told to, so a test can hold the
-    /// queue at a known depth.
     fn gated() -> (Queue, StdSender<anyhow::Result<()>>) {
         let (gate_tx, gate_rx) = channel::<anyhow::Result<()>>();
         let gate_rx = Mutex::new(gate_rx);
@@ -174,8 +146,6 @@ mod tests {
         }
     }
 
-    /// The property the issue is about: pushing a second session while the
-    /// first is being transcribed queues it, and the two finish in order.
     #[test]
     fn jobs_run_one_at_a_time_in_the_order_they_arrived() {
         let (mut q, gate) = gated();
@@ -199,17 +169,14 @@ mod tests {
         assert!(q.is_empty());
     }
 
-    /// The menu line names the session in flight and counts the rest.
     #[test]
     fn the_summary_names_the_front_and_counts_the_waiting() {
         let (mut q, gate) = gated();
         q.push(PathBuf::from("/s/a"));
-        // Pushed and not yet touched by the worker: never "Recording".
         assert!(q.summary().unwrap().starts_with("Transcribing a"));
         q.push(PathBuf::from("/s/b"));
         q.push(PathBuf::from("/s/c"));
-        // The fake moves the front meter to Diarizing as soon as it picks the
-        // job up; give it a moment to.
+        // Wait for the fake to pick up the front job.
         let t = Instant::now();
         while !q.summary().unwrap().starts_with("Separating voices") {
             assert!(t.elapsed() < Duration::from_secs(5));
@@ -227,8 +194,6 @@ mod tests {
         assert!(q.summary().unwrap().ends_with(" c"));
     }
 
-    /// A failed transcription is reported against its own session and does
-    /// not stop the one behind it.
     #[test]
     fn a_failure_is_reported_and_the_queue_moves_on() {
         let (mut q, gate) = gated();
@@ -246,12 +211,10 @@ mod tests {
         assert!(q.is_empty());
     }
 
-    /// A worker thread that dies must not leave jobs pending for ever, or a
-    /// deferred quit would wait on them for ever.
+    /// Otherwise a deferred quit would wait on pending jobs for ever.
     #[test]
     fn a_dead_worker_fails_every_pending_job_rather_than_hanging() {
-        // Panicking is the one way a worker can die without reporting; the
-        // panic message on stderr is expected.
+        // The panic message on stderr is expected.
         let mut q = Queue::spawn(|_, _| panic!("the worker died"));
         q.push(PathBuf::from("/s/a"));
         q.push(PathBuf::from("/s/b"));

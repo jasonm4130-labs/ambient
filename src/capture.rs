@@ -1,13 +1,8 @@
-//! System-audio capture via Core Audio process taps.
+//! System-audio capture via Core Audio process taps, which need only the System
+//! Audio Recording permission, not Screen Recording.
 //!
-//! This is the mechanism that lets us record the far side of a Teams call
-//! without anything joining the meeting: macOS hands us the audio a named
-//! process is rendering. It needs the "System Audio Recording" permission,
-//! which is strictly less than the Screen Recording that ScreenCaptureKit
-//! would demand — the difference that matters on a managed Mac.
-//!
-//! The IO block runs on a realtime thread. Nothing in it allocates, locks or
-//! logs; samples go into a preallocated ring and are drained elsewhere.
+//! The IO block runs on a realtime thread: nothing in it allocates, locks or
+//! logs.
 
 use anyhow::{bail, Result};
 use std::ffi::c_void;
@@ -55,8 +50,7 @@ impl Ring {
         }
     }
 
-    /// Interleave up to `n` source buffers frame by frame. Stack-only, so it
-    /// is safe to call from the realtime thread.
+    /// Stack-only, so safe on the realtime thread.
     #[inline]
     fn push_interleaved(&self, srcs: &[&[f32]], frames: usize) {
         let cap = self.buf.len();
@@ -75,7 +69,6 @@ impl Ring {
         self.write.load(Ordering::Acquire)
     }
 
-    /// Copy out everything between `from` and the current write position.
     pub fn drain_from(&self, from: usize) -> (Vec<f32>, usize) {
         let w = self.written();
         let cap = self.buf.len();
@@ -132,7 +125,6 @@ unsafe fn tap_format(tap: AudioObjectID) -> Result<AudioStreamBasicDescription> 
     Ok(asbd)
 }
 
-/// UID of a default device, and its object id.
 unsafe fn default_device(selector: u32) -> Result<(AudioObjectID, Retained<NSString>)> {
     let mut a = addr(selector);
     let mut size = std::mem::size_of::<AudioObjectID>() as u32;
@@ -170,9 +162,8 @@ unsafe fn default_input() -> Result<(AudioObjectID, Retained<NSString>)> {
     default_device(kAudioHardwarePropertyDefaultInputDevice)
 }
 
-/// A device's human-readable name — what the settings window shows, and what
-/// `Config::input_device` stores. The UID is stabler but unreadable, and a
-/// name is what somebody picking a microphone recognises.
+/// Names, not UIDs, are stored: a name is what a person picking a microphone
+/// recognises.
 unsafe fn device_name(dev: AudioObjectID) -> Option<String> {
     let mut a = addr(kAudioObjectPropertyName);
     let mut size = std::mem::size_of::<*const c_void>() as u32;
@@ -191,8 +182,6 @@ unsafe fn device_name(dev: AudioObjectID) -> Option<String> {
     Some(Retained::from_raw(raw as *mut NSString)?.to_string())
 }
 
-/// Every device that can record, by name. The settings window lists these; a
-/// device with no input channels is not a microphone and is left out.
 pub fn input_devices() -> Vec<(AudioObjectID, String)> {
     unsafe {
         let mut a = addr(kAudioHardwarePropertyDevices);
@@ -228,9 +217,8 @@ pub fn input_devices() -> Vec<(AudioObjectID, String)> {
     }
 }
 
-/// The device to record the room with. A name that no longer matches anything
-/// falls back to the default — loudly, because this project's recurring
-/// failure is a capture that silently records nothing and reports success.
+/// A name that no longer matches falls back to the default loudly: a silent
+/// fallback records nothing and reports success.
 unsafe fn input_device(preferred: Option<&str>) -> Result<AudioObjectID> {
     let Some(name) = preferred else {
         return Ok(default_input()?.0);
@@ -251,19 +239,14 @@ unsafe fn input_device(preferred: Option<&str>) -> Result<AudioObjectID> {
     Ok(fallback)
 }
 
-/// The device the machine is playing through. A process tap observes audio on
-/// its way to an output device, so that device has to be in the aggregate:
-/// without it the tap is attached to nothing and delivers silence rather than
-/// an error.
+/// A tap observes audio on its way to an output device, so that device must be
+/// in the aggregate; without it the tap delivers silence, not an error.
 unsafe fn default_output() -> Result<(AudioObjectID, Retained<NSString>)> {
     default_device(kAudioHardwarePropertyDefaultOutputDevice)
 }
 
-/// Number of input channels a device exposes.
-/// Input channels as the device actually reports them, zero included.
-/// `input_channel_count` clamps to 1 so the capture path always has a usable
-/// count; that clamp makes it useless for deciding whether a device can record
-/// at all, which is what `input_devices` needs.
+/// Unclamped, unlike `input_channel_count`, so `input_devices` can tell which
+/// devices cannot record.
 unsafe fn input_channels_raw(dev: AudioObjectID) -> Result<u32> {
     let mut a = AudioObjectPropertyAddress {
         mSelector: kAudioDevicePropertyStreamConfiguration,
@@ -305,13 +288,8 @@ unsafe fn input_channel_count(dev: AudioObjectID) -> Result<u32> {
 
 static DUMPED: AtomicBool = AtomicBool::new(false);
 
-/// Explain a silent call track, or stay quiet if there is nothing to explain.
-///
-/// A denied system-audio tap and an idle machine produce byte-identical output:
-/// zeros. The only thing that separates them is whether anything was actually
-/// rendering audio at the time, which is why that gets sampled during capture.
-/// Getting this wrong costs hours — the same silence also looks exactly like an
-/// MDM policy block on a managed Mac.
+/// A denied tap and an idle machine both produce zeros; whether anything was
+/// rendering during capture is the only thing that tells them apart.
 pub fn silent_tap_advice(
     call_peak: f32,
     max_rendering: usize,
@@ -320,8 +298,8 @@ pub fn silent_tap_advice(
     if call_peak >= 1e-4 {
         return None;
     }
-    // A filtered tap that caught nothing is the filter working, not a denial.
-    // Something else playing says nothing about whether *these* apps were.
+    // A filtered tap that caught nothing is the filter working, not a denial,
+    // whatever else was playing.
     if !bundles.is_empty() {
         return Some(format!(
             "The call track is silent. The tap was limited to {}, so this means those \
@@ -338,10 +316,8 @@ pub fn silent_tap_advice(
                 .into(),
         );
     }
-    // Parent is launchd (pid 1) when LaunchServices started us, a shell
-    // otherwise. This is the difference between TCC attributing the request to
-    // the app and attributing it to the terminal, and it is by far the more
-    // common cause of a silent tap.
+    // Launched by LaunchServices, the parent is launchd (pid 1). From a shell,
+    // TCC attributes the request to the terminal: the commonest silent tap.
     let via_launch_services = std::os::unix::process::parent_id() == 1;
     if !via_launch_services {
         return Some(format!(
@@ -390,10 +366,9 @@ pub struct ProcessTap {
     agg_proc: AudioDeviceIOProcID,
     mic_dev: Option<AudioObjectID>,
     mic_proc: AudioDeviceIOProcID,
-    /// System audio. Stalls whenever nothing is playing — see `start`.
+    /// Stalls whenever nothing is playing.
     pub call_ring: Arc<Ring>,
-    /// The microphone, on its own device and its own clock, so that nothing
-    /// the tap does can stop it.
+    /// On its own device and clock, so nothing the tap does can stop it.
     pub mic_ring: Option<Arc<Ring>>,
     pub call_rate: f64,
     pub mic_rate: f64,
@@ -402,33 +377,24 @@ pub struct ProcessTap {
     started: std::time::Instant,
 }
 
-/// Per-consumer position in both rings. Separate from `ProcessTap` because the
-/// capture is shared and the reading is not.
 #[derive(Default)]
 pub struct Drain {
     mic_cursor: usize,
     call_cursor: usize,
     mic_out: u64,
     call_out: u64,
-    /// Frames that actually arrived from a device, as opposed to the silence
-    /// `drain` inserts to keep the two tracks level. Without this split a tap
-    /// that stalled for the whole recording reports the same duration as one
-    /// that worked, and reads as healthy.
+    /// Frames that came from a device, excluding `drain`'s padding; without the
+    /// split a tap that stalled throughout reads as healthy.
     mic_real: u64,
     call_real: u64,
 }
 
-/// Below this, a shortfall is just the ring lagging the clock by a tick rather
-/// than a genuine gap, and padding it would slowly stretch the track.
+/// Below this a shortfall is the ring lagging the clock by a tick; padding it
+/// would slowly stretch the track.
 const PAD_THRESHOLD_S: f64 = 0.05;
 
 impl ProcessTap {
-    /// The microphone alone, with no tap and no aggregate: a `mic`-mode
-    /// recording. There is no call track, so `call_channels` is 0 and
-    /// [`ProcessTap::drain`] returns an empty call stream rather than padding
-    /// one to length. Takes the same ring length and input-device name as
-    /// [`ProcessTap::start`], so the room track is written exactly as it is in
-    /// a normal recording.
+    /// No tap and no aggregate; `drain` returns an empty call stream.
     pub fn start_mic_only(ring_seconds: usize, mic_name: Option<&str>) -> Result<Self> {
         unsafe {
             let dev = input_device(mic_name)?;
@@ -453,13 +419,11 @@ impl ProcessTap {
         }
     }
 
-    /// Whether this capture has a system-audio (call) track at all.
     pub fn has_call_track(&self) -> bool {
         self.call_channels > 0
     }
 
-    /// Tap the given bundle IDs, mixed down to mono. An empty list taps
-    /// everything the machine is playing.
+    /// An empty `bundle_ids` taps everything the machine is playing.
     pub fn start(
         bundle_ids: &[String],
         ring_seconds: usize,
@@ -467,10 +431,8 @@ impl ProcessTap {
         mic_name: Option<&str>,
     ) -> Result<Self> {
         unsafe {
-            // The microphone goes first, before the tap exists. Starting an
-            // IOProc on the input device while the tap's aggregate is already
-            // running blocks indefinitely — measured: the mic alone starts
-            // instantly, the same call after the aggregate never returns.
+            // The mic starts before the tap exists: an input IOProc started
+            // after the tap's aggregate is running never returns (measured).
             let (mic_ring, mic_proc, mic_rate, mic_channels, mic_dev) = if include_mic {
                 let d = input_device(mic_name)?;
                 let ch = input_channel_count(d).unwrap_or(1);
@@ -493,10 +455,8 @@ impl ProcessTap {
                 bundle_ids.iter().map(|s| NSString::from_str(s)).collect();
             let ns_ids = NSArray::from_retained_slice(&ids);
 
-            // Use the documented initialisers rather than bare init plus
-            // setters: a description built by hand can end up selecting no
-            // processes at all, which surfaces as a working tap full of
-            // silence rather than as an error.
+            // The documented initialisers, not init plus setters: a hand-built
+            // description can select no processes and yield a silent tap.
             let desc = if bundle_ids.is_empty() {
                 let none = NSArray::from_retained_slice(&[] as &[Retained<NSNumber>]);
                 CATapDescription::initMonoGlobalTapButExcludeProcesses(
@@ -529,8 +489,6 @@ impl ProcessTap {
             let asbd = tap_format(tap)?;
 
             if std::env::var_os("AMBIENT_DEBUG_TAP").is_some() {
-                // Read the description back: what we asked for and what the
-                // system actually built are different questions.
                 eprintln!(
                     "[tap] id={tap} uid={uid} rate={} ch={} fmt_flags={:#x}",
                     asbd.mSampleRate, asbd.mChannelsPerFrame, asbd.mFormatFlags
@@ -546,8 +504,8 @@ impl ProcessTap {
                 eprintln!("[tap] description processes: {}", procs.len());
             }
 
-            // Aggregate device wrapping the tap. NSDictionary is toll-free
-            // bridged to CFDictionary, which is what Core Audio wants.
+            // NSDictionary is toll-free bridged to the CFDictionary Core Audio
+            // wants.
             let sub_tap = NSDictionary::from_slices(
                 &[&*NSString::from_str(kAudioSubTapUIDKey.to_str().unwrap())],
                 &[&*uid as &objc2::runtime::AnyObject],
@@ -557,27 +515,15 @@ impl ProcessTap {
             let name = NSString::from_str("ambient aggregate");
             let one = NSNumber::new_i32(1);
 
-            // The microphone is deliberately NOT in this aggregate. Sharing one
-            // meant sharing a clock, which is sample-accurate and also fatal: a
-            // tap gates the clock of the aggregate holding it, so with nothing
-            // playing the whole device stops delivering and the microphone dies
-            // with it. Measured: zero frames in 6 s, and continuous frames the
-            // moment the tap is removed. Alignment is rebuilt from elapsed time
-            // in `drain` instead.
+            // The mic stays out of this aggregate: a tap gates the aggregate's
+            // clock, so with nothing playing the mic would stop too (measured:
+            // zero frames in 6 s). `drain` realigns from elapsed time instead.
 
-            // The output device must be in the aggregate for the tap to have
-            // anything to observe. It must NOT be the clock master: an output
-            // device only clocks while something is playing, and the aggregate
-            // then delivers no callbacks at all — starving the microphone too,
-            // so a room conversation with nothing playing records absolute
-            // silence and reports success. Measured: zero frames in 6 s with
-            // nothing rendering. The microphone runs continuously, so it is the
-            // clock, and the output is the master only when there is no mic.
-            //
-            // This does NOT fix the stall: with a tap in the aggregate, nothing
-            // is delivered while no process renders, whichever device is master
-            // and whether or not `kAudioAggregateDeviceClockDeviceKey` is set —
-            // both measured. See README, "The tap gates the clock".
+            // The output device must be in the aggregate for the tap to observe
+            // anything, but not as clock master when there is a mic: an output
+            // device clocks only while something plays (measured: zero frames
+            // in 6 s). The tap stalls whichever device is master; see
+            // docs/adr/0003-two-ioprocs-wall-clock.md.
             let (_out_dev, out_uid) = default_output()?;
 
             let k_sub_uid = NSString::from_str(kAudioSubDeviceUIDKey.to_str().unwrap());
@@ -593,7 +539,7 @@ impl ProcessTap {
             };
 
             // Mic first: the IOProc hands back sub-device buffers in list
-            // order, and the channel accounting below assumes mic before tap.
+            // order, and the channel accounting assumes mic before tap.
             let sub_out = sub_of(&out_uid);
             let sub_list = NSArray::from_slice(&[&*sub_out as &objc2::runtime::AnyObject]);
 
@@ -651,8 +597,6 @@ impl ProcessTap {
                 }
             };
 
-            // The microphone runs on the input device itself: no aggregate, no
-            // tap, nothing that can gate its clock.
             Ok(Self {
                 tap,
                 agg: device,
@@ -670,18 +614,7 @@ impl ProcessTap {
         }
     }
 
-    /// Both tracks since the last call, downmixed to mono, each at its own rate.
-    ///
-    /// The tap stops delivering whenever nothing is playing, so its stream has
-    /// holes where the mic's does not. Elapsed wall-clock time — independent of
-    /// either device clock — says how many frames each track should have by now,
-    /// and a short track is padded with silence to put the gap back. Without
-    /// that, everything after a pause slides earlier by the length of the pause.
-    ///
-    /// A track that has run long is never trimmed: dropping captured audio to
-    /// satisfy a clock estimate is the wrong way round.
-    /// Seconds of genuine device audio behind each track, against the total
-    /// each track spans. `(mic_real, mic_total, call_real, call_total)`.
+    /// `(mic_real, mic_total, call_real, call_total)` in seconds.
     pub fn real_seconds(&self, d: &Drain) -> (f64, f64, f64, f64) {
         (
             d.mic_real as f64 / self.mic_rate,
@@ -691,6 +624,10 @@ impl ProcessTap {
         )
     }
 
+    /// The tap stops delivering while nothing plays, so wall-clock time sets
+    /// each track's expected length and a short track is padded with silence;
+    /// otherwise everything after a pause slides earlier. A long track is never
+    /// trimmed: dropping captured audio to fit a clock estimate loses data.
     pub fn drain(&self, d: &mut Drain) -> (Vec<f32>, Vec<f32>) {
         let elapsed = self.started.elapsed().as_secs_f64();
 
@@ -731,7 +668,6 @@ impl ProcessTap {
             self.mic_rate,
         );
         let call = take(
-            // No tap, no call track: nothing to pad either.
             self.has_call_track().then_some(&self.call_ring),
             &mut d.call_cursor,
             &mut d.call_out,
@@ -743,8 +679,6 @@ impl ProcessTap {
     }
 }
 
-/// Attach a realtime IOProc to `device` that pushes every input buffer into
-/// `ring`, and start it. Used for both the tap's aggregate and the microphone.
 unsafe fn start_ioproc(device: AudioObjectID, ring: Arc<Ring>) -> Result<AudioDeviceIOProcID> {
     let block = block2::RcBlock::new(
         move |_now: NonNull<objc2_core_audio_types::AudioTimeStamp>,
@@ -778,8 +712,7 @@ unsafe fn start_ioproc(device: AudioObjectID, ring: Arc<Ring>) -> Result<AudioDe
                 }
             }
 
-            // Fixed-capacity, stack-allocated: no heap work on the realtime
-            // thread.
+            // Stack-allocated: no heap work on the realtime thread.
             let mut srcs: [&[f32]; 8] = [&[]; 8];
             let mut used = 0usize;
             let mut frames = 0usize;
@@ -822,8 +755,7 @@ unsafe fn start_ioproc(device: AudioObjectID, ring: Arc<Ring>) -> Result<AudioDe
     Ok(proc_id)
 }
 
-/// The device's current sample rate. The input and output devices need not
-/// agree, and since they no longer share an aggregate, nothing makes them.
+/// Input and output devices need not agree on rate.
 unsafe fn nominal_sample_rate(device: AudioObjectID) -> Result<f64> {
     let mut rate: f64 = 0.0;
     let mut size = std::mem::size_of::<f64>() as u32;

@@ -1,7 +1,5 @@
 import { useEffect, type RefObject } from "react";
 
-/// Closes a popover menu on `Escape` or on a pointer press outside `ref`.
-/// Listeners are attached only while `open`, so a closed menu costs nothing.
 export function useDismiss(open: boolean, ref: RefObject<HTMLElement | null>, close: () => void) {
   useEffect(() => {
     if (!open) return;

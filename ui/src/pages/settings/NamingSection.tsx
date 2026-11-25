@@ -8,9 +8,6 @@ interface NamingSectionProps {
   onName: (label: string, name: string) => void;
 }
 
-// One row per speaker the last recording could not name, each with the first
-// thing that voice said. Choosing a name applies it to every line of that
-// speaker; there is no guessing, because nothing is stored that could guess.
 export function NamingSection({ latestSession, unnamed, roster, onName }: NamingSectionProps) {
   let hint: string;
   if (latestSession === null) {

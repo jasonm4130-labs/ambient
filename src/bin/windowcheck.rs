@@ -158,9 +158,8 @@ fn main() {
             ),
             18 => unsafe {
                 let app = NSApplication::sharedApplication(mtm);
-                // A CLI-launched probe may remain behind the terminal. A
-                // real menu click belongs to a main window; establish that
-                // responder chain without relying on foreground activation.
+                // A CLI-launched probe may stay behind the terminal; make the
+                // responder chain explicitly instead of relying on activation.
                 native.makeMainWindow();
                 native.makeKeyWindow();
                 println!("File dispatch: active={}, key={:?}, main={:?}", app.isActive(), app.keyWindow().map(|w| w.title().to_string()), app.mainWindow().map(|w| w.title().to_string()));

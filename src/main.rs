@@ -39,14 +39,11 @@ USAGE
 Sessions are written to ~/Documents/Ambient (override with AMBIENT_HOME).
 ";
 
-/// What `ambient record` was asked to do.
 #[derive(Debug, Default, PartialEq)]
 struct RecordArgs {
     name: Option<String>,
     seconds: Option<u64>,
     apps: Vec<String>,
-    /// `--mic-only`: capture the microphone alone for this recording,
-    /// whatever the `capture` setting says.
     mic_only: bool,
 }
 
@@ -80,9 +77,8 @@ fn parse_record_args(mut args: impl Iterator<Item = String>) -> Result<RecordArg
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        // No arguments: the menu bar app. With arguments it stays the CLI, so
-        // one signed executable serves both and `open -a Ambient.app --args …`
-        // still reaches the diagnostics.
+        // No arguments: the menu bar app. One signed executable serves both,
+        // so `open -a Ambient.app --args …` still reaches the CLI.
         None => ambient::menubar::run(),
         Some("record") => {
             let r = parse_record_args(args)?;
@@ -359,7 +355,6 @@ fn main() -> Result<()> {
             if dir.is_empty() {
                 bail!("{USAGE}");
             }
-            // Collected first so the two flags work in either order.
             let flags: Vec<String> = args.collect();
             let verbatim = flags.iter().any(|a| a == "--verbatim");
             let json = flags.iter().any(|a| a == "--json");
@@ -378,9 +373,7 @@ fn main() -> Result<()> {
             }
             ambient::session::show(path, false, false)
         }
-        // The whole of it is on stdin and stdout: nothing else may print to
-        // stdout while this runs or the client sees a protocol error instead
-        // of an answer. Sessions are read-only here.
+        // stdout is the MCP protocol: anything else printed there breaks it.
         Some("mcp") => {
             if let Some(other) = args.next() {
                 bail!("unexpected argument {other:?}\n\n{USAGE}");
@@ -430,10 +423,8 @@ fn main() -> Result<()> {
             let secs: u64 = args.next().unwrap_or_default().parse().unwrap_or(10);
             let rest: Vec<String> = args.collect();
             let include_mic = !rest.iter().any(|a| a == "--no-mic");
-            // Diagnostic: does a process *spawned by* the bundle inherit its
-            // audio-capture grant? The answer decides whether a front-end can
-            // shell out to this binary or has to link it. Cannot be answered by
-            // reading anything — TCC hands back silence, not an error.
+            // Whether a child of the bundle inherits its audio-capture grant.
+            // TCC hands back silence, not an error, so only a capture can tell.
             let via_child = rest.iter().any(|a| a == "--via-child");
             let bundles: Vec<String> = rest
                 .into_iter()
@@ -451,7 +442,6 @@ fn main() -> Result<()> {
                 eprintln!("child exited: {status}");
                 return Ok(());
             }
-            // Same precedence as `record`: an argument beats the setting.
             let cfg = ambient::config::Config::load();
             let from_config = bundles.is_empty() && !cfg.apps.is_empty();
             let bundles = if from_config {
@@ -492,7 +482,7 @@ fn main() -> Result<()> {
                 max_rendering = max_rendering.max(ambient::probe::processes_rendering_output());
             }
 
-            // Two clocks now, so two files rather than one interleaved wav.
+            // Mic and call run on separate clocks, so they get separate files.
             let peak = |v: &[f32]| v.iter().fold(0.0f32, |a, s| a.max(s.abs()));
             let (mic_real, _, call_real, _) = tap.real_seconds(&drain);
             let base = out.strip_suffix(".wav").unwrap_or(&out).to_string();
@@ -546,11 +536,9 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        // Reads a file and needs no audio permission, which is the point: the
-        // bundle launch that *does* have the grant is `open -a`, and that
-        // discards stdout — so the only way to see whether a capture actually
-        // produced sound is to inspect the wav afterwards. setup-signing.sh's
-        // verification step depends on this.
+        // Needs no audio permission: a bundle launch via `open -a` discards
+        // stdout, so the wav is the only evidence a capture made sound.
+        // setup-signing.sh depends on this.
         Some("peak") => {
             let wavs: Vec<String> = args.collect();
             if wavs.is_empty() {
@@ -574,7 +562,6 @@ fn main() -> Result<()> {
                     .map(|p| format!("{p:.4}"))
                     .collect::<Vec<_>>()
                     .join(" ");
-                // 1e-4 is the same floor capture.rs uses to call a tap silent.
                 let quiet = peaks.iter().all(|p| *p < 1e-4);
                 if quiet {
                     silent += 1;
@@ -585,8 +572,6 @@ fn main() -> Result<()> {
                     if quiet { "  SILENT" } else { "" }
                 );
             }
-            // Non-zero exit when every file was silent, so a script can branch
-            // on it without parsing this output.
             if silent == wavs.len() {
                 bail!("every wav was silent (peak < 1e-4)");
             }

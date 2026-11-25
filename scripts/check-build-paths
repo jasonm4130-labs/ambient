@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Reject builder home paths. An optional prefix supports focused tests without
-# changing HOME.
+# Reject builder home paths. The optional prefix lets tests avoid changing HOME.
 #
-# --helper is for ambient-engine alone. FluidAudio links a precompiled Rust
-# archive (NemoTextProcessing.xcframework) whose panic locations name its own
-# CI runner's cargo registry. Nothing in the helper's own build uses cargo, so
-# in that binary those paths can only be upstream's; in `ambient` they would be
-# ours, and stay refused.
+# --helper: FluidAudio links a precompiled Rust archive whose panic locations
+# name upstream CI's cargo registry. The helper's build uses no cargo, so there
+# those paths are upstream's; in `ambient` they would be ours, and stay refused.
 set -euo pipefail
 helper=0
 if [ "${1:-}" = --helper ]; then

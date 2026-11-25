@@ -3,8 +3,6 @@ import { cn } from "@/lib/utils";
 
 export interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {}
 
-// A real `<select>`, not a portal-based listbox: Testing Library queries it by
-// role out of the box, and `uicheck` can drive it in a real WKWebView.
 export function Select({ className, ...props }: SelectProps) {
   return (
     <select

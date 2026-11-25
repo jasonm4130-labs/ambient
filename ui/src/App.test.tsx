@@ -16,8 +16,7 @@ describe("App", () => {
     );
 
     await screen.findByRole("heading", { name: "Sessions" });
-    // StrictMode double-invokes the mount effect under vitest's React
-    // development build, so `init` fires at least once, not exactly once.
+    // StrictMode double-invokes mount effects in development builds.
     expect(fake.calls.filter((c) => c.method === "init").length).toBeGreaterThanOrEqual(1);
   });
 

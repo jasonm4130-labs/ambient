@@ -3,22 +3,13 @@
 #
 #   op run --env-file .env.op -- ./release.sh [--dry-run]
 #
-# Must run under `op run`: the App Store Connect key is a secret and does not
-# live on disk in this repo. --dry-run does everything except notarize and
-# publish, which is the fast way to check the bundle is shippable.
+# --dry-run does everything except notarize and publish.
 #
-# Why each step is here, since several look redundant and are not:
-#
-#   Hardened runtime   Notarization refuses a bundle without it. make-app.sh
-#                      applies it; this script verifies rather than assumes.
-#   Notarization       Gatekeeper blocks a downloaded Developer ID app that has
-#                      not been notarized. Signing alone is not enough.
-#   Stapling           Without it the app only launches while the machine can
-#                      reach Apple's notarization service. A stapled ticket
-#                      travels with the bundle and works offline.
-#   ditto -c -k        The zip must preserve symlinks and resource forks. `zip`
-#                      corrupts a signed bundle and the signature stops
-#                      verifying.
+# Steps that look redundant and are not:
+#   Hardened runtime   notarization refuses a bundle without it; verified here.
+#   Notarization       Gatekeeper blocks a downloaded Developer ID app without it.
+#   Stapling           without it the app launches only while Apple is reachable.
+#   ditto -c -k        `zip` corrupts a signed bundle and the signature breaks.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -38,9 +29,8 @@ TAG="v$VERSION"
 APP="${AMBIENT_BUILD_DIR:-build}/Ambient.app"
 ZIP="${AMBIENT_BUILD_DIR:-build}/Ambient-$VERSION.zip"
 
-# Tag, push, upload. Separated so --publish-only can reach it without rebuilding.
-# Tags here are signed, so a locked 1Password vault fails this and nothing else —
-# which is worth distinguishing from a bad artefact.
+# Separate so --publish-only can reach it without rebuilding. Tags are signed,
+# so a locked 1Password vault fails here and nowhere else.
 publish() {
   echo "==> publishing $TAG"
   if ! git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -72,9 +62,7 @@ required: the first is the meeting audio, the second is you."
 
 echo "==> releasing $TAG"
 
-# --- preflight --------------------------------------------------------------
-# Checked up front: notarization takes minutes, and finding out afterwards that
-# the identity was wrong wastes all of it.
+# Checked up front: notarization takes minutes.
 SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
           | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
 [ -n "$SIGN_ID" ] || {
@@ -85,12 +73,9 @@ SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
 }
 echo "    identity: $SIGN_ID"
 
-# Credentials are only needed to talk to the notary service. --dry-run stops
-# before that, and --publish-only resumes after it, so neither needs them.
+# Only notarization needs credentials: --dry-run stops before it and
+# --publish-only resumes after it.
 if [ "$DRY_RUN" = 0 ] && [ "$PUBLISH_ONLY" = 0 ]; then
-  # Two ways to authenticate to notarisation, and neither has anything to do
-  # with the App Store — App Store Connect is just the identity system Apple
-  # reuses for it. Nothing here is ever submitted for review.
   #   AC_APPLE_ID + AC_APP_PASSWORD   an app-specific password from appleid.apple.com
   #   AC_API_KEY_* (+ issuer)         an App Store Connect API key
   if [ -n "${AC_APPLE_ID:-}" ] && [ -n "${AC_APP_PASSWORD:-}" ]; then
@@ -106,19 +91,13 @@ if [ "$DRY_RUN" = 0 ] && [ "$PUBLISH_ONLY" = 0 ]; then
   echo "    notarising via: $AUTH_MODE"
 fi
 
-# gh is needed by every path that publishes.
 if [ "$DRY_RUN" = 0 ]; then
   command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 1; }
   gh auth status >/dev/null 2>&1 || { echo "gh is not authenticated — run: gh auth login" >&2; exit 1; }
 fi
 
-# --- publish-only resume ----------------------------------------------------
-# Notarisation is a round trip through Apple's queue that took ~11 minutes for
-# this bundle, and everything after it — tagging, pushing, the release — can
-# fail on its own (a locked signing key did exactly that on the first run).
-# Rebuilding would discard the staple and buy another trip through the queue for
-# nothing, so this resumes from the artefact already on disk. It verifies rather
-# than assumes that artefact is really notarised.
+# Resume from the notarized bundle on disk: rebuilding discards the staple and
+# costs another ~11-minute trip through Apple's queue. Verified, not assumed.
 if [ "$PUBLISH_ONLY" = 1 ]; then
   echo "==> publish-only: reusing the notarised bundle on disk"
   ./scripts/check-bundle "$APP" --models
@@ -135,34 +114,24 @@ if [ "$PUBLISH_ONLY" = 1 ]; then
     *) echo "Gatekeeper does not accept $APP:" >&2
        printf '%s\n' "$SPCTL" | sed 's/^/    /' >&2; exit 1 ;;
   esac
-  # Always create the uploaded archive from the bundle just validated. An old
-  # ZIP beside a newly notarized app must never be mistaken for that app.
+  # Always zip the bundle just validated: an old ZIP beside a newly notarized
+  # app must never be mistaken for it.
   rm -f "$ZIP"
   ditto -c -k --keepParent "$APP" "$ZIP"
   publish
   exit 0
 fi
 
-# --- build ------------------------------------------------------------------
-# A release ships licenses/Rust-Dependencies.txt; it must match Cargo.lock.
 # Not a per-PR check: every routine dependency bump would fail it.
 ./scripts/check-rust-notices
-# The models are what make this a usable download rather than a binary that
-# errors on first launch.
 AMBIENT_BUNDLE_MODELS=1 AMBIENT_SIGN_ID="$SIGN_ID" ./make-app.sh
 ./scripts/check-bundle "$APP" --models
 
-# --- verify the signature before spending minutes on notarization -----------
 echo "==> verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
-# Captured once into a variable rather than piped. Under `set -o pipefail` a
-# `codesign ... | grep -q` reports failure whenever grep matches early enough to
-# close the pipe and hand codesign a SIGPIPE — the pipeline's status becomes
-# codesign's death, not grep's match. The same shape already bit the mermaid
-# guard in docs.yml. A dry run reported "not hardened" for a bundle that was
-# demonstrably hardened; that exact failure did not reproduce afterwards, which
-# is itself the argument for not leaving a race in a release gate.
+# Captured, not piped: under pipefail, `codesign | grep -q` can fail when grep
+# exits early and codesign dies of SIGPIPE.
 SIGINFO=$(codesign -dv --verbose=4 "$APP" 2>&1)
 printf '%s\n' "$SIGINFO" | grep -E "^(Authority|TeamIdentifier)" | sed 's/^/    /'
 case "$SIGINFO" in
@@ -181,9 +150,6 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-# --- notarize ---------------------------------------------------------------
-# notarytool wants the key as a file. It is held in an env var so it never
-# touches this repo; write it to a private temp file for the call only.
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 NOTARY_AUTH=()
 if [ "$AUTH_MODE" = "apple-id" ]; then
@@ -192,8 +158,7 @@ if [ "$AUTH_MODE" = "apple-id" ]; then
   [ -n "${AC_TEAM_ID:-}" ] || { echo "AC_TEAM_ID is required with an Apple ID" >&2; exit 1; }
 else
   if [ -n "${AC_API_KEY_P8:-}" ]; then
-    # notarytool wants a file. The key is held in an env var so it never touches
-    # this repo; write it out private, for the length of this call only.
+    # notarytool wants a file; write the env-held key out private, for this call only.
     KEYFILE="$WORK/key.p8"; (umask 077; printf '%s\n' "$AC_API_KEY_P8" > "$KEYFILE")
   else
     KEYFILE="$AC_API_KEY_PATH"
@@ -216,16 +181,14 @@ if [ "$NOTARY_STATUS" -ne 0 ]; then
   exit 1
 fi
 
-# --- staple and re-zip ------------------------------------------------------
-# Staple the .app, then rebuild the zip: the ticket is attached to the bundle,
-# and the zip submitted above does not contain it.
+# Rebuild the zip after stapling: the ticket attaches to the bundle, and the
+# zip submitted above does not contain it.
 echo "==> stapling"
 xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-# The check that actually predicts the download experience.
 echo "==> Gatekeeper assessment"
 spctl -a -vvv -t install "$APP" 2>&1 | sed 's/^/    /'
 

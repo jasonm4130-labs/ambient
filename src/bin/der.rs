@@ -3,15 +3,10 @@
 //!   cargo run --release --bin der -- [--manifest <path>] [--collar <f64>]
 //!                                    [--json <path>]
 //!
-//! Scores the AMI fixture `scripts/fetch-fixtures` builds by running what the
-//! app runs for a finished session: `ambient-engine diarize` over the 16 kHz
-//! track, located the way the app locates it (`$AMBIENT_ENGINE`, else beside
-//! this binary) with the same models root. A harness with its own diariser
-//! would measure a pipeline no user has. What is scored is the helper's turns,
-//! before the app folds a phantom speaker's words into a neighbour.
-//!
-//! `--collar` exists so a number here can be compared with a published one,
-//! which is quoted at 0.25 s far more often than at 0.
+//! Scores the AMI fixture from `scripts/fetch-fixtures` by running what the app
+//! runs, `ambient-engine diarize` located the way the app locates it, and
+//! scores its turns before the app folds phantom speakers into neighbours.
+//! `--collar` makes results comparable with published ones, usually at 0.25 s.
 
 use ambient::{
     der::{parse_rttm, score, Der, Turn},
@@ -25,9 +20,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// One fixture as `scripts/fetch-fixtures` writes it. `seconds` is in the
-/// manifest too and deliberately unread: the duration below comes from the
-/// audio actually decoded, so a stale manifest cannot quietly change a rate.
+/// `seconds` is deliberately unread: duration comes from the decoded audio,
+/// so a stale manifest cannot change a rate.
 #[derive(Deserialize)]
 struct Entry {
     wav: PathBuf,
@@ -35,10 +29,8 @@ struct Entry {
     meeting: String,
 }
 
-/// One printed row, and one element of the `--json` array. The last row is the
-/// total, with `meeting` reading `total`; its DER is computed over the summed
-/// error seconds, not averaged over the rows, so a meeting with little speech
-/// in it cannot outvote a talkative one.
+/// The total row's DER is over summed error seconds, not averaged, so a meeting
+/// with little speech cannot outvote a talkative one.
 #[derive(Serialize)]
 struct Row {
     meeting: String,
@@ -57,7 +49,6 @@ fn default_manifest() -> PathBuf {
     PathBuf::from(home).join(".cache/ambient/fixtures/der/manifest.json")
 }
 
-/// How many distinct speakers a turn list names.
 fn speakers(turns: &[ambient::der::Turn]) -> usize {
     let mut names: Vec<&str> = turns.iter().map(|t| t.speaker.as_str()).collect();
     names.sort_unstable();
@@ -124,8 +115,7 @@ fn main() -> Result<()> {
         })?;
         let reference =
             parse_rttm(&text).with_context(|| format!("parsing {}", entry.rttm.display()))?;
-        // `score` would reject this too, but only as "empty reference" with no
-        // clue which of three files is the empty one.
+        // `score` would reject this too, without naming the empty file.
         if reference.is_empty() {
             bail!(
                 "{} holds no turns — nothing to score against; run scripts/fetch-fixtures --force",
@@ -133,11 +123,9 @@ fn main() -> Result<()> {
             );
         }
 
-        // The helper reads a 16 kHz mono file, which is what the app hands it.
         let wav = scratch.join("track.wav");
         write_wav_16k(&wav, &samples)?;
-        // The clock includes the helper loading its model: in the app that
-        // cost is paid once per track, the same as here.
+        // Includes model load, which the app also pays once per track.
         let t0 = Instant::now();
         let speakers_file: SpeakersFile =
             engine.once(Stage::Diarize, &wav, &scratch.join("speakers.json"))?;

@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Fetch the models the app runs (ADR 0020): Parakeet Ultra for words and
-# Nemotron 3 Diarization fast32 for voices, ~0.8 GB, through `ambient-engine
-# fetch`, which builds the helper first if needed. Every file is then checked
-# against licenses/model-sha256.txt, so a change upstream stops here rather
-# than reaching a bundle.
+# Fetch the app's models (~0.8 GB) through `ambient-engine fetch`, building the
+# helper if needed, then verify each against licenses/model-sha256.txt so an
+# upstream change stops here rather than reaching a bundle.
 set -euo pipefail
 cd "$(dirname "$0")"
 
