@@ -222,9 +222,9 @@ tests, and the fixture strings are real ones the two tracks produced.
 ### Confidence
 
 Each line in `raw.jsonl` carries `confidence`, the mean of the recogniser's
-confidence over its words. Parakeet can produce a fluent, confident sentence
-from room noise alone, and no level or probability threshold measured so far
-separates quiet speech from an empty room (see
+confidence over its words. The ONNX build of Parakeet that came before produced
+fluent, confident sentences from room noise alone, and no level or probability
+threshold measured then separated quiet speech from an empty room (see
 [measurements](measurements.md#three-signals-none-of-which-separates-quiet-speech-from-an-empty-room)).
 That needs something that can read the words, so the number is recorded to
 give a downstream cleanup pass something to weigh.

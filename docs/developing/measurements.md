@@ -142,7 +142,7 @@ child on its own.
 
 ## Phase 0: provider comparison, CPU against CoreML
 
-*Historical: the `bench` binary was removed with the ONNX stack; this cannot be re-run.*
+*Historical: the `bench` binary was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 Parakeet TDT 0.6b encoder, 60 s of audio, via
 `cargo run --release --bin bench -- <encoder.onnx> <coreml|cpu> [seconds]`.
@@ -178,7 +178,7 @@ chunked at 30 s it is ~60 chunks ≈ 30 s of compute at a flat ~2.2 GB.
 
 ## VAD chunking: speech, chunks, realtime and RSS
 
-*Historical: the VAD was removed with the ONNX stack; this cannot be re-run.*
+*Historical: the VAD was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 | File | Speech / total | Chunks | Realtime | Peak RSS |
 | --- | --- | ---: | ---: | ---: |
@@ -191,7 +191,7 @@ adjacent duplicates once cut on VAD boundaries rather than on local energy.
 
 ## Embedding front-end: confusion matrix
 
-*Historical: `embtest` was removed with the ONNX stack; this cannot be re-run.*
+*Historical: `embtest` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `bin/embtest.rs`, on two clips each of two `say` voices.
 
@@ -255,8 +255,8 @@ The three speakers are the first three directories of `test-clean` in sorted
 order, each one's first chapter — which audio this scores is a property of the
 corpus, not a list someone typed. A speaker's utterances are concatenated in id
 order with 700 ms of silence between them, so the fixture is one long track of
-the kind `ambient record` sees and the gaps give the VAD turn boundaries to
-find.
+the kind `ambient record` sees. The gaps were there to give the VAD turn
+boundaries to find, which was the ONNX pipeline's way of cutting a track.
 
 | Speaker | Utterances | Seconds |
 | --- | ---: | ---: |
@@ -309,7 +309,7 @@ too short to show what clustering does to a real meeting: see
 
 ## Word error rate on the fixture
 
-*Historical: `--model` and the decode path below were removed with the ONNX stack; this cannot be re-run.*
+*Historical: `--model` and the decode path below were removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
 [--model <dir>]`, on 2026-09-05. The harness runs what `ambient record` runs
@@ -353,7 +353,7 @@ the call for having ended.
 
 ## The two shipped models on the same fixture
 
-*Historical: `--model` was removed with the ONNX stack; this cannot be re-run.*
+*Historical: `--model` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the
 only difference — on 2026-09-05, this machine. Three runs of each, interleaved
@@ -398,7 +398,7 @@ first; the table says which way it should then go.
 
 ## Diarization error rate on the fixture
 
-*Historical: `--threshold` and the diariser below were removed with the ONNX stack; this cannot be re-run.*
+*Historical: `--threshold` and the diariser below were removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
 [--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
@@ -445,7 +445,7 @@ them with `meeting` reading `total`.
 
 ## DER by threshold
 
-*Historical: `--threshold` was removed with the ONNX stack; this cannot be re-run.*
+*Historical: `--threshold` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo run --release --bin der -- --threshold <t> --json <tmp>`, on 2026-09-05,
 on the same fixture and the same 0.25 s collar as the section above. Each
@@ -478,7 +478,7 @@ for a new constant.
 
 ## DER by minimum embedding length
 
-*Historical: `src/diarize.rs` was removed with the ONNX stack; this cannot be re-run.*
+*Historical: `src/diarize.rs` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `MIN_EMBED` in `src/diarize.rs` swapped between builds, `cargo run --release
 --bin der -- --json <tmp>` each time, on 2026-09-05, on the same fixture and
@@ -517,7 +517,7 @@ meeting with four real ones — and it is not enough on its own.
 
 ## DER on whole meetings
 
-*Historical: the clustering and `AMBIENT_DEBUG_DIAR` were removed with the ONNX stack; this cannot be re-run.*
+*Historical: the clustering and `AMBIENT_DEBUG_DIAR` were removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo run --release --bin der -- --manifest
 ~/.cache/ambient/fixtures/der-full/manifest.json --json <tmp>`, on 2026-10-08,
@@ -622,7 +622,7 @@ gain is confusion, 114.00 s → 39.31 s on the meetings.
 
 ## Live transcription: cost per block
 
-*Historical: `asrbench` was removed with the ONNX stack; this cannot be re-run.*
+*Historical: `asrbench` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06. `cargo build --release --bin
 asrbench`, then the built binary run directly (not under `cargo run`, so
@@ -715,6 +715,8 @@ workers running at once.
 
 ## Live transcription: drain overshoot beside ASR
 
+*Historical: measured beside the ONNX recogniser, on a 48 kHz file `asrbench` made; `drainbench` now runs the helper over a 16 kHz mono wav; these figures cannot be reproduced on current main.*
+
 M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06, from the three `drainbench` runs
 already logged for this outcome: `cargo run --release --bin drainbench -- 60
 ~/.cache/ambient/bench/1089.48k.wav`, each exit 0. The worst run's max
@@ -793,7 +795,7 @@ needs its own number.
 
 ## Turn padding
 
-*Historical: `--pad` was removed with the ONNX stack; this cannot be re-run.*
+*Historical: `--pad` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo run --release --bin wer -- --pad <ms>`, on 2026-09-06. `--pad` overrides
 `Vad::pad_ms`, which reaches both places `vad::PAD_MS` is read: the margin
@@ -827,7 +829,7 @@ no shipped constant moved.
 
 ## Chunk length
 
-*Historical: `--chunk` was removed with the ONNX stack; this cannot be re-run.*
+*Historical: `--chunk` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo build --release` then `/usr/bin/time -l ./target/release/wer --chunk
 <seconds> --json <path>`, on 2026-09-06. `--chunk` sets the `max_seconds`
@@ -875,6 +877,8 @@ shipped constant moved.
 
 ## Weight prepacking
 
+*Historical: `src/asr.rs` and its prepacking switch were removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 `cargo build --release` then `/usr/bin/time -l ./target/release/wer --json
 <path>` and the same with `--manifest
 ~/.cache/ambient/fixtures/calls/manifest.json`, on 2026-10-08, once on the
@@ -900,6 +904,8 @@ of disabling prepacking is somewhere between ~7% (calls) and the clean row's
 spread, and still well above realtime either way.
 
 ## Idle memory after finalize: in process and in a child
+
+*Historical: the live transcriber and the finalize child were removed before the ONNX stack; these figures cannot be reproduced on current main.*
 
 M5 Max, 128 GB, macOS 26.6.2, on 2026-10-08, shipped model settings. A scratch
 replay harness streamed AMI `TS3003a` (1505.6 s, four speakers, resampled to

@@ -191,9 +191,9 @@ for its first transcript, has no lines yet:
 {"lines":[],"next":0,"session":"2026-09-05T1608","state":"live"}
 ```
 
-Every line arrives at once, with its speaker label, when the transcription job
-writes the session's transcript after Stop. Keep polling until the state is
-`done`. A re-run (`ambient rerun`, or *Transcribe again* in the window) replaces
+Every line arrives at once when the transcription job writes the session's
+transcript after Stop, with speaker labels if voices were separated. Keep
+polling until the state is `done`. A re-run (`ambient rerun`, or *Transcribe again* in the window) replaces
 the lines when it finishes, so read again with `since: 0` after one.
 
 ## When it will not answer

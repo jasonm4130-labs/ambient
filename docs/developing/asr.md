@@ -112,9 +112,10 @@ measures the transcript through this path; see
 
 ## What it gets wrong
 
-Proper nouns are the expected failure: names and product names come back as
-similar-sounding words. The mitigation inside Ambient is the roster and naming
-(`ambient roster add Priya`, then `ambient name`). Any further repair or
+On the ONNX build of Parakeet that came before, proper nouns were the usual
+failure: names and product names came back as similar-sounding words. That has
+not been re-checked on Ultra. The mitigation inside Ambient is the roster and
+naming (`ambient roster add Priya`, then `ambient name`). Any further repair or
 summary happens outside Ambient, on the exported `transcript.md`.
 
 Accuracy and memory figures for the helper, and for the ONNX pipeline it
