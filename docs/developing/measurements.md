@@ -14,8 +14,16 @@ macOS 26.6.2 — on 2026-08-29. Any table measured differently says so.
 Measured 2026-11-25 on the home machine with `ambient-engine` at FluidAudio
 `e2ea498`: Parakeet Ultra for words and Nemotron 3 Diarization `fast32` for
 voices. Every section after this one measures the ONNX pipeline the helper
-replaced, and the commands they quote (`der --threshold`, `wer --pad`,
-`wer --chunk`, `record --model`) no longer exist.
+replaced and is kept as history. The ONNX stack was removed on 2026-11-25, and
+much of what those sections quote went with it: the `bench`, `asrbench`,
+`embtest` and `diartest` binaries, the `ambient transcribe` and `ambient vad`
+verbs, `der --threshold`, `wer --model`, `wer --pad`, `wer --chunk`,
+`record --model`, `AMBIENT_DEBUG_DIAR`, and the `src/asr.rs`, `src/vad.rs` and
+`src/diarize.rs` code they tuned. Sections that depend on one are marked. The
+harnesses that remain — `wer` (`--manifest`, `--json`, `--via`), `der`
+(`--manifest`, `--json`, `--collar`), `drainbench`, `memrun` through
+`scripts/memory`, and `scripts/fetch-fixtures` — now run the helper, so they
+measure it and will not reproduce the ONNX figures below.
 
 **Words.** `wer` on the default fixture: 2152 reference words, WER 0.0167
 (26 substitutions, 5 insertions, 5 deletions), 913.7 s of audio in 7.5 s
@@ -134,6 +142,8 @@ child on its own.
 
 ## Phase 0: provider comparison, CPU against CoreML
 
+*Historical: the `bench` binary was removed with the ONNX stack; this cannot be re-run.*
+
 Parakeet TDT 0.6b encoder, 60 s of audio, via
 `cargo run --release --bin bench -- <encoder.onnx> <coreml|cpu> [seconds]`.
 Input is a zeroed tensor of the correct shape — wall clock for a fixed-shape
@@ -168,6 +178,8 @@ chunked at 30 s it is ~60 chunks ≈ 30 s of compute at a flat ~2.2 GB.
 
 ## VAD chunking: speech, chunks, realtime and RSS
 
+*Historical: the VAD was removed with the ONNX stack; this cannot be re-run.*
+
 | File | Speech / total | Chunks | Realtime | Peak RSS |
 | --- | --- | ---: | ---: | ---: |
 | 127 s continuous | 127.5 / 127.5 s | 6 | 39x | 2255 MB |
@@ -178,6 +190,8 @@ inference per 32 ms frame. The same 127 s file yields 375 words with zero
 adjacent duplicates once cut on VAD boundaries rather than on local energy.
 
 ## Embedding front-end: confusion matrix
+
+*Historical: `embtest` was removed with the ONNX stack; this cannot be re-run.*
 
 `bin/embtest.rs`, on two clips each of two `say` voices.
 
@@ -295,6 +309,8 @@ too short to show what clustering does to a real meeting: see
 
 ## Word error rate on the fixture
 
+*Historical: `--model` and the decode path below were removed with the ONNX stack; this cannot be re-run.*
+
 `cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
 [--model <dir>]`, on 2026-09-05. The harness runs what `ambient record` runs
 for a finished track — `session::model_paths`, `Vad::turns(&samples, 30)`,
@@ -336,6 +352,8 @@ truncation is scoring the audio the fixture contains rather than penalising
 the call for having ended.
 
 ## The two shipped models on the same fixture
+
+*Historical: `--model` was removed with the ONNX stack; this cannot be re-run.*
 
 Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the
 only difference — on 2026-09-05, this machine. Three runs of each, interleaved
@@ -379,6 +397,8 @@ nobody has run this on to buy half a point of word error rate. Measure the port
 first; the table says which way it should then go.
 
 ## Diarization error rate on the fixture
+
+*Historical: `--threshold` and the diariser below were removed with the ONNX stack; this cannot be re-run.*
 
 `cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
 [--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
@@ -425,6 +445,8 @@ them with `meeting` reading `total`.
 
 ## DER by threshold
 
+*Historical: `--threshold` was removed with the ONNX stack; this cannot be re-run.*
+
 `cargo run --release --bin der -- --threshold <t> --json <tmp>`, on 2026-09-05,
 on the same fixture and the same 0.25 s collar as the section above. Each
 meeting cell is that meeting's DER with the hypothesis speaker count beside it;
@@ -455,6 +477,8 @@ wrong for another at three meetings; that is the argument for a holdout, not
 for a new constant.
 
 ## DER by minimum embedding length
+
+*Historical: `src/diarize.rs` was removed with the ONNX stack; this cannot be re-run.*
 
 `MIN_EMBED` in `src/diarize.rs` swapped between builds, `cargo run --release
 --bin der -- --json <tmp>` each time, on 2026-09-05, on the same fixture and
@@ -492,6 +516,8 @@ honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
 meeting with four real ones — and it is not enough on its own.
 
 ## DER on whole meetings
+
+*Historical: the clustering and `AMBIENT_DEBUG_DIAR` were removed with the ONNX stack; this cannot be re-run.*
 
 `cargo run --release --bin der -- --manifest
 ~/.cache/ambient/fixtures/der-full/manifest.json --json <tmp>`, on 2026-10-08,
@@ -595,6 +621,8 @@ alarm do not move anywhere in this section: folding relabels spans, so every
 gain is confusion, 114.00 s → 39.31 s on the meetings.
 
 ## Live transcription: cost per block
+
+*Historical: `asrbench` was removed with the ONNX stack; this cannot be re-run.*
 
 M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06. `cargo build --release --bin
 asrbench`, then the built binary run directly (not under `cargo run`, so
@@ -765,6 +793,8 @@ needs its own number.
 
 ## Turn padding
 
+*Historical: `--pad` was removed with the ONNX stack; this cannot be re-run.*
+
 `cargo run --release --bin wer -- --pad <ms>`, on 2026-09-06. `--pad` overrides
 `Vad::pad_ms`, which reaches both places `vad::PAD_MS` is read: the margin
 `trim_quiet` re-applies after cutting a turn's quiet edges, and the hysteresis
@@ -796,6 +826,8 @@ margin; 100 ms is also the only pad value where insertions move at all, 3 at
 no shipped constant moved.
 
 ## Chunk length
+
+*Historical: `--chunk` was removed with the ONNX stack; this cannot be re-run.*
 
 `cargo build --release` then `/usr/bin/time -l ./target/release/wer --chunk
 <seconds> --json <path>`, on 2026-09-06. `--chunk` sets the `max_seconds`

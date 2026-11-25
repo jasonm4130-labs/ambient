@@ -70,9 +70,6 @@ third-party license notices.
 `assets/settings.html` is committed and embedded by Rust. The UI job rebuilds it
 and fails if Git detects a difference, preventing a stale UI from shipping.
 
-The Rust cache includes `~/Library/Caches/ort.pyke.io`. ONNX Runtime downloads
-live outside Cargo's target directory, so a target-only cache misses them.
-
 The docs checkout includes Git history so page timestamps reflect their source
 commits. The source-link and built-route checks test different things: a Markdown
 link can work on GitHub and still be broken after rendering. See

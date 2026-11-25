@@ -55,7 +55,7 @@ ambient probe
 ```
 
 Checks the machine is viable: enumerates audio processes through the Core Audio
-bindings, then reports the ONNX Runtime execution-provider state. Needs no
+bindings and says which are rendering output, so could be tapped. Needs no
 permission — enumeration is not capture — so a clean `probe` says nothing about
 whether a tap will return audio.
 
@@ -192,7 +192,7 @@ two speakers answers `no lines labelled "call-2" (available: call-1, room-1)`,
 and on a session transcribed with diarize off the list reads ``none — voices
 were not separated; run `ambient rerun` with diarize on``. What it lists is the labels as they stand now, so
 once `call-1` has been named Priya it is `Priya` that comes back, not the label
-she replaced. See [diarization](../developing/diarization.md).
+she replaced. See [speaker separation](../developing/diarization.md).
 
 ## undo
 
@@ -290,31 +290,6 @@ The window's session header has an Export menu with the same formats plus
 "Copy for an assistant", which copies straight to the clipboard instead of
 writing a file.
 
-## transcribe
-
-```sh
-ambient transcribe <model-dir> <a.wav>
-```
-
-Transcribes one file to stdout, with timing on stderr. It accepts any sample
-rate and resamples to 16 kHz rather than insisting on 16 kHz input. If
-`models/silero_vad.onnx` loads it chunks on VAD boundaries in 30 s windows and
-reports the speech-to-total split; if that model is missing it silently falls
-back to unchunked long-form decoding, which costs memory linear in length. See
-[speech recognition](../developing/asr.md).
-
-## vad
-
-```sh
-ambient vad <a.wav>
-```
-
-Prints each detected speech segment with its start, end and duration, then the
-segment count, total speech and the percentage skipped. Unlike `transcribe` it
-requires a 16 kHz wav — it does not resample — and it loads the VAD model from
-the relative path `models/silero_vad.onnx`. See [voice activity
-detection](../developing/vad-and-chunking.md).
-
 ## config
 
 ```sh
@@ -326,7 +301,7 @@ go, the config file path, and the input devices it can currently see — and say
 so explicitly when `AMBIENT_HOME` is set and overriding `sessions_dir`. With a
 key and a value it sets one setting and writes the file. A key with no value is
 an error rather than a read. Anything after the value is dropped without
-complaint — `ambient config threshold 0.4 wibble` sets the threshold and says
+complaint — `ambient config diarize off wibble` turns diarize off and says
 nothing about `wibble` — where `record` and `export` bail on an
 argument they do not recognise. Keys and defaults are in
 [settings](settings.md).
