@@ -1,13 +1,10 @@
-//! `ambient mcp` — the sessions on this machine, read over MCP, and the live
-//! assistant's tools: watch the meeting being recorded, wait for what is
-//! said, and speak (see [`crate::assist`]).
+//! `ambient mcp` — the sessions on this machine, read over MCP. Read-only: it
+//! lists sessions, returns a transcript and reports what is happening.
 //!
 //! A synchronous JSON-RPC 2.0 loop over newline-delimited stdio: one message
 //! per line in, one per line out, nothing else on stdout ever. No async
 //! runtime and no MCP SDK, because the protocol that matters here is a few
-//! methods wide and an SDK would be more code than the server. A
-//! `wait_for_transcript` call holds the loop until it answers, which is
-//! what a client calling one tool at a time expects.
+//! methods wide and an SDK would be more code than the server.
 //!
 //! The loop never dies on input. Every way a line can be wrong — down to
 //! bytes that are not UTF-8 — becomes an error *response*, so a client that
@@ -16,7 +13,6 @@
 //! drives, with buffers in place of pipes.
 
 use crate::api::{self, ApiError, Paths};
-use crate::assist::{self, Watch};
 use crate::config;
 use crate::roster;
 #[cfg(test)]
@@ -43,21 +39,9 @@ const INVALID_PARAMS: i64 = -32602;
 /// Read requests from `reader` until EOF, writing one response line each to
 /// `writer`. Returns `Ok(())` at EOF; only a broken pipe or unreadable stdin
 /// is an error, since everything else is answered on the wire.
-pub fn serve<R: BufRead, W: Write>(reader: R, writer: W, root: &Path) -> Result<()> {
-    serve_with(reader, writer, root, assist::real_voice(Vec::new()))
-}
-
-/// [`serve`], with the assistant's voice built by `voice`: `ambient mcp
-/// --no-play` passes the helper its flags, and tests pass a recorder.
-pub fn serve_with<R: BufRead, W: Write>(
-    mut reader: R,
-    mut writer: W,
-    root: &Path,
-    voice: assist::MakeSpeaker,
-) -> Result<()> {
+pub fn serve<R: BufRead, W: Write>(mut reader: R, mut writer: W, root: &Path) -> Result<()> {
     let mut server = Server {
         root: root.to_path_buf(),
-        watch: Watch::new(paths(root), voice),
     };
     let mut buffer = Vec::new();
     loop {
@@ -90,11 +74,9 @@ fn paths(root: &Path) -> Paths {
     }
 }
 
-/// What one `ambient mcp` process holds: the sessions folder, and the
-/// meeting the assistant is watching, if any.
+/// What one `ambient mcp` process holds: the sessions folder.
 struct Server {
     root: std::path::PathBuf,
-    watch: Watch,
 }
 
 impl Server {
@@ -121,8 +103,6 @@ impl Server {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
             "tools/call" => self.call(params),
-            "prompts/list" => Ok(json!({ "prompts": [watch_prompt_entry()] })),
-            "prompts/get" => get_prompt(params),
             other => {
                 let message = format!("no such method {other:?}");
                 return Some(failure(id, METHOD_NOT_FOUND, &message));
@@ -136,7 +116,7 @@ impl Server {
 
     /// `tools/call`. Arguments are validated before anything on disk is touched,
     /// then routed through [`api::call`] — the one dispatcher `ambient mcp` and
-    /// the window both call — or, for the assistant's tools, to [`Watch`].
+    /// the window both call.
     fn call(&mut self, params: Option<&Value>) -> Result<Value, Refusal> {
         let params = params
             .and_then(Value::as_object)
@@ -153,11 +133,7 @@ impl Server {
         let empty = json!({});
         let arguments = params.get("arguments").unwrap_or(&empty);
         if !MCP_TOOLS.contains(&name) {
-            return match self.watch.call(name, arguments) {
-                Some(Ok(v)) => Ok(content(&v, false)),
-                Some(Err(m)) => Ok(content(&Value::String(m), true)),
-                None => Err(invalid_params(format!("no such tool {name:?}"))),
-            };
+            return Err(invalid_params(format!("no such tool {name:?}")));
         }
         match api::call(name, arguments, &paths(&self.root)) {
             Ok(v) => Ok(content(&v, false)),
@@ -165,42 +141,6 @@ impl Server {
             Err(ApiError::Failed(m)) => Ok(content(&Value::String(m), true)),
         }
     }
-}
-
-/// The one prompt: what to tell an agent to make it the live assistant.
-/// Claude Code offers it as `/mcp__ambient__watch`.
-fn watch_prompt_entry() -> Value {
-    json!({
-        "name": "watch",
-        "title": "Watch this meeting",
-        "description": "Join the meeting Ambient is recording as a voice assistant, and chime in when it helps.",
-        "arguments": [{
-            "name": "focus",
-            "description": "Anything to listen out for, or how to behave (optional).",
-            "required": false,
-        }],
-    })
-}
-
-fn get_prompt(params: Option<&Value>) -> Result<Value, Refusal> {
-    let params = params
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_params("prompts/get needs an object `params`"))?;
-    if params.get("name").and_then(Value::as_str) != Some("watch") {
-        return Err(invalid_params("no such prompt; the one prompt is `watch`"));
-    }
-    let focus = params
-        .get("arguments")
-        .and_then(|a| a.get("focus"))
-        .and_then(Value::as_str);
-    let name = config::Config::load_from(&config::path()).assistant.name;
-    Ok(json!({
-        "description": "Watch this meeting",
-        "messages": [{
-            "role": "user",
-            "content": {"type": "text", "text": assist::watch_prompt(&name, focus)},
-        }],
-    }))
 }
 
 /// A protocol-level refusal: the request was malformed, so no tool ran. A tool
@@ -225,7 +165,7 @@ fn failure(id: Value, code: i64, message: &str) -> Value {
 fn initialize() -> Value {
     json!({
         "protocolVersion": PROTOCOL,
-        "capabilities": {"tools": {"listChanged": false}, "prompts": {"listChanged": false}},
+        "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "ambient", "version": env!("CARGO_PKG_VERSION")},
     })
 }
@@ -239,7 +179,7 @@ const MCP_TOOLS: [&str; 3] = ["sessions", "transcript", "status"];
 
 fn tools() -> Value {
     let all = api::methods();
-    let mut ordered: Vec<Value> = MCP_TOOLS
+    let ordered: Vec<Value> = MCP_TOOLS
         .iter()
         .map(|name| {
             let m = all.iter().find(|m| m.name == *name).unwrap_or_else(|| {
@@ -252,7 +192,6 @@ fn tools() -> Value {
             })
         })
         .collect();
-    ordered.extend(Watch::tools());
     Value::Array(ordered)
 }
 
@@ -344,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_describes_the_session_tools_then_the_assistant_tools() {
+    fn tools_list_describes_the_session_tools() {
         let root = scratch("list");
         let got = exchange(
             &root,
@@ -352,18 +291,7 @@ mod tests {
         );
         let tools = got[0]["result"]["tools"].as_array().unwrap().clone();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(
-            names,
-            [
-                "sessions",
-                "transcript",
-                "status",
-                "watch_meeting",
-                "wait_for_transcript",
-                "speak",
-                "stop_watching"
-            ]
-        );
+        assert_eq!(names, ["sessions", "transcript", "status"]);
         for t in &tools {
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }
@@ -375,41 +303,19 @@ mod tests {
     }
 
     #[test]
-    fn the_watch_prompt_is_listed_and_fetched_and_no_other() {
-        let root = scratch("prompts");
+    fn the_assistant_tools_and_prompt_are_gone() {
+        let root = scratch("gone");
         let got = exchange(
             &root,
             &[
                 r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
                 r#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#,
-                r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"watch","arguments":{"focus":"Budget numbers."}}}"#,
-                r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"other"}}"#,
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"watch_meeting","arguments":{}}}"#,
             ],
         );
-        assert!(got[0]["result"]["capabilities"]["prompts"].is_object());
-        let prompts = got[1]["result"]["prompts"].as_array().unwrap();
-        assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0]["name"], "watch");
-        let message = &got[2]["result"]["messages"][0];
-        assert_eq!(message["role"], "user");
-        let text = message["content"]["text"].as_str().unwrap();
-        assert!(text.contains("wait_for_transcript"), "{text}");
-        assert!(text.ends_with("The user adds: Budget numbers."), "{text}");
-        assert_eq!(got[3]["error"]["code"], INVALID_PARAMS);
-    }
-
-    #[test]
-    fn an_assistant_tool_that_cannot_run_is_a_tool_error_the_model_reads() {
-        let root = scratch("waitfirst");
-        let got = exchange(
-            &root,
-            &[
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait_for_transcript","arguments":{"timeout_s":1}}}"#,
-            ],
-        );
-        let (text, is_error) = payload(&got[0]);
-        assert!(is_error);
-        assert!(text.as_str().unwrap().contains("watch_meeting"), "{text}");
+        assert!(got[0]["result"]["capabilities"]["prompts"].is_null());
+        assert_eq!(got[1]["error"]["code"], METHOD_NOT_FOUND);
+        assert_eq!(got[2]["error"]["code"], INVALID_PARAMS);
     }
 
     /// `status` counts the directories that are sessions, and only those: a

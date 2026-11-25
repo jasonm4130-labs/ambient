@@ -19,11 +19,6 @@ read, and that is the whole surface for sessions. Ambient supplies the ears and
 nothing else: no lookups, no summaries. The assistant on the other end brings
 its own.
 
-The same server also carries [the live assistant](assistant.md): four tools
-that let an agent watch the meeting being recorded and speak in it, and a
-`watch` prompt that tells it how. Those tools do nothing while the assistant is
-turned off; see that page for what they write and say.
-
 ## Access and privacy
 
 The MCP server can read sessions available to the Ambient process. It does not
@@ -71,7 +66,7 @@ server answers one line per request:
 
 ```sh
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ambient mcp | jq -c '[.result.tools[].name]'
-["sessions","transcript","status","watch_meeting","wait_for_transcript","speak","stop_watching"]
+["sessions","transcript","status"]
 ```
 
 Without `jq`, the answer is one JSON-RPC line holding each tool's name,
