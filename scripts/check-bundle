@@ -22,7 +22,7 @@ if [ "${2:-}" = --models ]; then
   actual=$(cd "$resources" && find models -type f | LC_ALL=C sort)
   expected=$(sed -n 's/^[0-9a-f]*  //p' "$repo_root/licenses/model-sha256.txt" | LC_ALL=C sort)
   [ "$actual" = "$expected" ] || {
-    echo "bundle model inventory differs from the reviewed seven runtime files" >&2
+    echo "bundle model inventory differs from licenses/model-sha256.txt" >&2
     exit 1
   }
 fi

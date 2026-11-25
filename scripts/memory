@@ -15,14 +15,15 @@
 # scripts/fetch-fixtures downloads and pins by digest for the der set, and the
 # 16 kHz copy is cached under ~/.cache/ambient/fixtures/memory.
 #
-# The budget is a ceiling, not a baseline. The ONNX pipeline peaked at 859 and
-# 1116 MiB here; the default stays at 1320 MiB until a fresh measurement on
-# the helper sets a lower one (docs/developing/measurements.md#memory-gate).
-# Lower it to a measurement; do not raise it to make a change pass.
+# The budget is a ceiling, not a baseline. The helper peaked at 409 MiB on two
+# runs (diarize; transcribe 300 MiB), against 859 and 1116 MiB for the ONNX
+# pipeline it replaced; 512 MiB is that plus a quarter
+# (docs/developing/measurements.md#memory-gate). Lower it to a measurement; do
+# not raise it to make a change pass.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 
-budget_mib=${AMBIENT_MEMORY_BUDGET_MIB:-1320}
+budget_mib=${AMBIENT_MEMORY_BUDGET_MIB:-512}
 meeting=TS3003a
 cache="$HOME/.cache/ambient"
 source="$cache/ami/$meeting.Mix-Headset.wav"
