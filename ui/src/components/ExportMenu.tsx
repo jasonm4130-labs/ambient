@@ -4,7 +4,6 @@ import { useBridge } from "@/lib/bridge-context";
 import type { Bridge } from "@/lib/bridge";
 import { useDismiss } from "@/lib/dismiss";
 
-/// How long a success toast stays up before it clears itself.
 const TOAST_MS = 4000;
 
 interface ExportReply {
@@ -17,9 +16,7 @@ interface SaveReply {
   path: string | null;
 }
 
-/// The five `save` formats, in the order the "Save as…" submenu lists them.
-/// "assistant" is deliberately absent: it is a copy-only format, never a
-/// file on disk.
+/// No "assistant": it is copy-only, never a file.
 const SAVE_FORMATS: { format: string; label: string; testId: string }[] = [
   { format: "markdown", label: "Markdown", testId: "export-save-markdown" },
   { format: "text", label: "Plain text", testId: "export-save-text" },
@@ -32,9 +29,6 @@ function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/// "Copy for an assistant": `export {format:"assistant"}` then
-/// `clipboard.write {text}`, the same two-call shape `Transcript`'s Copy
-/// Markdown button uses.
 function useCopyForAssistant(
   bridge: Bridge,
   session: string,
@@ -49,7 +43,6 @@ function useCopyForAssistant(
   }, [bridge, session, onDone]);
 }
 
-/// The five format buttons, shown once "Save as…" is expanded.
 function SaveFormatList({ onPick }: { onPick: (format: string) => void }) {
   return (
     <div className="flex flex-col gap-1 border-t pt-1 pl-2">
@@ -70,8 +63,6 @@ function SaveFormatList({ onPick }: { onPick: (format: string) => void }) {
   );
 }
 
-/// The submenu of file formats. Every path (Rust's `save`) runs the export
-/// and writes the file itself, so the page issues exactly one bridge call.
 function SaveSubmenu({
   session,
   onDone,
@@ -112,10 +103,6 @@ function SaveSubmenu({
   );
 }
 
-/// The dropdown above `Transcript`'s Copy Markdown button: copy a session
-/// for pasting into an assistant, or save it as a file through the native
-/// `NSSavePanel`. Toast state lives here rather than in a provider — this is
-/// the only place it is shown.
 export function ExportMenu({ session }: { session: string }) {
   const bridge = useBridge();
   const [open, setOpen] = useState(false);

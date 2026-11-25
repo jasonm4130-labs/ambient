@@ -10,14 +10,8 @@ import type { SettingsConfig, UnnamedSpeaker } from "./settings/types";
 
 type Scope = "all" | "some";
 
-/// The Settings screen, at parity with the deleted vanilla page. The Rust
-/// bridge holds the state; this component owns the `config` event
-/// subscription and re-requests `config.get` (and, when there is a latest
-/// session, `speakers.unnamed`) on mount and after every event. The only
-/// page-local state is which capture mode was picked and what is being
-/// typed — "Selected apps, none chosen yet" and "Everything" are the same
-/// empty `apps` list in the config, so that choice cannot be read back from
-/// it.
+/// Capture mode is page-local: "Everything" and "Selected apps, none chosen
+/// yet" are both an empty `apps` list.
 export function Settings() {
   const bridge = useBridge();
   const [config, setConfig] = useState<SettingsConfig>();
@@ -100,12 +94,16 @@ export function Settings() {
             onAdd={(name) => {
               void bridge
                 .call<string[]>("roster.add", { name })
-                .then((roster) => setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })));
+                .then((roster) =>
+                  setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })),
+                );
             }}
             onRemove={(name) => {
               void bridge
                 .call<string[]>("roster.remove", { name })
-                .then((roster) => setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })));
+                .then((roster) =>
+                  setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })),
+                );
             }}
           />
           <NamingSection
@@ -125,12 +123,8 @@ export function Settings() {
           />
           <DiarizeSection
             diarize={config.diarize}
-            threshold={config.threshold}
             onDiarizeChange={(value) => {
               void setKey("diarize", value ? "true" : "false");
-            }}
-            onThresholdChange={(value) => {
-              void setKey("threshold", String(value));
             }}
           />
           <StorageSection

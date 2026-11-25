@@ -9,7 +9,7 @@ sidebar:
 One binary. Run with no arguments it is the app — a menu bar item and the
 session browser behind it; run with arguments it stays a CLI, so a single
 signed executable serves both. The window is the daily loop now: `show`,
-`name`, `diarize` and `export` all have a control in it, and this page stays a
+`name`, `rerun` and `export` all have a control in it, and this page stays a
 complete reference because scripting and debugging still go through the verbs.
 A verb it does not recognise is not an error: `ambient wibble` prints the usage banner on stdout
 and exits 0, exactly as asking for help would, so a mistyped verb reads as
@@ -39,14 +39,14 @@ work](troubleshooting.md).
 ambient doctor [--json]
 ```
 
-Runs ten checks, always in the same order: the four model files under the
-models root, the config file, and four checks against the sessions
+Runs nine checks, always in the same order: the models root, the speech and
+speaker models under it, the `ambient-engine` model helper, the config file, and four checks against the sessions
 directory (writable, sessions awaiting transcription, a live session, a
 stale lock). A sessions directory that does not exist yet passes the
 writable check when its nearest existing parent is writable, since the
 first recording creates it. Prints `ok` or `FAIL` with a detail for each, exits non-zero
 when any check failed so a script can branch on it, and `--json` prints the
-same ten checks as one array of `{name, ok, detail}` objects.
+same nine checks as one array of `{name, ok, detail}` objects.
 
 ## probe
 
@@ -55,7 +55,7 @@ ambient probe
 ```
 
 Checks the machine is viable: enumerates audio processes through the Core Audio
-bindings, then reports the ONNX Runtime execution-provider state. Needs no
+bindings and says which are rendering output, so could be tapped. Needs no
 permission — enumeration is not capture — so a clean `probe` says nothing about
 whether a tap will return audio.
 
@@ -87,21 +87,21 @@ bundle's audio-capture grant.
 ## record
 
 ```sh
-ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>] [--seconds <n>]
+ambient record [--name <s>] [--app <bundle-id>]... [--seconds <n>] [--mic-only]
 ```
 
-Captures until stopped and publishes completed speech turns during recording.
-After Stop, it finishes the remaining text and speaker labels, then prints the
-session directory on stdout. `--app` may be repeated; with no `--app`
-the `apps` setting decides. `--model` overrides the ASR directory, which
-otherwise defaults to `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` under the
-models root; a missing ASR or VAD model is a hard error before any audio is
-captured. `--seconds` bounds an unattended run.
+Captures until stopped. After Stop it transcribes each track and separates
+voices through the `ambient-engine` helper, writes the transcript, and prints
+the session directory on stdout. Nothing is transcribed while recording, so a
+long meeting costs no model memory until it ends. `--app` may be repeated; with
+no `--app` the `apps` setting decides. `--seconds` bounds an unattended run. `--mic-only` records the
+microphone alone for this recording, overriding the `capture` setting: no
+system-audio tap is created, so the session has a `room` track and no `call`
+track. It cannot be combined with `--app`, which would have nothing to select.
 
-Turn segmentation here is `Vad::turns`, not the chunking `transcribe` uses —
-one record per turn, because a record spanning two people cannot carry a
-speaker. See [sessions](../developing/sessions.md) and [voice activity
-detection](../developing/vad-and-chunking.md).
+A line ends at a pause of a second or more, at a change of speaker, or, in a
+long run of speech, at a sentence end after 20 seconds. See
+[sessions](../developing/sessions.md).
 
 ## stop
 
@@ -182,17 +182,17 @@ ambient name <session-dir> <label> <name>
 
 Renames every line currently carrying `<label>`, e.g. `call-1 Priya`, reports
 how many lines moved, then prints the session. It appends a `speaker` edit like
-anything else, so it is undoable, and a later `diarize` leaves a human-assigned
-name alone. The window's naming strip appends the identical edit, on whichever
+anything else, so it is undoable, and a later `rerun` carries a typed name over
+to whichever new speaker overlaps it most. The window's naming strip appends the identical edit, on whichever
 session is selected.
 
 Asking for a label nothing carries is how you find out which labels exist. It
 refuses and lists them: `ambient name <dir> call-2 Priya` on a session holding
 two speakers answers `no lines labelled "call-2" (available: call-1, room-1)`,
-and on a session that has not been through `diarize` the list reads ``none —
-run `ambient diarize` first``. What it lists is the labels as they stand now, so
+and on a session transcribed with diarize off the list reads ``none — voices
+were not separated; run `ambient rerun` with diarize on``. What it lists is the labels as they stand now, so
 once `call-1` has been named Priya it is `Priya` that comes back, not the label
-she replaced. See [diarization](../developing/diarization.md).
+she replaced. See [speaker separation](../developing/diarization.md).
 
 ## undo
 
@@ -207,15 +207,9 @@ edit is still live for those lines surfaces again. Undoing appends:
 `edits.jsonl` only ever grows, and `raw.jsonl` is untouched, so a second `undo`
 takes back the naming before it rather than redoing anything.
 
-What surfaces is usually diarization's label, but not after a retune: the
-`diarize` below reverts its own previous labels and writes no replacement for a
-line somebody has named, so on `diarize` → `name` → `diarize --threshold` there
-is nothing left underneath and undoing the name leaves the line with no speaker
-at all — which also drops it out of the naming strip and out of `name`'s list
-of labels. Running `diarize` once more labels it again.
+What surfaces is diarization's label for that line.
 
-Only names a person typed are candidates; taking back diarization's own labels
-is what re-running `diarize` does. A session where nothing has been named
+Only names a person typed are candidates. A session where nothing has been named
 answers `nothing to undo` — naming the directory it looked in. A mistyped path
 fails earlier, at the lock every `undo` now claims around its call, saying it
 could not write there.
@@ -252,22 +246,31 @@ and one a transcriber currently holds the lock on. A directory with no
 `session.json` and no fresh audio — a failed capture — deletes like any other.
 See [the session API](../developing/api.md).
 
-## diarize
+## retry
 
 ```sh
-ambient diarize <session-dir> [--threshold <f>]
+ambient retry <session-dir>
 ```
 
-Assigns speakers to a session that already has a transcript, appends the edits
-and prints the result. `--threshold` defaults to `0.5` — this path never reads
-the config file, so the `threshold` setting does not apply here; it governs only
-the automatic diarization at the end of `record`. Re-running appends
-`revert` records for the previous run's labels first, so a bad threshold costs a
-revert rather than a recording. It **refuses** on a session whose audio has been
-swept by retention, and on one with no records in `raw.jsonl` — the window's
-*Separate voices* button disables itself and says why in both cases rather than
-letting you ask. See
-[diarization](../developing/diarization.md).
+Transcribes a session whose job failed, then prints it. The app re-queues a
+failed session at launch until it has failed twice; after that it waits for
+this, or the window's *Retry*. A retry resumes from the last finished step:
+a track already transcribed is not transcribed again. A session that has
+failed twice at separating voices gets a transcript without speaker labels,
+and a warning in `session.json` saying so.
+
+## rerun
+
+```sh
+ambient rerun <session-dir>
+```
+
+Transcribes a finished session again from its audio, then prints it; the
+window's *Transcribe again* does the same. The old `raw.jsonl`, `edits.jsonl`
+and `transcript.md` move to `previous/<time>/` first, so nothing is lost.
+Names you typed carry over to whichever new speaker overlaps that line most;
+corrections to words do not, because the words are new. It **refuses** on a
+session whose audio has been swept and leaves the transcript alone.
 
 ## export
 
@@ -280,37 +283,12 @@ otherwise — and prints the path. `--format` is one of `markdown`, `text`,
 `json`, `srt`, `vtt` or `assistant` and defaults to `markdown`; the default
 filename follows the format (`transcript.md`, `.txt`, `.json`, `.srt`, `.vtt`,
 or `.assistant.md`). The file is derived; `raw.jsonl` plus `edits.jsonl`
-remain the only source of truth, and `record`, `diarize` and `name` each
+remain the only source of truth, and `record`, `rerun` and `name` each
 regenerate the `markdown` one. See [sessions](../developing/sessions.md).
 
 The window's session header has an Export menu with the same formats plus
 "Copy for an assistant", which copies straight to the clipboard instead of
 writing a file.
-
-## transcribe
-
-```sh
-ambient transcribe <model-dir> <a.wav>
-```
-
-Transcribes one file to stdout, with timing on stderr. It accepts any sample
-rate and resamples to 16 kHz rather than insisting on 16 kHz input. If
-`models/silero_vad.onnx` loads it chunks on VAD boundaries in 30 s windows and
-reports the speech-to-total split; if that model is missing it silently falls
-back to unchunked long-form decoding, which costs memory linear in length. See
-[speech recognition](../developing/asr.md).
-
-## vad
-
-```sh
-ambient vad <a.wav>
-```
-
-Prints each detected speech segment with its start, end and duration, then the
-segment count, total speech and the percentage skipped. Unlike `transcribe` it
-requires a 16 kHz wav — it does not resample — and it loads the VAD model from
-the relative path `models/silero_vad.onnx`. See [voice activity
-detection](../developing/vad-and-chunking.md).
 
 ## config
 
@@ -323,8 +301,8 @@ go, the config file path, and the input devices it can currently see — and say
 so explicitly when `AMBIENT_HOME` is set and overriding `sessions_dir`. With a
 key and a value it sets one setting and writes the file. A key with no value is
 an error rather than a read. Anything after the value is dropped without
-complaint — `ambient config threshold 0.4 wibble` sets the threshold and says
-nothing about `wibble` — where `record`, `export` and `diarize` bail on an
+complaint — `ambient config diarize off wibble` turns diarize off and says
+nothing about `wibble` — where `record` and `export` bail on an
 argument they do not recognise. Keys and defaults are in
 [settings](settings.md).
 
@@ -345,16 +323,13 @@ holds names and nothing else; see [what is kept](what-is-kept.md).
 ## mcp
 
 ```sh
-ambient mcp [--no-play] [--save-audio <dir>]
+ambient mcp
 ```
 
 Serves the Model Context Protocol on stdin and stdout so another program can
 read sessions as data: three read-only tools, `sessions`, `transcript` and
 `status`, and newline-delimited JSON-RPC 2.0 with one reply per request. It
-also serves [the live assistant](assistant.md)'s tools and its `watch` prompt.
-`--no-play` runs the assistant's voice without playing it, and
-`--save-audio <dir>` writes each utterance to `<dir>/reply-<n>.wav`. It is
-not meant to be typed at — a client starts it, and it exits when that client
+takes no flags. It is not meant to be typed at — a client starts it, and it exits when that client
 closes its stdin — but a piped request answers on stdout, which is how you
 check a registration:
 
@@ -363,44 +338,10 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"ping"}' | ambient mcp
 ```
 
 Nothing but protocol goes to stdout; diagnostics go to stderr. The session
-tools never write: there is no tool here to record, name or delete. The
-assistant's tools write only its heartbeat and the session's `assistant.jsonl`. Registration, the tool
+tools never write: there is no tool here to record, name or delete. Registration, the tool
 arguments and the cursor for following a session as it records are in
 [reading sessions from an assistant](mcp.md), and the reasoning is
 [ADR 0016](../adr/0016-mcp-verb-for-live-reading.md).
-
-## talk
-
-```sh
-ambient talk --wav <a.wav> [--dry-run] [--no-play] [--home <dir>] [--timeout <s>]
-ambient talk --pcm [--rate <hz>] [...]       audio on stdin
-ambient talk --stop
-```
-
-One spoken turn with firstmate. It trims the audio with the VAD and
-transcribes it with Parakeet on this Mac; less than 0.4 s of speech is "didn't
-catch that" and nothing is sent. The text goes to firstmate as a note through
-`fm-inbox.sh note --request-id ambient-<id>`, in the home named by
-`talk.firstmate_home` or `--home`, and the turn polls `fm-inbox.sh receipts`
-about once a second for the reply to that note's id, for up to `--timeout`
-seconds (300 by default). The reply is read aloud through the assistant's
-voice helper with its markdown stripped and cut to 600 characters, while
-holding `speaking.lock` beside the config file so the live assistant never
-talks over it. A voice that fails, a lock still held after ten seconds, or a
-recording that started meanwhile leaves the reply as text.
-
-The audio is never written to disk or sent anywhere: only the transcript
-leaves the process. Talking is refused while a recording is in progress,
-because the microphone is shared. `--dry-run` sends the note and waits for
-the reply but prints what it would say instead of starting the voice, so the
-whole loop runs headless against a stand-in `fm-inbox.sh`. `--pcm` reads raw
-32-bit float little-endian mono until end of file, which is how the app hands
-over a push-to-talk hold. `--stop`, or SIGTERM to the turn, silences a reply
-mid-word.
-
-Stdout is one JSON event per line for the program that started it (`heard`,
-`nothing`, `queued`, `sent`, `reply`, `spoken`, `text_only`, `dry_run`,
-`no_reply`); `src/talk.rs` documents each.
 
 ## Environment
 
@@ -410,7 +351,6 @@ Stdout is one JSON event per line for the program that started it (`heard`,
 | `AMBIENT_CONFIG` | `config::path` | Path to the config file, so a test can point somewhere harmless. |
 | `AMBIENT_ROSTER` | `roster::path` | Path to `roster.json`, which otherwise sits beside the config. |
 | `AMBIENT_MODELS` | `session::models_root` | Models directory. Otherwise `models/` relative to the working directory, then searched upward from the executable. |
-| `AMBIENT_VOICE_CACHE` | voice helper | Where the helper downloads Kokoro and caches designed voices. Default `~/Library/Caches/Ambient/voice`. |
-| `AMBIENT_DEBUG_DIAR` | `diarize` | Set to anything: adds the per-window powerset class histogram. |
+| `AMBIENT_ENGINE` | `engine::locate` | Path to the `ambient-engine` model helper. Otherwise the one beside the executable, where the app bundle puts it. |
 | `AMBIENT_DEBUG_TAP` | `capture` | Set to anything: extra tap-level diagnostics during capture. |
 | `HOME` | `config::path`, `session::home`, `settings` | Falls back to `.` if unset, so both paths become relative. |

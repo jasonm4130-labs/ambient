@@ -1,22 +1,12 @@
-//! Six ways to get a session's words out of it: the existing markdown
-//! document unchanged, plain text, JSON, the two subtitle formats, and a copy
-//! shaped for pasting into an assistant.
-//!
-//! Every format but `Markdown` reads [`session::transcript`] directly rather
-//! than [`session::markdown`]'s bleed-deduped view: `dedup_bleed` drops room
-//! lines it judges to be the microphone overhearing the call, which is right
-//! for a document meant to be read once but wrong for a transcript meant to
-//! be exact.
+//! Session export formats. All but `Markdown` read [`session::transcript`],
+//! not the bleed-deduped [`session::markdown`], because an export must be exact.
 
 use crate::session::{self, SessionMeta, Track};
 use anyhow::{bail, Result};
 use std::path::Path;
 
-/// Named once so `FromStr`'s error, the `export` API method and the CLI's
-/// `bail!` all say the same six words.
 const FORMAT_NAMES: &str = "markdown, text, json, srt, vtt, assistant";
 
-/// One of the shapes [`render`] can produce.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Format {
     Markdown,
@@ -43,7 +33,6 @@ impl std::str::FromStr for Format {
     }
 }
 
-/// A session as `format` wants it.
 pub fn render(dir: &Path, format: Format) -> Result<String> {
     match format {
         Format::Markdown => session::markdown(dir),
@@ -55,8 +44,6 @@ pub fn render(dir: &Path, format: Format) -> Result<String> {
     }
 }
 
-/// `speaker: text` per line, a bare `text` when there is no speaker, and a
-/// blank line wherever the track changes.
 fn text(dir: &Path) -> Result<String> {
     let lines = session::transcript(dir, false)?;
     let mut out = String::new();
@@ -79,7 +66,6 @@ fn json(dir: &Path) -> Result<String> {
     Ok(serde_json::to_string_pretty(&lines)?)
 }
 
-/// `HH:MM:SS,mmm`, the SRT timestamp format.
 fn timestamp_srt(ms: u64) -> String {
     format!(
         "{:02}:{:02}:{:02},{:03}",
@@ -90,8 +76,6 @@ fn timestamp_srt(ms: u64) -> String {
     )
 }
 
-/// `HH:MM:SS.mmm`, the VTT timestamp format — the same clock, `.` instead of
-/// `,` before the milliseconds.
 fn timestamp_vtt(ms: u64) -> String {
     format!(
         "{:02}:{:02}:{:02}.{:03}",
@@ -143,10 +127,8 @@ fn vtt(dir: &Path) -> Result<String> {
     Ok(format!("WEBVTT\n\n{}", cues.join("\n")))
 }
 
-/// `session::markdown`'s output with everything up to and including its
-/// first line starting with `"# "` removed — the front-matter block and the
-/// title it generates, so a new heading can be prepended without the result
-/// carrying two.
+/// Drops the front matter and title `session::markdown` generates, so a new
+/// heading can replace them.
 fn strip_first_heading(md: &str) -> &str {
     let mut consumed = 0;
     for line in md.split_inclusive('\n') {
@@ -158,17 +140,14 @@ fn strip_first_heading(md: &str) -> &str {
     md
 }
 
-/// `MM:SS` for a duration given in seconds, matching `session::mmss`'s floor.
+/// Floors like `session::mmss`.
 fn mmss(duration_s: f64) -> String {
     let total = duration_s.max(0.0) as u64;
     format!("{:02}:{:02}", total / 60, total % 60)
 }
 
-/// The pinned shape for pasting a session into an assistant: a heading naming
-/// the session, then `session::markdown`'s body with its own title cut out,
-/// then a line pointing at the live MCP server. With no readable
-/// `session.json` the heading is just the directory's name, with no
-/// parenthetical, and that name doubles as the id in the trailer.
+/// With no readable `session.json` the heading is the directory name, which
+/// doubles as the id in the trailer.
 fn assistant(dir: &Path) -> Result<String> {
     let md = session::markdown(dir)?;
     let body = strip_first_heading(&md).trim_start_matches('\n');
@@ -201,9 +180,6 @@ fn assistant(dir: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// A session dir with a room line (0-1500ms, "hello") named "Ana" via
-    /// `edits.jsonl`, and a call line (1500-4000ms, "hi") with no speaker —
-    /// the fixture every format test shares.
     fn fixture(test: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("ambient-{test}-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();

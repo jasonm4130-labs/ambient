@@ -16,17 +16,17 @@ lives in `docs-site/`; canonical Markdown stays in `docs/` so the guides and
 From the repository root, with Node 24 installed:
 
 ```sh
-npm ci --prefix docs-site
-npm run typecheck --prefix docs-site
-npm run build --prefix docs-site
-npm run lint:docs --prefix docs-site
-npm ci --prefix .github/scripts
+pnpm --dir docs-site install --frozen-lockfile
+pnpm --dir docs-site run typecheck
+pnpm --dir docs-site run build
+pnpm --dir docs-site run lint:docs
+pnpm --dir .github/scripts install --frozen-lockfile
 node .github/scripts/check-links.mjs
 node .github/scripts/check-mermaid.mjs
 node .github/scripts/check-routes.mjs
 ```
 
-For a live preview, run `npm run dev --prefix docs-site` and open the local URL
+For a live preview, run `pnpm --dir docs-site run dev` and open the local URL
 printed by Astro. Build output is in `docs-site/dist/`. The build also copies
 the project license and third-party notices into the artifact; footer links
 work in offline previews and hosted copies alike.

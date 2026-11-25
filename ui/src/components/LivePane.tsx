@@ -5,10 +5,7 @@ import { IdleCard, type CaptureConfig } from "./IdleCard";
 
 export type { CaptureConfig };
 
-/// One `Live` (`src/state.rs:60`), projected by `phase_payload`
-/// (`src/window.rs`) off the shared `session::Meter` the same way
-/// `LiveShot::of` draws the native pane. Levels arrive already clamped to
-/// `0.0..=1.0`.
+/// Levels arrive clamped to `0.0..=1.0`.
 export interface LiveShot {
   id: string;
   elapsed_s: number;
@@ -23,7 +20,6 @@ export interface Failure {
   session: string | null;
 }
 
-/// The `phase` event's wire shape (`src/window.rs`'s `phase_payload`).
 export interface PhasePayload {
   kind: "idle" | "armed" | "recording" | "stopping" | "failed";
   app: string | null;
@@ -34,15 +30,9 @@ export interface PhasePayload {
 
 interface LivePaneProps {
   payload: PhasePayload | undefined;
-  /// `config.get`'s capture fields, for the idle card's mic and call-watch
-  /// lines. Absent until the first reply lands.
   config?: CaptureConfig | undefined;
-  /// The live session's name, when it has one; the card falls back to the
-  /// session id, as the list does.
   liveName?: string | null | undefined;
-  /// Selects the live session in the list, so its live transcript shows.
   onOpenLive?: (() => void) | undefined;
-  /// Opens Settings, where call apps are added.
   onAddApps?: (() => void) | undefined;
 }
 
@@ -69,10 +59,6 @@ function Meter({ label, level }: { label: string; level: number }) {
   );
 }
 
-/// The strip pinned above the session list: what the app is doing *now*,
-/// drawn straight off the `phase` event `Sessions` hands it. Pure apart from
-/// the bridge calls its buttons make — the subscriptions live in `Sessions`,
-/// so this is directly testable with a `FakeBridge` and no timer.
 export function LivePane({ payload, config, liveName, onOpenLive, onAddApps }: LivePaneProps) {
   const bridge = useBridge();
 
@@ -194,7 +180,6 @@ export function LivePane({ payload, config, liveName, onOpenLive, onAddApps }: L
     );
   }
 
-  // idle
   return (
     <>
       <IdleCard config={config} onAddApps={onAddApps} />

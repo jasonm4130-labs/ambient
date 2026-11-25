@@ -1,9 +1,29 @@
-# SHA-256 inventory of the seven model files used by the default bundled model set.
-# Measured locally on 2026-09-21 from models/ before release bundling.
-acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx
-179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx
-3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx
-d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tokens.txt
-220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079  models/pyannote-segmentation-3.0/model.onnx
-e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012  models/wespeaker_en_voxceleb_resnet34_LM.onnx
-9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6  models/silero_vad.onnx
+# SHA-256 of every file the app's two models load (ADR 0020), as ambient-engine fetch
+# writes them at FluidAudio e2ea498. Measured locally on 2026-11-25. fetch-models.sh and
+# make-app.sh check these; a change upstream fails them rather than shipping silently.
+88a9f21b9c55c00d812de0f079565303fc93cbc3a961c1e96bf223928af4aa72  models/nemotron-3-diarization/.fluidaudio-nemotron3-weights
+d4417b3c0eabdf7c47032fac2b5b5a7ee83d819a6ddda8fd8eaf74e2b5cc4ac7  models/nemotron-3-diarization/learnable_sil_emb.bin
+7932ba85d07f09ba8feff996e1278f376a9139e31141d2827021f1c225e590ae  models/nemotron-3-diarization/monolithic/v2/Nemotron3Diarizer_fast32.mlmodelc/analytics/coremldata.bin
+fbc2d4dc25147427269e4774a5b8e3dd6b613e8c8458d74c7462a1a377dbae75  models/nemotron-3-diarization/monolithic/v2/Nemotron3Diarizer_fast32.mlmodelc/coremldata.bin
+e2f0cbbf88e824385475779b637c36281c5f98f339783840bdf7b3dfcd08c123  models/nemotron-3-diarization/monolithic/v2/Nemotron3Diarizer_fast32.mlmodelc/model.mil
+7353d8e7a5d29a8d15edf86dbf40bed4e82b7b8f456f302d5cdcbf850ed25358  models/nemotron-3-diarization/monolithic/v2/Nemotron3Diarizer_fast32.mlmodelc/weights/weight.bin
+fe92b6cfaa012abd5248c0bc877832f19807015abffc60d87b8ccc8ccb48b3b5  models/parakeet-ultra/Decoder.mlmodelc/analytics/coremldata.bin
+3b06e66768f0df7e21795f50e2b29300e33eeb1a2579dc42c695279c2d308497  models/parakeet-ultra/Decoder.mlmodelc/coremldata.bin
+956f600207f88396017ca5c96cfa3acd5bfee60835a5b44b762e033a8fb28955  models/parakeet-ultra/Decoder.mlmodelc/model.mil
+02a0d219f281b9665bc10c8768649403b2eebbbf4b44c627041d948e0de11bb4  models/parakeet-ultra/Decoder.mlmodelc/weights/weight.bin
+d87101d824d6723cf95304da33755c3c60e762663b9ef2b0c4bd0aa166a09a0d  models/parakeet-ultra/Encoder.mlmodelc/analytics/coremldata.bin
+397a84a4062f563cbc5f56077c674f09a61d85be5090f61d2f1932afb92ac0fe  models/parakeet-ultra/Encoder.mlmodelc/coremldata.bin
+f5d601568a4171d99a314c0fe3f6bc67715da2623732a3fb566e050ea83e5848  models/parakeet-ultra/Encoder.mlmodelc/model.mil
+315ba01f33cadbf601d43ac7f5c86208b7aa75fdaa34705c9869d5abe3521c9b  models/parakeet-ultra/Encoder.mlmodelc/weights/weight.bin
+68d38ca646aebafa7a9329e2efda50f5767c49e89fdb5f77f212072bb66f97c4  models/parakeet-ultra/JointDecisionv3.mlmodelc/analytics/coremldata.bin
+5e3af5a4ce686f6c237cadbd9284e10d333bc0e1546633cd0e430e6194044bc4  models/parakeet-ultra/JointDecisionv3.mlmodelc/coremldata.bin
+791b3c3cf3eb2079c84623fc880f6bba008d1366e5f8b03e9a8ed8bd4d7194a0  models/parakeet-ultra/JointDecisionv3.mlmodelc/model.mil
+3f310b85b82341c53ec383025ab094a4e462ee1c592e1ad7c6bfe39cff66ca25  models/parakeet-ultra/JointDecisionv3.mlmodelc/weights/weight.bin
+c9beeb989c8d66f8be11df59bc6df277ec76cee404f6865b46243835ef562f6d  models/parakeet-ultra/Preprocessor.mlmodelc/analytics/coremldata.bin
+dbde3f2300842c1fd51ef3ff948a0bcffe65ffd2dca10707f2509f32c1d65b1d  models/parakeet-ultra/Preprocessor.mlmodelc/coremldata.bin
+2a98699e22d279dd37fa1d238aeb1c6db1df0d6fad687775324157689d8f3acf  models/parakeet-ultra/Preprocessor.mlmodelc/metadata.json
+4b8518a956450fec57f06c2a21bdffc26973f7f1fa6842fb38fe917f896b6b93  models/parakeet-ultra/Preprocessor.mlmodelc/model.mil
+129b76e3aeafa8afa3ea76d995b964b145fe83700d579f6ff42c4c38fa0968ea  models/parakeet-ultra/Preprocessor.mlmodelc/weights/weight.bin
+965c69bf500c7be18958df6438dc1ba897721690ae412937ca7c91e28cec1870  models/parakeet-ultra/config.json
+7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735  models/parakeet-ultra/parakeet_v3_vocab.json
+7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735  models/parakeet-ultra/parakeet_vocab.json

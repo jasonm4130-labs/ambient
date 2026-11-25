@@ -6,7 +6,7 @@ sidebar:
 
 # 6. Hand-write a separate feature front-end per model
 
-**Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —
+**Status:** superseded by [ADR-0020](0020-models-run-in-a-core-ml-helper.md) · **Date:** 2026-08-29 · **Supersedes:** —
 
 ## Context and Problem Statement
 
