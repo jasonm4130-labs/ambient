@@ -13,25 +13,11 @@ interface ConfigReply {
 }
 
 interface NamingStripProps {
-  /// The session the strip was shown for — passed down rather than re-read
-  /// from whatever is currently selected, because a recording can finish
-  /// while the window is open and the selection can move on without this
-  /// strip's target moving with it.
+  /// Fixed at mount: a recording can finish and move the selection meanwhile.
   session: string;
-  /// Told after a successful `speakers.name` or `speakers.undo`, so the
-  /// sidebar can re-request `sessions` — naming does not change a
-  /// `SessionSummary` field today, but the page's rule is to re-request
-  /// after every action rather than assume what did or did not change.
   onChanged?: () => void;
 }
 
-/// One row per label `speakers.unnamed` reports for `session`, each with a
-/// roster-backed combobox (a real `<input list=…>` plus `<datalist>`, the
-/// closest match to the deleted native pane's `NSComboBox::setCompletes`) and
-/// a Name button. Undo reverts the whole session's naming, matching
-/// `speakers.undo`'s shape. The roster is read from `config.get` here rather
-/// than passed down from a parent that already has one — two readings of the
-/// same roster can disagree, same as Settings' own `config.get` read.
 export function NamingStrip({ session, onChanged }: NamingStripProps) {
   const bridge = useBridge();
   const [unnamed, setUnnamed] = useState<UnnamedSpeaker[]>([]);

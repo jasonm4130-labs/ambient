@@ -1,11 +1,8 @@
 import Foundation
 
-/// What the helper writes for one track's speech-to-text stage. The Rust side
-/// owns everything after this: lines, speakers, the transcript.
 public struct TranscriptFile: Codable, Equatable, Sendable {
-    /// The checkpoint key the app passed in. The app reuses a file only when
-    /// this matches the key it would pass now, so a changed track or model
-    /// never reuses stale output.
+    /// The app reuses this file only when `key` matches, so a changed track or
+    /// model never reuses stale output.
     public var key: String
     public var model: String
     public var durationSeconds: Double
@@ -33,7 +30,6 @@ public struct Word: Codable, Equatable, Sendable {
     }
 }
 
-/// What the helper writes for one track's speaker stage.
 public struct SpeakersFile: Codable, Equatable, Sendable {
     public var key: String
     public var model: String
@@ -58,8 +54,6 @@ public struct Turn: Codable, Equatable, Sendable {
     }
 }
 
-/// One token as the recogniser reports it. A copy of FluidAudio's
-/// `TokenTiming` fields so the merge below is testable without the library.
 public struct Token: Sendable {
     public var text: String
     public var start: Double
@@ -74,9 +68,7 @@ public struct Token: Sendable {
     }
 }
 
-/// Join subword tokens into words. A token that starts with whitespace starts
-/// a word; any other token continues the current one. This is the rule the
-/// FluidAudio CLI used for the benchmark on issue #168.
+/// The FluidAudio CLI's word-joining rule, as benchmarked in issue #168.
 public func mergeTokens(_ tokens: [Token]) -> [Word] {
     var words: [Word] = []
     var text = ""
@@ -108,9 +100,8 @@ public func mergeTokens(_ tokens: [Token]) -> [Word] {
     return words
 }
 
-/// Write `data` so a reader sees either nothing or all of it: a temporary file
-/// beside the target, then a rename. A helper killed mid-write leaves only the
-/// temporary file, which the next run overwrites.
+/// Temp file then rename, so a reader sees nothing or all of it; a helper killed
+/// mid-write leaves only the temp file.
 public func writeAtomically(_ data: Data, to url: URL) throws {
     let tmp = url.deletingLastPathComponent()
         .appendingPathComponent(".\(url.lastPathComponent).\(getpid()).tmp")
@@ -140,8 +131,6 @@ public enum EngineError: Error, CustomStringConvertible {
     }
 }
 
-/// Parsed command line. Flags take one value each; anything else is an error,
-/// so a caller that passes a flag this build does not know fails loudly.
 public struct Arguments {
     public var command: String
     public var flags: [String: String]

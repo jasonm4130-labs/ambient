@@ -3,26 +3,13 @@
 //!   cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
 //!                                     [--via <rate>]
 //!
-//! Scores the fixture `scripts/fetch-fixtures` builds by running what the app
-//! runs for a finished track: `ambient-engine transcribe` over the 16 kHz
-//! file, located the way the app locates it (`$AMBIENT_ENGINE`, else beside
-//! this binary) with the same models root. A harness with its own decode path
-//! would measure a pipeline no user has.
+//! Scores the `scripts/fetch-fixtures` fixture by running what the app runs,
+//! `ambient-engine transcribe`, located the way the app locates it.
 //!
-//! `--via <rate>` transcodes each fixture wav to `<rate>` Hz with ffmpeg first,
-//! then reads it back through `resample::read_wav_any` and `resample::to_16k`
-//! — the same downsample path Core Audio's 48 kHz (or an interface's 44.1 kHz)
-//! delivery takes. Transcodes are cached under
-//! `~/.cache/ambient/fixtures/via/<rate>/<speaker>.wav` and reused only when
-//! `ffprobe` confirms the cached file is still at `<rate>`.
-//!
-//! A manifest entry with `"truncate_reference": true` — the `calls` set,
-//! built by `scripts/fetch-fixtures` from Earnings-21 conference-bridge
-//! audio — is scored with `wer::score_prefix` instead of `wer::score`: its
-//! reference is the whole call's human transcript, but the fixture wav is
-//! only the call's first 300 s, so scoring against the whole reference would
-//! count everything spoken after the cut as deletions. Manifests without the
-//! field, including the default `wer` one, are unaffected.
+//! `--via <rate>` transcodes each wav to `<rate>` Hz with ffmpeg and reads it
+//! back through `resample::read_wav_any` and `resample::to_16k`, the path a
+//! 48 or 44.1 kHz device takes. Transcodes are cached under
+//! `~/.cache/ambient/fixtures/via/<rate>/<speaker>.wav`.
 
 use ambient::{
     engine::{Stage, TranscriptFile},
@@ -37,29 +24,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-/// One fixture as `scripts/fetch-fixtures` writes it. `utterances` and
-/// `seconds` are in the manifest too and deliberately unread: the durations
-/// below come from the audio actually decoded, so a stale manifest cannot
-/// quietly change a realtime factor.
+/// `utterances` and `seconds` are deliberately unread: durations come from the
+/// decoded audio, so a stale manifest cannot change a realtime factor.
 #[derive(Deserialize)]
 struct Entry {
     wav: PathBuf,
     reference: PathBuf,
     speaker: String,
-    /// True on the `calls` manifest only: the Earnings-21 reference covers
-    /// the whole call but the fixture wav is only its first 300 s, so the
-    /// reference is scored against `wer::score_prefix` rather than
-    /// `wer::score` — the reference's best-matching prefix, not all of it.
-    /// Defaulted so the `wer` and `der`-adjacent manifests, which carry no
-    /// such field, keep scoring exactly as before.
+    /// Set on the `calls` manifest, whose Earnings-21 reference covers the
+    /// whole call while the fixture is its first 300 s; scored with
+    /// `wer::score_prefix`.
     #[serde(default)]
     truncate_reference: bool,
 }
 
-/// One printed row, and one element of the `--json` array. The last row is the
-/// total, with `speaker` reading `total`; its WER is computed over the summed
-/// counts, not averaged over the rows, so a short speaker cannot outvote a
-/// long one.
+/// The total row's WER is over summed counts, not averaged, so a short speaker
+/// cannot outvote a long one.
 #[derive(Serialize)]
 struct Row {
     speaker: String,
@@ -78,7 +58,6 @@ fn default_manifest() -> PathBuf {
     PathBuf::from(home).join(".cache/ambient/fixtures/wer/manifest.json")
 }
 
-/// Where the `<rate>` Hz transcode of `speaker`'s fixture lives.
 fn via_cache_path(rate: u32, speaker: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home)
@@ -87,9 +66,7 @@ fn via_cache_path(rate: u32, speaker: &str) -> PathBuf {
         .join(format!("{speaker}.wav"))
 }
 
-/// The sample rate `ffprobe` reports for `path`, or `None` if it cannot be
-/// read — a file that is missing, unreadable or from a stale layout should
-/// regenerate rather than pretend to match.
+/// `None` for anything unreadable, so a bad cache entry regenerates.
 fn probed_rate(path: &Path) -> Option<u32> {
     let out = Command::new("ffprobe")
         .args([
@@ -109,12 +86,8 @@ fn probed_rate(path: &Path) -> Option<u32> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-/// Transcode `src` to `rate` Hz mono 16-bit with ffmpeg, reusing a cached
-/// transcode when one already exists at the right rate. The cache directory
-/// also holds files from an earlier, unrelated attempt (hashed names, a
-/// `ctl-*` subdirectory) — this only ever reads and writes the plain
-/// `<speaker>.wav` path it owns, and never trusts a file there without
-/// re-probing its rate first.
+/// The cache directory also holds unrelated files; this touches only
+/// `<speaker>.wav` and re-probes its rate before trusting it.
 fn ensure_via(src: &Path, speaker: &str, rate: u32) -> Result<PathBuf> {
     let dst = via_cache_path(rate, speaker);
     if probed_rate(&dst) == Some(rate) {
@@ -204,11 +177,9 @@ fn main() -> Result<()> {
         })?;
         let seconds = samples.len() as f64 / TARGET_HZ as f64;
 
-        // The helper reads a 16 kHz mono file, which is what the app hands it.
         let track = scratch.join("track.wav");
         session::write_wav_16k(&track, &samples)?;
-        // The clock includes the helper loading its model: in the app that
-        // cost is paid once per track, the same as here.
+        // Includes model load, which the app also pays once per track.
         let t0 = Instant::now();
         let file: TranscriptFile =
             engine.once(Stage::Transcribe, &track, &scratch.join("words.json"))?;

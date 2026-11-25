@@ -6,20 +6,12 @@
 #   scripts/memory --budget 1434      # gate against another budget, in MiB
 #   AMBIENT_MEMORY_BUDGET_MIB=1434 scripts/memory
 #
-# The run is src/bin/memrun.rs: AMI TS3003a Mix-Headset, all 1505.6 s and four
-# speakers, on both tracks of a session, through session::transcribe_session.
-# The models run in ambient-engine, one process per stage (ADR 0020), so the
-# figure gated is the larger of memrun's own peak footprint (from
-# /usr/bin/time -l) and the largest helper peak resident set it reports
-# (ENGINE_PEAK lines). It never records: the audio is the corpus file
-# scripts/fetch-fixtures downloads and pins by digest for the der set, and the
-# 16 kHz copy is cached under ~/.cache/ambient/fixtures/memory.
+# The figure gated is the larger of memrun's peak footprint (/usr/bin/time -l)
+# and the largest ambient-engine peak it reports (ENGINE_PEAK lines).
 #
-# The budget is a ceiling, not a baseline. The helper peaked at 409 MiB on two
-# runs (diarize; transcribe 300 MiB), against 859 and 1116 MiB for the ONNX
-# pipeline it replaced; 512 MiB is that plus a quarter
-# (docs/developing/measurements.md#memory-gate). Lower it to a measurement; do
-# not raise it to make a change pass.
+# The budget is a ceiling: the helper peaked at 409 MiB (diarize; transcribe
+# 300 MiB), and 512 MiB is that plus a quarter. Lower it to a measurement;
+# never raise it to make a change pass.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 

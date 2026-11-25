@@ -1,16 +1,10 @@
-//! Turning a captured session into a transcript with `ambient-engine`
-//! (ADR 0020).
+//! Session to transcript via `ambient-engine` (ADR 0020). Each stage's output
+//! is a checkpoint under `stages/`, reused while its key (track size, mtime,
+//! model) matches, so a job that dies resumes at its first unfinished stage.
 //!
-//! Each track goes through two stages in the helper, `transcribe` and then
-//! `diarize`, and each stage's output is a checkpoint under `stages/`. A
-//! checkpoint is reused only while its key matches: the track's size and
-//! modification time and the model that made it. A job that dies therefore
-//! resumes at the first stage it had not finished.
-//!
-//! Assembly is a pure function of the checkpoints. It writes `raw.jsonl`,
-//! then `edits.jsonl`, then `transcript.md`, each atomically, and
-//! `transcript.md` last because its existence is what "finished" means to the
-//! re-queue at launch and to the audio sweep.
+//! Assembly writes `raw.jsonl`, `edits.jsonl`, then `transcript.md`, each
+//! atomically and `transcript.md` last: its existence is what "finished" means
+//! to the launch re-queue and the audio sweep.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
@@ -21,45 +15,36 @@ use std::sync::Arc;
 use crate::engine::{self, SpeakersFile, Stage, TranscriptFile, Turn, Word};
 use crate::session::{Edit, Meter, MeterPhase, RawRecord, Target, Track, DIARIZE_BY, STATUS_FILE};
 
-/// The models the helper runs, as it names them in its output. These must
-/// match `engine/Sources/AmbientEngine/main.swift`; a test reads that file.
+/// Must match `engine/Sources/AmbientEngine/main.swift`; a test reads it.
 pub const ASR_MODEL: &str = "parakeet-ultra/fluidaudio-e2ea498";
 pub const DIAR_MODEL: &str = "nemotron3-fast32/fluidaudio-e2ea498";
-/// Where under the models root each lives, as `ambient-engine fetch` lays
-/// them out; the diariser's is the folder the helper checks before loading.
+/// Layout under the models root, as `ambient-engine fetch` writes it.
 pub const ASR_DIR: &str = "parakeet-ultra";
 pub const DIAR_DIR: &str = "nemotron-3-diarization/monolithic/v2";
 
 pub const STAGES_DIR: &str = "stages";
-/// How the fallback's warning in `session.json` begins, so a later labelled
-/// run can clear it and the audio sweep can leave that session's audio alone.
+/// Shared so a later labelled run can clear the warning and the audio sweep
+/// can spare that session's audio.
 pub const UNLABELLED_WARNING: &str = "voices were not separated";
-/// Failures of this session's job that a running app or CLI saw, one number.
 pub const ATTEMPTS_FILE: &str = "attempts";
-/// Names the archive under `previous/` that this run carries typed names from.
+/// Names the `previous/` archive whose typed names this run carries.
 pub const CARRY_FILE: &str = "carry-from";
 pub const PREVIOUS_DIR: &str = "previous";
 
-/// After this many observed failures a session is no longer re-queued at
-/// launch; it waits for someone to press Retry.
 pub const RETRY_CAP: u32 = 2;
 
-/// A speaker holding less speech than this over the whole track is dropped
-/// and their words go to the nearest speaker who stays. Nemotron sometimes
-/// splits a voice into a second, briefly active speaker; on issue #168's
-/// benchmark this took exact speaker counts from 15/16 to 16/16 (AMI) and
-/// from 50/57 to 57/57 (PriMock57) without moving word attribution.
+/// Nemotron sometimes splits a voice into a brief second speaker. Dropping
+/// speakers under this moved exact speaker counts from 15/16 to 16/16 (AMI)
+/// and 50/57 to 57/57 (PriMock57) on issue #168's benchmark, with word
+/// attribution unchanged.
 pub const PHANTOM_SECONDS: f64 = 5.0;
 
-/// A pause this long starts a new line even when the speaker does not change.
 const PAUSE_SECONDS: f64 = 1.0;
-/// Past this length a line ends at the next sentence end...
+/// Past this a line ends at the next sentence end...
 const SOFT_LINE_SECONDS: f64 = 20.0;
 /// ...and past this one it ends regardless.
 const HARD_LINE_SECONDS: f64 = 40.0;
 
-/// Where the helper and its models are. Passed in rather than looked up, so
-/// tests can point at a stub without touching the process environment.
 pub struct Engine {
     pub binary: PathBuf,
     pub models: PathBuf,
@@ -73,8 +58,8 @@ impl Engine {
         })
     }
 
-    /// The models the helper loads are on disk. A missing one fails before
-    /// any stage, where it is the machine's fault rather than the session's.
+    /// Runs before any stage, so a missing model fails as the machine's fault,
+    /// not the session's.
     pub fn check(&self) -> Result<()> {
         for dir in [ASR_DIR, DIAR_DIR] {
             let p = self.models.join(dir);
@@ -85,9 +70,8 @@ impl Engine {
         Ok(())
     }
 
-    /// One stage over one 16 kHz mono wav, outside any session and with no
-    /// checkpoint: for the accuracy harnesses, which must measure the models
-    /// the app runs and the way it runs them.
+    /// No session and no checkpoint: for the accuracy harnesses, which must
+    /// measure the models as the app runs them.
     pub fn once<T: DeserializeOwned>(&self, stage: Stage, wav: &Path, out: &Path) -> Result<T> {
         std::fs::remove_file(out).ok();
         engine::run(
@@ -105,7 +89,6 @@ impl Engine {
     }
 }
 
-/// The checkpoint key for one stage over one track.
 pub fn key(audio: &Path, model: &str) -> Result<String> {
     let m = std::fs::metadata(audio).with_context(|| format!("reading {}", audio.display()))?;
     let mtime = m
@@ -141,7 +124,6 @@ fn stage_path(dir: &Path, track: Track, stage: Stage) -> PathBuf {
         .join(format!("{}.{}.json", track.as_str(), stage.as_str()))
 }
 
-/// The stage's output: the checkpoint if it is current, else a fresh run.
 fn stage<T: DeserializeOwned + Keyed>(
     engine: &Engine,
     dir: &Path,
@@ -176,10 +158,8 @@ fn stage<T: DeserializeOwned + Keyed>(
     })
 }
 
-// ---------------------------------------------------------------- assembly
-
-/// Speakers kept after the phantom filter. If nobody reaches the threshold —
-/// a short recording — the speaker with the most speech stays.
+/// If nobody reaches the threshold (a short recording), the speaker with the
+/// most speech stays.
 fn kept_speakers(turns: &[Turn]) -> HashSet<usize> {
     let mut held: HashMap<usize, f64> = HashMap::new();
     for t in turns {
@@ -201,8 +181,6 @@ fn kept_speakers(turns: &[Turn]) -> HashSet<usize> {
     kept
 }
 
-/// Who said `[start, end]`: the kept speaker overlapping it most, else the
-/// one whose turn is nearest. `None` only when there are no turns at all.
 fn speaker_for(start: f64, end: f64, turns: &[Turn]) -> Option<usize> {
     let mut overlap: HashMap<usize, f64> = HashMap::new();
     for t in turns {
@@ -235,13 +213,9 @@ fn ends_sentence(text: &str) -> bool {
     text.ends_with(['.', '?', '!'])
 }
 
-/// One track's words and speaker turns as transcript lines, each with the
-/// index of its speaker (numbered from 0 in order of first appearance).
-///
-/// Lines break at a pause, at a speaker change, and at length. Pauses come
-/// first because on a call each track is mostly one voice, and breaking only
-/// at speaker changes would make the whole track one line. `start_ms` is
-/// unique within the track, since it is how an edit addresses a line.
+/// Speaker indices count from 0 in order of first appearance. Lines also break
+/// at pauses, because a call track is mostly one voice. `start_ms` is unique
+/// within the track because edits address lines by it.
 pub fn assemble(
     track: Track,
     words: &[Word],
@@ -322,8 +296,7 @@ pub fn label(track: Track, speaker: usize) -> String {
     format!("{}-{}", track.as_str(), speaker + 1)
 }
 
-/// The speaker each line of a session currently carries and who set it,
-/// after reverts: the last live `Speaker` edit for the line wins.
+/// After reverts, the last live `Speaker` edit for a line wins.
 fn current_speakers(edits: &[Edit]) -> HashMap<(Track, u64), (String, String)> {
     let reverted: HashSet<usize> = edits
         .iter()
@@ -359,11 +332,9 @@ fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
         .collect()
 }
 
-/// Speaker edits that carry the names a person typed in an earlier run onto
-/// this one. Each typed name goes to the new speaker whose lines overlap the
-/// old named lines most in time, one name per speaker, largest overlap first.
-/// Text repairs are not carried: the words they corrected may not exist any
-/// more, and the archive keeps them.
+/// Each typed name goes to the new speaker whose lines overlap the old named
+/// lines most, one name per speaker, largest overlap first. Text repairs are
+/// not carried: their words may be gone, and the archive keeps them.
 pub fn carry_names(
     old_raw: &[RawRecord],
     old_edits: &[Edit],
@@ -372,7 +343,6 @@ pub fn carry_names(
     at: &str,
 ) -> Vec<Edit> {
     let current = current_speakers(old_edits);
-    // (track, name, by) -> spans
     let mut named: HashMap<(Track, String, String), Vec<(u64, u64)>> = HashMap::new();
     for r in old_raw {
         if let Some((name, by)) = current.get(&(r.track, r.start_ms)) {
@@ -430,8 +400,6 @@ pub fn carry_names(
     out
 }
 
-// ------------------------------------------------------------ the job
-
 fn set_status(dir: &Path, status: &str, meter: Option<&Arc<Meter>>, phase: MeterPhase) {
     std::fs::write(dir.join(STATUS_FILE), format!("{status}\n")).ok();
     if let Some(m) = meter {
@@ -466,9 +434,7 @@ fn is_nonempty(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.len() > 0)
 }
 
-/// Copy whatever transcript files exist into a new `previous/<timestamp>/`
-/// and return its name. Copies, never moves: the caller decides what to
-/// remove once the copy is safe.
+/// Copies, never moves: the caller removes originals once the copy is safe.
 fn archive(dir: &Path) -> Result<Option<String>> {
     let files: Vec<&str> = ["raw.jsonl", "edits.jsonl", "transcript.md"]
         .into_iter()
@@ -502,11 +468,9 @@ fn has_typed_edits(dir: &Path) -> Result<bool> {
     }))
 }
 
-/// Archive the transcript files now in `dir` unless the archive `carry-from`
-/// names already holds exactly them, so nothing a person wrote is ever
-/// overwritten unarchived: not after a re-run that died, and not after a name
-/// typed while it was waiting. `carry-from` moves to the new archive when it
-/// holds typed edits; otherwise it keeps pointing at the older one that does.
+/// Skips archiving when the `carry-from` archive already holds exactly these
+/// files, so nothing a person wrote is overwritten unarchived. `carry-from`
+/// moves to the new archive only when it holds typed edits.
 fn archive_if_changed(dir: &Path) -> Result<()> {
     if !is_nonempty(&dir.join("raw.jsonl")) && !is_nonempty(&dir.join("edits.jsonl")) {
         return Ok(());
@@ -531,10 +495,9 @@ fn archive_if_changed(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run the whole job over a session whose transcription lock the caller
-/// holds. `diarize` is the setting. A failed diarize stage fails the job,
-/// unless this is the attempt that reaches the retry cap: then the words are
-/// written unlabelled with a warning.
+/// The caller holds the transcription lock. A failed diarisation stage fails
+/// the job, except on the attempt that reaches the retry cap, which writes the
+/// words unlabelled with a warning.
 pub(crate) fn run(
     dir: &Path,
     engine: &Engine,
@@ -576,9 +539,9 @@ pub(crate) fn run(
                 Ok(s) => {
                     turns.insert(*track, s.turns);
                 }
-                // At the cap a diariser fault must not withhold the words:
-                // write them unlabelled and say so. Below it, fail, and the
-                // retry resumes here from the transcribe checkpoint.
+                // At the cap a diariser fault must not withhold the words.
+                // Below it, fail; the retry resumes from the transcribe
+                // checkpoint.
                 Err(e) if attempts(dir) + 1 >= RETRY_CAP => {
                     warning = Some(format!(
                         "{UNLABELLED_WARNING} ({e:#}); the transcript is unlabelled — \
@@ -600,7 +563,6 @@ pub(crate) fn run(
         speakers.extend(s);
     }
 
-    // Nothing a person wrote is ever overwritten unarchived.
     archive_if_changed(dir)?;
     let carry_file = dir.join(CARRY_FILE);
 
@@ -638,9 +600,8 @@ pub(crate) fn run(
     let md = dir.join("transcript.md");
     write_atomically(&md, crate::session::markdown(dir)?.as_bytes())?;
 
-    // Names carry only onto speakers. A run that labelled nobody (the
-    // fallback, or diarize off) keeps `carry-from`, so the next run that does
-    // label can still bring them across.
+    // A run that labelled nobody keeps `carry-from`, so the next labelled run
+    // can still carry the names.
     if labelled {
         std::fs::remove_file(&carry_file).ok();
     }
@@ -650,8 +611,8 @@ pub(crate) fn run(
     Ok(md)
 }
 
-/// What the live transcriber left in sessions it ran on, which nothing reads
-/// any more. Only once the transcript is written.
+/// Files an older build's live transcriber left; remove only once the
+/// transcript is written.
 fn remove_live_leftovers(dir: &Path) {
     let audio = dir.join("audio");
     for p in [
@@ -665,8 +626,6 @@ fn remove_live_leftovers(dir: &Path) {
     }
 }
 
-// ------------------------------------------------------- retry and re-run
-
 pub fn attempts(dir: &Path) -> u32 {
     std::fs::read_to_string(dir.join(ATTEMPTS_FILE))
         .ok()
@@ -674,25 +633,19 @@ pub fn attempts(dir: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-/// Count one failure this process saw. A job abandoned because the app quit
-/// is never seen, so it never counts.
+/// A job abandoned because the app quit is never seen, so it never counts.
 pub fn note_failure(dir: &Path) {
     let n = attempts(dir) + 1;
     std::fs::write(dir.join(ATTEMPTS_FILE), format!("{n}\n")).ok();
 }
 
-/// Clear the failure count so the session is queued again.
 pub fn reset_attempts(dir: &Path) {
     std::fs::remove_file(dir.join(ATTEMPTS_FILE)).ok();
 }
 
-/// Set a finished session up to be transcribed again from its audio. The
-/// transcript files are copied to `previous/<timestamp>/` first, unless the
-/// archive `carry-from` names already holds them; then `transcript.md` is
-/// removed, which is the moment the session stops being finished. A crash on
-/// either side of that leaves it consistent: still finished, or awaiting a
-/// transcript with every typed edit archived. The caller holds the
-/// transcription lock.
+/// The caller holds the transcription lock. Archive first, then remove
+/// `transcript.md`; a crash between leaves the session either still finished
+/// or awaiting a transcript with every typed edit archived.
 pub(crate) fn prepare_rerun(dir: &Path) -> Result<()> {
     let audio = dir.join("audio");
     if !audio.join("room.wav").is_file() && !audio.join("call.wav").is_file() {
@@ -788,7 +741,6 @@ mod tests {
     #[test]
     fn a_phantom_speaker_is_folded_into_the_nearest_real_one() {
         let words = [w("one", 0.0, 0.5), w("two", 6.0, 6.5), w("three", 6.6, 7.0)];
-        // Speaker 2 holds 0.5 s in all; speaker 0 holds 12 s.
         let turns = [t(0, 0.0, 6.0), t(2, 6.0, 6.5), t(0, 6.5, 12.5)];
         let (_, s) = assemble(Track::Room, &words, Some(&turns));
         assert!(s.iter().all(|s| *s == Some(0)), "{s:?}");

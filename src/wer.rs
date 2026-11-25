@@ -1,17 +1,7 @@
-//! Word error rate: how far a transcript is from what was said.
-//!
-//! One number per recording, so an experiment on the pipeline can be judged
-//! rather than argued about. The three edit counts are kept apart because they
-//! do not mean the same thing to fix: deletions are usually the segmenter
-//! throwing speech away, insertions are usually the recogniser inventing words
-//! from noise, and substitutions are the acoustic model being wrong. A single
-//! total would hide which of the three moved.
-//!
-//! Pure arithmetic — no I/O, no models — so it is cheap to test exhaustively
-//! and gives the same answer on every machine.
+//! Word error rate. Substitutions, insertions and deletions are counted apart
+//! because each points at a different fault: the acoustic model, a recogniser
+//! inventing words from noise, or speech thrown away.
 
-/// The edit counts behind one score, and the reference length they are
-/// measured against.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Wer {
     pub substitutions: usize,
@@ -21,31 +11,21 @@ pub struct Wer {
 }
 
 impl Wer {
-    /// `(S + I + D) / N`, the conventional word error rate. Not capped at 1.0:
-    /// a recogniser that hallucinates can legitimately score above it, and
-    /// clamping would hide exactly the failure worth seeing.
+    /// Not capped at 1.0: a hallucinating recogniser can exceed it, and
+    /// clamping would hide exactly that.
     pub fn rate(&self) -> f64 {
         if self.reference_words == 0 {
-            // Nothing to divide by. Two empty sequences agree perfectly; a
-            // hypothesis with no reference behind it is wholly wrong.
+            // Two empty sequences agree; a hypothesis with no reference is
+            // wholly wrong.
             return if self.insertions == 0 { 0.0 } else { 1.0 };
         }
         (self.substitutions + self.insertions + self.deletions) as f64 / self.reference_words as f64
     }
 }
 
-/// Lowercase, split on whitespace, and keep only letters, digits and
-/// apostrophes within each word.
-///
-/// A hyphen splits nothing: `"well-known"` stays a single word and becomes
-/// `"wellknown"`. Splitting it would count one reference word as two and
-/// charge the recogniser an insertion for writing the compound the other way
-/// round, which is a spelling convention, not a transcription error.
-///
-/// The typographic apostrophe `’` is folded to `'` first so that a recogniser
-/// that punctuates prettily still matches a reference that does not; without
-/// that, `"world’s"` would strip to `"worlds"` and score a substitution
-/// against `"world's"`.
+/// A hyphen splits nothing (`"well-known"` becomes `"wellknown"`): writing a
+/// compound the other way is spelling, not a transcription error. `’` folds to
+/// `'` first so `"world’s"` still matches `"world's"`.
 pub fn normalise(text: &str) -> Vec<String> {
     text.split_whitespace()
         .map(|word| {
@@ -59,14 +39,9 @@ pub fn normalise(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Align the two word sequences and count the edits that separate them.
-///
-/// Word-level Levenshtein with the standard traceback. The distance alone
-/// would give `S + I + D`; walking the table back recovers which of the three
-/// each step was, so the counts are exact rather than inferred. Where several
-/// alignments are equally short the traceback prefers a substitution, then a
-/// deletion, then an insertion — an arbitrary but fixed order, so the same
-/// pair of inputs always reports the same breakdown.
+/// The traceback recovers exact S/I/D counts. Equal-length alignments prefer
+/// substitution, then deletion, then insertion, so a pair of inputs always
+/// reports the same breakdown.
 pub fn score(reference: &[String], hypothesis: &[String]) -> Wer {
     let (n, m) = (reference.len(), hypothesis.len());
 
@@ -113,28 +88,12 @@ pub fn score(reference: &[String], hypothesis: &[String]) -> Wer {
     wer
 }
 
-/// Score `hypothesis` against the prefix of `reference` that best matches it,
-/// rather than the whole reference.
-///
-/// For a reference that runs on past where the audio was cut — Earnings-21's
-/// call transcripts cover the full call, but the fixture is only the first
-/// 300 s of it — scoring against the whole reference would count every word
-/// spoken after the cut as a deletion, drowning out what the recogniser
-/// actually got wrong. This finds the prefix length `k` that minimises the
-/// edit distance to the whole hypothesis, then scores normally against
-/// `reference[..k]`.
-///
-/// The search is a rolling two-row Levenshtein DP: it needs `d[i][m]`, the
-/// distance from each reference prefix to the full hypothesis, but never the
-/// whole `n × m` table those come from — O(m) memory rather than O(n·m),
-/// which matters when the reference is a hand-transcribed hour and the
-/// hypothesis is a few hundred words. `score` is then called once, on the
-/// winning prefix, to recover the exact substitution/insertion/deletion
-/// breakdown from its own traceback.
-///
-/// Ties choose the smallest `k`: a longer prefix at the same distance only
-/// enlarges the denominator without explaining any more of the hypothesis,
-/// so the smaller one is the conservative reading.
+/// Scores against the reference prefix that best matches `hypothesis`, so a
+/// reference running past where the audio was cut (Earnings-21 covers the
+/// whole call; the fixture is its first 300 s) does not count the tail as
+/// deletions. The search keeps two DP rows, O(m) memory, because the reference
+/// can be an hour of words. Ties take the smallest prefix: a longer one at the
+/// same distance only inflates the denominator.
 pub fn score_prefix(reference: &[String], hypothesis: &[String]) -> Wer {
     let (n, m) = (reference.len(), hypothesis.len());
 
@@ -203,8 +162,7 @@ mod tests {
         assert_eq!(wer.rate(), 0.25);
     }
 
-    /// The counts must be a breakdown of one alignment, not three independent
-    /// guesses: a scorer that reports 2/1/1 for this would still sum to the
+    /// The counts must come from one alignment: 2/1/1 here would sum to the
     /// right distance while pointing at the wrong problem.
     #[test]
     fn the_three_counts_are_exact_together() {
@@ -254,7 +212,6 @@ mod tests {
         assert_eq!(normalise("  yes -- no  "), ["yes", "no"]);
     }
 
-    /// A hyphen is removed, not treated as a boundary: one word in, one out.
     #[test]
     fn normalise_keeps_a_hyphenated_word_whole() {
         assert_eq!(normalise("A WELL-KNOWN case"), ["a", "wellknown", "case"]);
@@ -265,9 +222,6 @@ mod tests {
         assert_eq!(normalise("world\u{2019}s"), normalise("world's"));
     }
 
-    /// A reference whose tail runs on past the hypothesis — the Earnings-21
-    /// case, where the transcript covers the whole call and the audio is cut
-    /// short — should not charge the tail as deletions once truncated.
     #[test]
     fn score_prefix_ignores_a_reference_tail_past_the_hypothesis() {
         let reference = normalise(
@@ -282,10 +236,7 @@ mod tests {
         assert_eq!(wer.rate(), 0.0);
     }
 
-    /// An empty hypothesis against a non-empty reference: the best prefix is
-    /// the empty one (`k == 0`), so `reference_words` is 0 and `rate()` takes
-    /// the "nothing to divide by, no insertions" branch and reads 0.0 — not
-    /// 1.0, which is only for a non-empty hypothesis matching no prefix.
+    /// `k == 0` leaves no reference words, so the rate is 0.0, not 1.0.
     #[test]
     fn score_prefix_of_empty_hypothesis_is_the_empty_prefix() {
         let wer = score_prefix(&normalise("a b c d"), &[]);
@@ -293,9 +244,7 @@ mod tests {
         assert_eq!(wer.rate(), 0.0);
     }
 
-    /// A non-empty hypothesis that matches nothing in the reference: every
-    /// prefix length ties at the same distance (m insertions), so the
-    /// smallest, `k == 0`, wins, and the hypothesis is wholly unexplained.
+    /// Every prefix ties at m insertions, so the smallest, `k == 0`, wins.
     #[test]
     fn score_prefix_of_an_unmatched_hypothesis_is_the_empty_prefix() {
         let wer = score_prefix(&normalise("a b c"), &normalise("x y z"));
@@ -304,9 +253,6 @@ mod tests {
         assert_eq!(wer.rate(), 1.0);
     }
 
-    /// When the hypothesis explains the whole reference best by using all of
-    /// it, the full reference is itself the best prefix, so truncated and
-    /// full scoring agree exactly.
     #[test]
     fn score_prefix_agrees_with_score_when_the_full_reference_is_best() {
         let reference = normalise("the quick brown fox jumps over");

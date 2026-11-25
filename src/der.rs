@@ -1,28 +1,14 @@
 //! Diarization error rate: how far a speaker segmentation is from the truth.
 //!
-//! One number per recording, so a change to the clustering can be judged
-//! rather than argued about. The three components are kept apart because they
-//! do not mean the same thing to fix: missed speech is the segmenter throwing
-//! audio away, false alarm is it hearing speech in noise, and confusion is the
-//! clustering putting the right speech under the wrong speaker. A single total
-//! would hide which of the three moved.
-//!
-//! Speaker labels are arbitrary strings on both sides — `FEE013` and `X` name
-//! the same person only by coincidence — so the two label sets are matched by
-//! maximum-weight assignment before anything is counted. The match is exact
-//! for any number of labels on either side, so an over-clustered candidate in
-//! a sweep gets a number rather than an abort.
-//!
-//! Pure arithmetic — no I/O, no models — so it is cheap to test exhaustively
-//! and gives the same answer on every machine.
+//! Missed speech, false alarm and confusion stay separate because each points
+//! at a different fix: the segmenter dropping audio, hearing speech in noise,
+//! or the clustering putting speech under the wrong speaker.
 
 use anyhow::{bail, Context, Result};
 use std::collections::BTreeMap;
 
-/// The scoring resolution. Ten milliseconds is the NIST md-eval convention:
-/// fine enough that a frame boundary never costs more than 10 ms of error,
-/// coarse enough that a one-hour meeting is 360,000 frames rather than
-/// something that has to be scored by interval arithmetic.
+/// The NIST md-eval resolution: a boundary costs at most 10 ms, and an hour
+/// is 360,000 frames.
 const FRAME_S: f64 = 0.01;
 
 /// One speaker speaking over one stretch of time.
@@ -44,30 +30,16 @@ pub struct Der {
 }
 
 impl Der {
-    /// `(missed + false alarm + confusion) / reference`, the conventional
-    /// diarization error rate. Not capped at 1.0: a system that invents
-    /// speakers over silence can legitimately score above it, and clamping
-    /// would hide exactly the failure worth seeing.
-    ///
-    /// Divides unconditionally: when the collar or an empty-in-practice
-    /// reference leaves no reference seconds to be a proportion of, the
-    /// result is infinite or NaN, and both propagate visibly through a sweep.
-    /// Returning 0.0 there would report a perfect score for a hypothesis with
-    /// unbounded false alarm, and 0.0 wins comparisons.
+    /// Not capped at 1.0: false alarm over silence can exceed it. A zero
+    /// reference gives infinity or NaN rather than 0.0, which would win every
+    /// comparison in a sweep.
     pub fn rate(&self) -> f64 {
         (self.missed_s + self.false_alarm_s + self.confusion_s) / self.reference_s
     }
 }
 
-/// Parse NIST RTTM, the format every diarization corpus ships its truth in.
-///
-/// Only `SPEAKER` lines carry turns; the fields that matter are the third and
-/// fourth numbers (onset and duration, in seconds) and the eighth field (the
-/// speaker label). Blank lines and `;;` comments are skipped.
-///
-/// Anything else is an error naming the line, deliberately: a download that
-/// failed to a 404 page is still a file on disk, and silently parsing it to
-/// zero turns would score a run against nothing and report a perfect zero.
+/// Parse NIST RTTM. Any line other than `SPEAKER`, a blank or a `;;` comment
+/// is an error, so a 404 page saved to disk cannot score a perfect zero.
 pub fn parse_rttm(text: &str) -> Result<Vec<Turn>> {
     let mut turns = Vec::new();
     for (index, line) in text.lines().enumerate() {
@@ -101,22 +73,10 @@ pub fn parse_rttm(text: &str) -> Result<Vec<Turn>> {
     Ok(turns)
 }
 
-/// Score a hypothesis segmentation against a reference one.
-///
-/// Both sides are discretised into [`FRAME_S`] frames covering the longer of
-/// the two, a frame within `collar_s` of any reference turn boundary is
-/// dropped (annotators disagree about where a turn starts by more than a
-/// system does), and the remaining frames are counted with the md-eval
-/// cardinality formula: per frame, missed is the reference speakers the
-/// hypothesis has no room for, false alarm is the hypothesis speakers the
-/// reference has no room for, and everything else that fails to match is
-/// confusion. Counting cardinalities rather than pairs is what makes an
-/// unmapped label speaking over a reference speaker one error (confusion)
-/// rather than two (a miss plus a false alarm).
-///
-/// Errors only when the reference is empty: there is nothing to be a
-/// proportion of, and returning 0.0 would report a perfect score for a run
-/// with no truth behind it.
+/// Score a hypothesis against a reference with the md-eval cardinality
+/// formula, so an unmapped label over a reference speaker is one confusion
+/// rather than a miss plus a false alarm. `collar_s` forgives reference
+/// boundaries, where annotators disagree more than systems do.
 pub fn score(reference: &[Turn], hypothesis: &[Turn], collar_s: f64) -> Result<Der> {
     if reference.is_empty() {
         bail!("empty reference: nothing to score against");
@@ -128,16 +88,12 @@ pub fn score(reference: &[Turn], hypothesis: &[Turn], collar_s: f64) -> Result<D
         .fold(0.0f64, |longest, turn| longest.max(turn.end_s));
     let frames = (end_s / FRAME_S).ceil() as usize;
 
-    // Labels get dense indices so a frame's speaker set is a bitmap-ish Vec
-    // rather than a set of strings.
     let reference_labels = labels(reference);
     let hypothesis_labels = labels(hypothesis);
 
     let reference_frames = occupancy(reference, &reference_labels, frames);
     let hypothesis_frames = occupancy(hypothesis, &hypothesis_labels, frames);
 
-    // A frame is scored unless its midpoint sits within the collar of a
-    // reference turn boundary — start or end, both are uncertain.
     let mut included = vec![true; frames];
     if collar_s > 0.0 {
         for turn in reference {
@@ -151,9 +107,7 @@ pub fn score(reference: &[Turn], hypothesis: &[Turn], collar_s: f64) -> Result<D
         }
     }
 
-    // Overlap matrix: how many included frames each reference label shares
-    // with each hypothesis label. Frame counts, not seconds, so the assignment
-    // below is exact integer arithmetic.
+    // Frame counts, not seconds, so the assignment is exact integer arithmetic.
     let mut overlap = vec![vec![0i64; hypothesis_labels.len()]; reference_labels.len()];
     for frame in 0..frames {
         if !included[frame] {
@@ -202,16 +156,14 @@ pub fn score(reference: &[Turn], hypothesis: &[Turn], collar_s: f64) -> Result<D
     Ok(der)
 }
 
-/// The distinct speaker labels of a turn list, in a fixed order so that two
-/// runs over the same input map the same way.
+/// Sorted, so two runs over the same input map the same way.
 fn labels(turns: &[Turn]) -> Vec<String> {
     let unique: BTreeMap<&str, ()> = turns.iter().map(|t| (t.speaker.as_str(), ())).collect();
     unique.into_keys().map(String::from).collect()
 }
 
-/// `occupancy[label][frame]` — whether that label is speaking in that frame.
-/// A frame belongs to a turn when its midpoint does, which keeps a turn that
-/// ends where the next begins from counting in both.
+/// A frame belongs to a turn when its midpoint does, so back-to-back turns
+/// never share a frame.
 fn occupancy(turns: &[Turn], labels: &[String], frames: usize) -> Vec<Vec<bool>> {
     let mut occupancy = vec![vec![false; frames]; labels.len()];
     for turn in turns {
@@ -230,20 +182,15 @@ fn occupancy(turns: &[Turn], labels: &[String], frames: usize) -> Vec<Vec<bool>>
     occupancy
 }
 
-/// The reference label -> hypothesis label map that puts the most speech on
-/// the right speaker, `None` for a reference label left unmatched.
-///
-/// Greedy matching is wrong here and the failure is not exotic: given a
-/// reference speaker split across two clusters, greedy takes the larger piece
-/// first and can strand a second reference speaker with nothing, inflating
-/// confusion. So the overlap matrix is padded to square with zeros and solved
-/// exactly.
+/// Solved exactly, not greedily: greedy takes the larger piece of a split
+/// speaker first and can strand another reference speaker, inflating
+/// confusion.
 fn best_mapping(overlap: &[Vec<i64>], n_ref: usize, n_hyp: usize) -> Vec<Option<usize>> {
     let n = n_ref.max(n_hyp);
     if n == 0 {
         return Vec::new();
     }
-    // Padded to square, and negated because the solver minimises.
+    // Negated because the solver minimises.
     let mut cost = vec![vec![0i64; n]; n];
     for (r, row) in overlap.iter().enumerate() {
         for (h, weight) in row.iter().enumerate() {
@@ -254,22 +201,14 @@ fn best_mapping(overlap: &[Vec<i64>], n_ref: usize, n_hyp: usize) -> Vec<Option<
     (0..n_ref)
         .map(|r| {
             let h = assignment[r];
-            // A padded column is not a real label, and a zero-overlap match is
-            // not evidence of anything.
+            // A zero-overlap match is not evidence of anything.
             (h < n_hyp && overlap[r][h] > 0).then_some(h)
         })
         .collect()
 }
 
-/// The Hungarian algorithm (Kuhn–Munkres), in the O(n³) shortest-augmenting-
-/// path form with dual potentials: for each row in turn, grow a Dijkstra-like
-/// tree over unvisited columns, raising the potentials by the slack of the
-/// cheapest edge until it reaches an unassigned column, then flip the
-/// alternating path. `cost` must be square; the return is the column chosen
-/// for each row, minimising the total.
-///
-/// Column 0 of the internal arrays is a sentinel holding the row currently
-/// being added, which is why everything below is 1-indexed.
+/// Hungarian algorithm, O(n³) with dual potentials, on a square `cost`.
+/// Column 0 is a sentinel holding the row being added, hence 1-indexing.
 fn hungarian(cost: &[Vec<i64>]) -> Vec<usize> {
     const INFINITY: i64 = i64::MAX / 4;
     let n = cost.len();
@@ -317,8 +256,6 @@ fn hungarian(cost: &[Vec<i64>]) -> Vec<usize> {
                 break;
             }
         }
-        // Walk the augmenting path back, shifting each column to the row that
-        // reached it.
         while column != 0 {
             let source = previous_column[column];
             row_of_column[column] = row_of_column[source];
@@ -345,8 +282,7 @@ mod tests {
         }
     }
 
-    /// Seconds compare loosely: the scorer counts 10 ms frames, so a boundary
-    /// that does not land on a frame edge is off by at most one frame.
+    /// A boundary off a frame edge is off by up to one 10 ms frame.
     fn close(actual: f64, expected: f64) -> bool {
         (actual - expected).abs() < 0.05
     }
@@ -370,7 +306,6 @@ mod tests {
 
     #[test]
     fn parse_rttm_rejects_a_non_speaker_line() {
-        // An HTML error page saved as an RTTM must fail, not parse to nothing.
         let text = "<!DOCTYPE html>\n<html><body>404</body></html>\n";
         let err = parse_rttm(text).unwrap_err().to_string();
         assert!(err.contains("line 1"), "{err}");
@@ -422,8 +357,7 @@ mod tests {
 
     #[test]
     fn over_clustering_uses_the_optimal_map() {
-        // The optimal map is A->Y, B->X for 16 s correct. A greedy assignment
-        // takes A->X first (9 s) and leaves B nothing, scoring 16 s confusion.
+        // Optimal is A->Y, B->X (16 s correct); greedy takes A->X first.
         let reference = vec![turn("A", 0.0, 17.0), turn("B", 17.0, 25.0)];
         let hypothesis = vec![
             turn("X", 0.0, 9.0),

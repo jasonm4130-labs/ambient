@@ -1,11 +1,6 @@
-//! The client side of `ambient-engine`, the model helper (ADR 0020).
-//!
-//! One call runs one stage over one track in its own process and waits for
-//! it. The protocol is the helper's stdout, one event per line:
-//! `progress <0..1>` as it goes, and `error <message>` before a non-zero exit.
-//! Its stderr is ours. Its stdin is a pipe that we hold and never write to:
-//! when this process dies the pipe closes, and the helper exits rather than
-//! running on unowned.
+//! Client for `ambient-engine`, the model helper (ADR 0020): one process per
+//! stage per track, reporting on stdout one event per line, `progress <0..1>`
+//! or `error <message>` before a non-zero exit.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -13,12 +8,10 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-/// Points at a helper binary other than the one beside this executable: a
-/// development build, or a stub in tests.
+/// Overrides the helper binary, for development builds and test stubs.
 pub const ENGINE_ENV: &str = "AMBIENT_ENGINE";
 pub const ENGINE_NAME: &str = "ambient-engine";
 
-/// What the helper can do to a track.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Transcribe,
@@ -65,8 +58,6 @@ pub struct Turn {
     pub end: f64,
 }
 
-/// The helper to run: `$AMBIENT_ENGINE`, else `ambient-engine` beside this
-/// executable, which is where the app bundle puts it.
 pub fn locate() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os(ENGINE_ENV) {
         return Ok(PathBuf::from(p));
@@ -83,8 +74,6 @@ pub fn locate() -> Result<PathBuf> {
     )
 }
 
-/// Run one stage to completion. `progress` gets each fraction the helper
-/// reports.
 pub fn run(
     engine: &Path,
     stage: Stage,
@@ -124,8 +113,7 @@ pub fn run(
         }
     }
     let (status, peak) = wait_with_peak(&child)?;
-    // One line per stage, for the log and for scripts/memory, which gates on
-    // the largest. The helper is where the models' memory lives now.
+    // scripts/memory parses this line and gates on the largest peak.
     eprintln!("ENGINE_PEAK {} {peak}", stage.as_str());
     match (status.success(), error) {
         (true, _) => Ok(()),
@@ -139,8 +127,7 @@ pub fn run(
     }
 }
 
-/// Reap the helper and return its exit status with its peak resident set,
-/// in bytes. `Child::wait` gives no resource usage, so this is `wait4`.
+/// `Child::wait` reports no resource usage, hence `wait4`.
 fn wait_with_peak(child: &std::process::Child) -> Result<(ExitStatus, u64)> {
     use std::os::unix::process::ExitStatusExt;
     let pid = child.id() as libc::pid_t;
@@ -156,7 +143,7 @@ fn wait_with_peak(child: &std::process::Child) -> Result<(ExitStatus, u64)> {
             return Err(e).context("waiting for the model helper");
         }
     }
-    // Bytes on macOS (kilobytes on Linux, where this never runs).
+    // ru_maxrss is bytes on macOS, kilobytes on Linux.
     Ok((ExitStatus::from_raw(status), usage.ru_maxrss.max(0) as u64))
 }
 

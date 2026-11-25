@@ -31,9 +31,6 @@ export const buttonVariants = cva(
 export interface ButtonProps
   extends ButtonHTMLAttributes<HTMLButtonElement>, VariantProps<typeof buttonVariants> {}
 
-// No `asChild`/Slot support: the plan's dependency list for this unit does
-// not include `@radix-ui/react-slot`, and nothing here needs to render as a
-// different element.
 export function Button({ className, variant, size, ...props }: ButtonProps) {
   return (
     <button

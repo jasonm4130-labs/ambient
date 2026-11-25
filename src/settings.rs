@@ -1,14 +1,10 @@
-//! The full-window web page and native bridge.
+//! The full-window web page and its native bridge.
 //!
-//! Sessions, Settings and Welcome share one `WKWebView`. The page is embedded with `include_str!` rather than shipped in the bundle's
-//! Resources: launched through LaunchServices the working directory is `/`, and
-//! that is the only launch that has the audio-capture grant, so a relative path
-//! would break the one path that matters.
-//!
-//! The bridge carries a **JSON string** in each direction rather than a
-//! dictionary. `WKScriptMessage::body` hands back an `AnyObject` that would
-//! otherwise need unpicking one `NSDictionary` value at a time; a string goes
-//! straight to serde.
+//! The page is embedded with `include_str!`, not loaded from Resources: under
+//! LaunchServices, the only launch with the audio-capture grant, the working
+//! directory is `/`. The bridge carries a JSON string each way, because
+//! `WKScriptMessage::body` would otherwise need unpicking one `NSDictionary`
+//! value at a time.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -39,8 +35,6 @@ use crate::session;
 
 const PAGE: &str = include_str!("../assets/settings.html");
 
-/// A routed request from the page: `{id, method, params}`. Anything that
-/// fails to parse as this shape is logged to stderr and ignored.
 #[derive(Debug, Deserialize)]
 struct Request {
     id: u64,
@@ -48,9 +42,6 @@ struct Request {
     params: Option<Value>,
 }
 
-/// The page's held events, before it has called `init`: a plain struct with
-/// no objc types in it, so its ordering and idempotence are testable off the
-/// main thread and without a `WKWebView`.
 #[derive(Default)]
 struct Events {
     open: bool,
@@ -58,8 +49,7 @@ struct Events {
 }
 
 impl Events {
-    /// Records one event. Returns the JS to evaluate now if the queue is
-    /// open, or `None` if it was held for [`Events::open`] to deliver later.
+    /// The JS to evaluate now, or `None` if held for [`Events::open`].
     fn record(&mut self, name: &str, payload: &Value) -> Option<String> {
         if self.open {
             Some(event_js(name, payload))
@@ -69,12 +59,8 @@ impl Events {
         }
     }
 
-    /// Marks the queue open and returns the JS for everything held, in the
-    /// order it was recorded. Idempotent: calling this again on an
-    /// already-open queue finds nothing left to take and returns an empty
-    /// list — `init` may be called more than once (React's `StrictMode`
-    /// double-invokes the mount effect) and a second call must not re-deliver
-    /// anything.
+    /// Idempotent: React's `StrictMode` double-invokes the mount effect, so
+    /// `init` can arrive twice and must not re-deliver anything.
     fn open(&mut self) -> Vec<String> {
         self.open = true;
         std::mem::take(&mut self.held)
@@ -84,19 +70,15 @@ impl Events {
     }
 }
 
-/// JSON is not quite a JS expression: U+2028 and U+2029 are legal inside a
-/// JSON string and terminate a JS line, and `serde_json` does not escape
-/// them. A transcript line is user-controlled text and goes through this
-/// path, so every piece of JS handed to `evaluateJavaScript` is built through
-/// this function.
+/// `serde_json` leaves U+2028 and U+2029 unescaped, and they end a JS line.
+/// Transcript text is user-controlled, so all JS for `evaluateJavaScript` goes
+/// through this.
 fn escape_line_terminators(js: String) -> String {
     js.replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029")
 }
 
-/// The JS for one reply: `Ok` becomes `{"result": v}`, and the two
-/// [`ApiError`] variants become `{"error": {"kind", "message"}}` with the
-/// exact `kind` strings units 3–6 read off the wire.
+/// The `kind` strings are read by the page.
 fn reply_js(id: u64, outcome: Result<Value, ApiError>) -> String {
     let body = match outcome {
         Ok(v) => json!({"result": v}),
@@ -108,17 +90,12 @@ fn reply_js(id: u64, outcome: Result<Value, ApiError>) -> String {
     escape_line_terminators(format!("window.ambient.reply({id}, {body});"))
 }
 
-/// The JS for one one-way event.
 fn event_js(name: &str, payload: &Value) -> String {
     let name_json = json!(name);
     escape_line_terminators(format!("window.ambient.event({name_json}, {payload});"))
 }
 
-/// Switches the capture scope between "everything" and "selected apps",
-/// stashing (or restoring) the app list so a round trip through "Everything"
-/// does not silently discard what was chosen. Pure and cheap to pin — the
-/// risky half of `capture.scope` is the `Config::load`/`cfg.save` round trip
-/// against the user's real config file, which stays untested either way.
+/// Stashes the app list so a round trip through "Everything" keeps it.
 fn switch_scope(apps: &mut Vec<String>, stash: &mut Vec<String>, everything: bool) {
     if everything {
         *stash = std::mem::take(apps);
@@ -129,25 +106,13 @@ fn switch_scope(apps: &mut Vec<String>, stash: &mut Vec<String>, everything: boo
 
 struct Ivars {
     web: RefCell<Option<Retained<WKWebView>>>,
-    /// Remembers the app list while "Everything" is selected, so switching to
-    /// "Selected apps" and back does not silently discard it.
     stashed: RefCell<Vec<String>>,
-    /// Whether the app is holding a live recording. Written by the window's
-    /// one renderer, from the phase, once a tick — this pane has no state of
-    /// its own about what the app is doing, and asking for one would be the
-    /// second source of truth the design forbids.
+    /// Written by the window's renderer from the phase; the pane keeps no state
+    /// of its own about what the app is doing.
     recording: Cell<bool>,
-    /// The route the page's `init` should answer with. Set by
-    /// [`SettingsPane::select_settings`]; the default is what a freshly
-    /// launched window shows.
     route: Cell<&'static str>,
-    /// Events recorded before the page's `init`, delivered once it arrives.
     events: RefCell<Events>,
-    /// The session currently being diarized on a worker thread, and the
-    /// channel its result arrives on. One job at a time, exactly like the
-    /// native pane's `diarizing` ivar — two at once would double the model
-    /// helper's memory for no reason, and the two are kept safely apart by
-    /// `session::claim_transcription`, which the worker below claims first.
+    /// One job at a time: two would double the model helper's memory.
     diarizing: RefCell<Option<(String, Receiver<anyhow::Result<usize>>)>>,
 }
 
@@ -174,9 +139,6 @@ define_class!(
 );
 
 impl Bridge {
-    /// The one entry point for a message off the wire: a request with an
-    /// `id` is routed through [`Bridge::answer`]; anything that fails to
-    /// parse as a request is logged to stderr and ignored.
     fn route_message(&self, json: &str) {
         match serde_json::from_str::<Request>(json) {
             Ok(req) => self.answer(req),
@@ -184,18 +146,9 @@ impl Bridge {
         }
     }
 
-    /// Every path out of here must reply: `pick_app`/`pick_dir` run a modal
-    /// `NSOpenPanel` synchronously, and under request/response an id that is
-    /// never answered is a control that hangs for the rest of the session.
-    ///
-    /// `init` is intercepted first, since [`api::call`] has no arm for it: it
-    /// answers with the pane's current route and opens the event queue,
-    /// delivering everything held. Idempotent — a second `init` re-opens an
-    /// already-open queue and drains an empty one, which is what
-    /// `StrictMode`'s double-invoked mount effect needs. `capture.scope`,
-    /// `pick_app` and `pick_dir` are bridge-only methods matched next,
-    /// because [`api::call`] has no arm for any of them and would answer
-    /// `invalid_params`; everything else goes through [`api::call`].
+    /// Every path must reply: an unanswered id is a control that hangs for the
+    /// rest of the session. `init` and the bridge-only methods are matched
+    /// before [`api::call`], which has no arm for them.
     fn answer(&self, req: Request) {
         if req.method == "init" {
             let route = self.ivars().route.get();
@@ -279,11 +232,6 @@ impl Bridge {
                 let result = self.reveal(session);
                 self.eval(&reply_js(req.id, result));
             }
-            // Each forwards its selector up the responder chain exactly as
-            // the native Stop button does today (`src/window.rs:800`), to
-            // the app delegate that owns the phase. The reply carries whether
-            // the send reached anybody, so a selector that reached nobody is
-            // visible on the wire rather than silently doing nothing.
             "record.start" => self.forward_action(req.id, sel!(startRecording:)),
             "record.this_call" => self.forward_action(req.id, sel!(recordThisCall:)),
             "record.decline" => self.forward_action(req.id, sel!(notThisOne:)),
@@ -306,8 +254,7 @@ impl Bridge {
         }
     }
 
-    /// A one-way notification to the page: `config`, `navigate`, `phase` and
-    /// `diarize`. Queued until the page's `init`, then sent straight through.
+    /// Held until the page's `init`.
     pub fn event(&self, name: &str, payload: &Value) {
         let js = self.ivars().events.borrow_mut().record(name, payload);
         if let Some(js) = js {
@@ -321,7 +268,6 @@ impl Bridge {
         }
     }
 
-    /// Say no, and say why.
     fn refuse(&self, title: &str, body: &str) {
         eprintln!("settings: refused — {title}: {body}");
         let mtm = MainThreadMarker::from(self);
@@ -332,8 +278,7 @@ impl Bridge {
         a.runModal();
     }
 
-    /// An app bundle, resolved to the bundle ID the tap actually needs. The
-    /// user picks *Zoom*; nobody should have to type `us.zoom.xos`.
+    /// Resolves the picked app to its bundle ID, so nobody types `us.zoom.xos`.
     fn pick_app(&self) -> Option<String> {
         let mtm = MainThreadMarker::from(self);
         let panel = NSOpenPanel::openPanel(mtm);
@@ -374,13 +319,8 @@ impl Bridge {
         }
     }
 
-    /// `save {session, format}`: renders the export through [`api::call`] —
-    /// so `AMBIENT_HOME` still governs which sessions folder it reads from —
-    /// then offers a native `NSSavePanel` and writes the result where the
-    /// user picks. The export runs *before* the panel opens, so a bad
-    /// session id or an export failure replies with an `ApiError` and never
-    /// shows a modal. Does not copy `pick_dir`'s recording refuse-guard:
-    /// that guards moving the sessions folder, not writing a transcript out.
+    /// The export runs before the panel opens, so a bad session or a failed
+    /// export replies with an `ApiError` and never shows a modal.
     fn save(&self, params: Option<&Value>) -> Result<Value, ApiError> {
         let params = params.cloned().unwrap_or_else(|| json!({}));
         let session = params
@@ -413,8 +353,6 @@ impl Bridge {
         Ok(json!({"path": path.to_string_lossy()}))
     }
 
-    /// The modal itself, split out of [`Bridge::save`] so the export and its
-    /// error path stay above the one place a panel can appear.
     fn run_save_panel(&self, session: &str, extension: &str) -> Option<PathBuf> {
         let mtm = MainThreadMarker::from(self);
         let panel = NSSavePanel::savePanel(mtm);
@@ -426,8 +364,8 @@ impl Bridge {
         Some(PathBuf::from(panel.URL()?.path()?.to_string()))
     }
 
-    /// Resolve the shared dispatcher paths. `AMBIENT_HOME` overrides only
-    /// sessions; config and roster still use their normal application paths.
+    /// `AMBIENT_HOME` overrides only sessions; config and roster keep their
+    /// normal paths.
     fn paths(&self) -> api::Paths {
         api::Paths {
             config_file: crate::config::path(),
@@ -436,14 +374,7 @@ impl Bridge {
         }
     }
 
-    /// `reveal {session}`: today's `revealInFinder:` (`src/window.rs:803`),
-    /// including its `create_dir_all` and its "no selection means the
-    /// sessions folder" behaviour — `session` absent or null reveals the root
-    /// itself. `api::session_dir` is private to `api.rs` and stays that way,
-    /// so the id is validated inline the same way it does: reject empty,
-    /// `.`, `..`, and any id containing `/`. The root this joins onto is
-    /// [`Bridge::paths`]'s, not [`crate::session::home`], so `AMBIENT_HOME`
-    /// still governs it under test.
+    /// No `session` reveals the sessions root.
     fn reveal(&self, session: Option<&str>) -> Result<Value, ApiError> {
         let root = self.paths().root();
         let target = match session {
@@ -467,12 +398,8 @@ impl Bridge {
         Ok(json!({}))
     }
 
-    /// Send `sel` up the responder chain to whoever answers for it — the app
-    /// delegate, which owns the `PhaseCell` — and reply with whether it
-    /// reached anybody. `startRecording:`, `recordThisCall:`, `notThisOne:`,
-    /// `stopRecording:` and `dismissFailure:` all take no target-specific
-    /// argument, so this one helper covers every button behind `record.*`
-    /// and `dismiss`.
+    /// Replies with whether `sel` reached anybody, so a selector nobody answers
+    /// is visible on the wire.
     fn forward_action(&self, id: u64, sel: Sel) {
         let mtm = MainThreadMarker::from(self);
         let app = NSApplication::sharedApplication(mtm);
@@ -481,9 +408,8 @@ impl Bridge {
         self.eval(&reply_js(id, Ok(json!({"sent": sent}))));
     }
 
-    /// Run one transcription worker from the window at a time: a re-run of a
-    /// finished session, or a retry of a failed one. The session lock
-    /// excludes the queue, the CLI and naming while it writes.
+    /// One window-run worker at a time; the session lock excludes the queue,
+    /// the CLI and naming while it writes.
     fn diarize_start(&self, session: Option<&str>) -> Result<Value, ApiError> {
         let session =
             session.ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
@@ -499,11 +425,8 @@ impl Bridge {
         let (tx, rx) = std::sync::mpsc::channel();
         let worker_dir = dir.clone();
         std::thread::spawn(move || {
-            // A finished session is transcribed again from its audio; one
-            // whose job failed is retried from its last finished stage. The
-            // failure count stays, so a retry at the cap still falls back to
-            // an unlabelled transcript if the diariser fails again; success
-            // clears it.
+            // The failure count stays, so a retry at the cap still falls back
+            // to an unlabelled transcript; success clears it.
             let result = if worker_dir.join("transcript.md").is_file() {
                 session::rerun_session(&worker_dir, None)
             } else {
@@ -515,11 +438,8 @@ impl Bridge {
         Ok(json!({"started": true}))
     }
 
-    /// Drain the diarize worker's channel, the same way the recording
-    /// worker's receiver is polled from `menubar.rs`'s timer tick — a
-    /// channel, not a flag file. Called from `MainWindow::render`, beside
-    /// the `phase` event. Emits no `running` event: the page already knows
-    /// it started, because its own `diarize.start` resolved.
+    /// Emits no `running` event: the page knows it started because its own
+    /// `diarize.start` resolved.
     pub fn poll_diarize(&self) {
         let done = {
             let d = self.ivars().diarizing.borrow();
@@ -553,16 +473,8 @@ impl Bridge {
     }
 }
 
-/// The settings pane: the `WKWebView` and the bridge that answers it, kept
-/// together because the bridge is the web view's script-message handler and
-/// nothing else retains it.
-///
-/// It used to be a window. Two windows meant two menu bars to keep straight
-/// under the activation-policy flip — closing the main one would have stripped
-/// the settings window's menu bar out from under it — and one of them showed
-/// the naming section for `latest()` alone while the other could name any
-/// session. It is a sibling view of the main window's pane now, selected by
-/// the Settings row.
+/// Holds the bridge, the web view's script-message handler, which nothing else
+/// retains.
 pub struct SettingsPane {
     web: Retained<WKWebView>,
     bridge: Retained<Bridge>,
@@ -600,43 +512,29 @@ impl SettingsPane {
         Self { web, bridge }
     }
 
-    /// The view to add as a sibling, hide and frame. Everything else about the
-    /// pane is the bridge's business.
     pub fn view(&self) -> &WKWebView {
         &self.web
     }
 
-    /// A nudge, not a payload. The CLI can change settings behind the pane's
-    /// back, so showing it tells the page to re-request `config.get` rather
-    /// than trusting what it last drew — the page's rule is "re-request after
-    /// every event", so this event carries nothing.
+    /// A nudge with no payload: the CLI can change settings behind the pane, so
+    /// the page re-requests `config.get`.
     pub fn refresh(&self) {
         self.bridge.event("config", &json!({}));
     }
 
-    /// Told from the window's one renderer, off the phase. The bridge refuses
-    /// to move the sessions folder while this is set.
+    /// The bridge refuses to move the sessions folder while this is set.
     pub fn set_recording(&self, recording: bool) {
         self.bridge.ivars().recording.set(recording);
     }
 
-    /// A one-way notification to the page: `config`, `navigate`, `phase` and
-    /// `diarize`. Unit 5's `render` calls this with `phase`.
     pub fn event(&self, name: &str, payload: &Value) {
         self.bridge.event(name, payload);
     }
 
-    /// Forwards to the bridge's own diarize poll. `window.rs` only holds the
-    /// pane, so `MainWindow::render` reaches the bridge's job through here,
-    /// beside the `event("phase", …)` call.
     pub fn poll_diarize(&self) {
         self.bridge.poll_diarize();
     }
 
-    /// Sets the route `init` answers with to `settings` and tells a page
-    /// already mounted to switch there too. Unit 6's host swap wires
-    /// `src/window.rs` to this in place of showing the settings view
-    /// directly.
     pub fn select_settings(&self) {
         self.bridge.ivars().route.set("settings");
         self.bridge.event("navigate", &json!({"page": "settings"}));
@@ -647,10 +545,8 @@ impl SettingsPane {
         self.bridge.event("navigate", &json!({"page": "sessions"}));
     }
 
-    /// For the launch log. A `WKWebView` that was re-parented into a view
-    /// hierarchy it has never lived in before can be present, unhidden and
-    /// correctly framed while showing nothing at all, and that failure is
-    /// invisible to everything except asking the page itself.
+    /// For the launch log: a re-parented `WKWebView` can be present, unhidden
+    /// and framed while drawing nothing, and only the page itself can tell.
     pub fn describe(&self) -> String {
         let f = self.web.frame();
         // Both are plain property reads on a view this thread owns.
@@ -665,25 +561,11 @@ impl SettingsPane {
     }
 }
 
-/// The bridge's half of the contract with `assets/settings.html`: what the page
-/// may send and what happens to a message that is not that. The page is the
-/// only writer, so a change here is a change to a wire format whose other end
-/// ships in the same binary — these pin it so the break is a red test rather
-/// than a line on stderr nobody is reading.
+/// Pins the wire contract with `assets/settings.html`, so a break is a red
+/// test rather than a line on stderr.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // The seven tests that used to live here — `an_empty_message_changes_nothing`,
-    // `a_patch_carries_the_fields_it_names_and_no_others`,
-    // `an_assignment_carries_the_session_it_was_chosen_in`,
-    // `a_half_written_assignment_is_refused_rather_than_half_applied`,
-    // `a_threshold_sent_as_a_string_is_refused`,
-    // `forever_stays_a_word_all_the_way_through_the_bridge`,
-    // `an_unknown_key_is_ignored_rather_than_failing_the_whole_message` — pinned
-    // the `Patch`/`Assign` wire shape. They are deleted alongside `Patch` and
-    // `Assign` in this unit: the outcome's one sanctioned exception to "no
-    // editing existing tests" (spec acceptance item 6).
 
     #[test]
     fn switching_to_everything_stashes_the_apps_in_order_and_back_restores_them() {
@@ -717,11 +599,9 @@ mod tests {
             vec![event_js("a", &json!(1)), event_js("b", &json!(2))]
         );
 
-        // An event emitted after `init` is not held: it comes straight back.
         let js = events.record("c", &json!(3));
         assert_eq!(js, Some(event_js("c", &json!(3))));
 
-        // A second `init` finds nothing left to deliver.
         assert!(events.open().is_empty());
     }
 
@@ -742,8 +622,6 @@ mod tests {
             "got {failed:?}"
         );
 
-        // U+2028 is legal inside a JSON string and terminates a JS line;
-        // `serde_json` does not escape it, so the reply helper must.
         let with_separator = reply_js(4, Ok(json!(format!("a{}b", '\u{2028}'))));
         assert!(
             !with_separator.contains('\u{2028}'),

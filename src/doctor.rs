@@ -1,10 +1,5 @@
-//! What a person whose Ambient will not record runs first.
-//!
-//! Nine checks, always in the same order, each pure with respect to the paths
-//! it is handed — no check calls `session::home()`, `config::path()`,
-//! `session::models_root()` or `engine::locate()` itself, so the tests below never reach the real
-//! `~/Documents/Ambient` or the real config file. The CLI arm passes the real
-//! roots in.
+//! `ambient doctor`. Checks take their paths as arguments and never resolve
+//! the real ones, so tests cannot reach `~/Documents/Ambient` or the config.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,8 +23,6 @@ fn check(name: &str, ok: bool, detail: impl Into<String>) -> Check {
     }
 }
 
-/// A model file or directory under a resolved models root: ok with the path
-/// as detail, or FAIL naming what to run to fix it.
 fn model_check(name: &str, path: &Path, is_dir: bool) -> Check {
     let present = if is_dir {
         path.is_dir()
@@ -47,10 +40,6 @@ fn model_check(name: &str, path: &Path, is_dir: bool) -> Check {
     }
 }
 
-/// Run the nine checks against the given roots. `models` and `engine` are the
-/// already-resolved (or already-failed) `session::models_root()` and
-/// `engine::locate()` results, taken by value so a test can hand in `Err`
-/// without touching a real filesystem location.
 pub fn run(
     models: anyhow::Result<PathBuf>,
     engine: anyhow::Result<PathBuf>,
@@ -59,8 +48,6 @@ pub fn run(
 ) -> Vec<Check> {
     let mut checks = Vec::with_capacity(9);
 
-    // Collapse to `Option` here so the model checks below have exactly
-    // two code paths: a resolved root, or none.
     let root: Option<PathBuf> = match models {
         Ok(p) if p.is_dir() => {
             checks.push(check("models/root", true, p.display().to_string()));
@@ -106,9 +93,7 @@ pub fn run(
         Err(e) => check("engine", false, e.to_string()),
     });
 
-    // Read and parse the file directly rather than going through
-    // `Config::load`/`Config::load_from`, which swallow both a read failure
-    // and a parse failure and print a warning instead.
+    // Not `Config::load`, which swallows read and parse failures.
     checks.push(match fs::read_to_string(config_file) {
         Ok(contents) => match serde_json::from_str::<crate::config::Config>(&contents) {
             Ok(_) => check("config", true, config_file.display().to_string()),
@@ -118,11 +103,8 @@ pub fn run(
         Err(e) => check("config", false, format!("could not be read: {e}")),
     });
 
-    // `doctor` writes nothing at all, so this infers writability from the
-    // permission bit rather than probing with a touch-file — a weaker check,
-    // and a deliberate one. A folder that does not exist yet is fine on a
-    // fresh install: the first recording creates it (`create_dir_all`), so the
-    // check falls back to the nearest ancestor that does exist.
+    // `doctor` writes nothing, so writability comes from the permission bit,
+    // not a touch-file.
     checks.push(sessions_writable(sessions));
 
     let awaiting = session::captured_awaiting_transcript(sessions).len();
@@ -131,8 +113,7 @@ pub fn run(
         1 => "1 session".to_string(),
         n => format!("{n} sessions"),
     };
-    // Sessions the app stopped re-queueing after two failures. They are not
-    // waiting for anything but a person, so they fail this check.
+    // Parked sessions wait only on a person, so they fail the check.
     let parked = session::list(sessions)
         .into_iter()
         .filter(|d| {
@@ -314,7 +295,6 @@ mod tests {
             assert_eq!(c.detail, "no models directory");
         }
 
-        // Sessions checks still evaluated despite the models failure.
         let engine = find(&checks, "engine");
         assert!(!engine.ok);
         assert!(
@@ -337,7 +317,6 @@ mod tests {
         fs::create_dir_all(&sessions).unwrap();
         let models = root.join("models");
 
-        // Invalid JSON.
         let bad_config = root.join("bad-config.json");
         fs::write(&bad_config, "{\"diarize\":").unwrap();
         let checks = run(
@@ -354,7 +333,6 @@ mod tests {
             config.detail
         );
 
-        // Missing config file.
         let missing_config = root.join("does-not-exist.json");
         let checks = run(
             Ok(models.clone()),
@@ -366,7 +344,6 @@ mod tests {
         assert!(config.ok);
         assert_eq!(config.detail, "defaults");
 
-        // Config path that is a directory.
         let dir_config = root.join("config-dir");
         fs::create_dir_all(&dir_config).unwrap();
         let checks = run(
@@ -407,7 +384,6 @@ mod tests {
         assert!(find(&checks, "sessions/live").ok);
         assert!(find(&checks, "sessions/stale-lock").ok);
 
-        // A file where the folder should be cannot become a sessions folder.
         let blocked = root.join("blocker");
         fs::write(&blocked, "").unwrap();
         let checks = run(

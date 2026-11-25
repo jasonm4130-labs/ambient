@@ -1,7 +1,5 @@
-//! The transcription job against a stub `ambient-engine` that loads no model
-//! (tests/support/stub-engine). Each test fails or kills the helper at a named
-//! stage and checks what the session looks like afterwards: what is
-//! checkpointed, what is re-queued, what is counted, and what survives.
+//! The transcription job against a stub `ambient-engine`
+//! (tests/support/stub-engine) that fails or dies at a named stage.
 
 use std::path::{Path, PathBuf};
 
@@ -54,7 +52,7 @@ impl Fixture {
         std::fs::remove_file(self.dir().join(format!("stub-{what}-{stage}"))).unwrap();
     }
 
-    /// Every stage the stub has been asked to run, in order, and forget them.
+    /// Stages the stub ran, in order; clears the record.
     fn calls(&self) -> Vec<String> {
         let path = self.dir().join("stub-calls");
         let calls = std::fs::read_to_string(&path).unwrap_or_default();
@@ -70,7 +68,6 @@ impl Fixture {
         std::fs::read_to_string(self.dir().join(STATUS_FILE)).unwrap_or_default()
     }
 
-    /// What the app checks at launch to re-queue a session.
     fn requeued(&self) -> bool {
         session::captured_awaiting_transcript(&self.root.join("sessions")).contains(&self.dir())
     }
@@ -221,7 +218,6 @@ fn after_two_failures_a_session_waits_for_retry() {
         "at the cap the app must not re-queue it at launch"
     );
 
-    // Retry clears the count, which puts it back on the launch queue.
     pipeline::reset_attempts(&f.dir());
     assert!(f.requeued());
     f.unsteer("fail", "transcribe");
@@ -315,7 +311,7 @@ fn a_rerun_that_dies_still_carries_names_when_it_resumes() {
     let f = Fixture::new("rerun-crash");
     f.transcribe().unwrap();
     session::name_speaker(&f.dir(), "room-1", "Ana").unwrap();
-    // Force the stages to run again, and fail the first of them.
+    // Force the stages to rerun, failing the first.
     std::fs::remove_dir_all(f.dir().join("stages")).unwrap();
     f.steer("fail", "transcribe");
     session::rerun_with(&f.dir(), &f.engine, true, None).unwrap_err();

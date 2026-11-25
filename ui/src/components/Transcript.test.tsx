@@ -35,8 +35,6 @@ describe("Transcript", () => {
     await screen.findByText("hello one");
     await screen.findByText("hello two");
     await screen.findByText("hello three");
-    // Marcus's two consecutive lines are one group; the speakerless
-    // (track-fallback) line is its own group, headed "call".
     expect(screen.getAllByText("Marcus")).toHaveLength(1);
     expect(screen.getByText("call")).toBeInTheDocument();
   });
@@ -75,9 +73,7 @@ describe("Transcript", () => {
 
   it("selecting A then B with A's transcript reply released after B's leaves B's lines on screen", async () => {
     const fake = new FakeBridge();
-    // The FIFO gate queue matches call order: the first `transcript` call
-    // (A, issued on mount) gets `releaseA`, the second (B, issued on
-    // `rerender`) gets `releaseB` — independent of which is released first.
+    // `hold` gates calls FIFO: A (mount) gets `releaseA`, B (rerender) `releaseB`.
     const releaseA = fake.hold("transcript");
     const releaseB = fake.hold("transcript");
 
@@ -95,8 +91,6 @@ describe("Transcript", () => {
     fake.answer("transcript", transcriptReply("a-reply"));
     releaseA();
 
-    // `useLatest` drops A's reply: its generation is no longer current once
-    // B's request was issued, so it must never overwrite B's lines.
     await new Promise((resolve) => {
       setTimeout(resolve, 0);
     });

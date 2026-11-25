@@ -1,12 +1,5 @@
-//! Settings that outlive a single run.
-//!
-//! Kept in `~/Library/Application Support/Ambient/config.json` rather than
-//! under the sessions folder, because the sessions folder is itself a setting
-//! and a config that lives inside the thing it configures cannot be found
-//! before it is read.
-//!
-//! Only settings with something behind them live here. A stored value that no
-//! code reads is a promise the app does not keep.
+//! Settings that outlive a run. Kept outside the sessions folder because that
+//! folder is itself a setting.
 
 use std::path::{Path, PathBuf};
 
@@ -16,35 +9,25 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Bundle IDs to tap. Empty means everything the Mac plays.
+    /// Bundle IDs to tap; empty taps everything.
     pub apps: Vec<String>,
     /// Input device by name. `None` follows the system default.
     pub input_device: Option<String>,
-    /// Separate voices once the transcript exists.
     pub diarize: bool,
     /// Where sessions are written. `None` means `~/Documents/Ambient`.
     pub sessions_dir: Option<PathBuf>,
-    /// Wait to be told before recording a call this app noticed. Defaults on:
-    /// a recording nobody sanctioned is the behaviour that gets a tool banned.
+    /// Defaults on: an unsanctioned recording is what gets a tool banned.
     pub ask_before_recording: bool,
-    /// Days to keep the track audio. `Some(0)` deletes it as soon as the
-    /// transcript exists; `None` keeps it forever. The audio is the most
-    /// sensitive artefact here and the least useful once the text exists.
+    /// `Some(0)` deletes the audio once the transcript exists; `None` keeps it.
     pub audio_retention_days: Option<u32>,
-    /// What a recording captures: the microphone and the system audio, or the
-    /// microphone alone. `ambient record --mic-only` overrides it once.
     pub capture: CaptureMode,
 }
 
-/// What a recording captures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMode {
-    /// The microphone (the `room` track) and the system audio (`call`).
     #[default]
     All,
-    /// The microphone only. No process tap is created, so there is no `call`
-    /// track.
     Mic,
 }
 
@@ -83,8 +66,6 @@ impl Default for Config {
     }
 }
 
-/// The config file, honouring `AMBIENT_CONFIG` so a test can point somewhere
-/// harmless without touching the real one.
 pub fn path() -> PathBuf {
     if let Ok(p) = std::env::var("AMBIENT_CONFIG") {
         return PathBuf::from(p);
@@ -98,9 +79,7 @@ pub fn path() -> PathBuf {
 }
 
 impl Config {
-    /// Never fails. A missing file is the ordinary first run; an unreadable one
-    /// says so on stderr and falls back, because losing a recording over a
-    /// malformed preference would be absurd.
+    /// Never fails: a malformed preference must not cost a recording.
     pub fn load() -> Self {
         Self::load_from(&path())
     }
@@ -142,9 +121,6 @@ impl Config {
         Ok(())
     }
 
-    /// Set one field from a string, for `ambient config <key> <value>`. Listing
-    /// the keys here rather than reflecting over the struct keeps the CLI and
-    /// the window honest about which settings actually exist.
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "apps" => {
@@ -165,8 +141,8 @@ impl Config {
                     (!value.is_empty() && value != "default").then(|| PathBuf::from(value))
             }
             "ask_before_recording" => self.ask_before_recording = flag(value)?,
-            // "forever" is spelled out rather than expressed as a large number,
-            // so that keeping audio indefinitely is a deliberate word.
+            // "forever", not a large number, so keeping audio indefinitely is
+            // a deliberate word.
             "audio_retention_days" => {
                 self.audio_retention_days = match value {
                     "forever" | "never" => None,
@@ -184,13 +160,8 @@ impl Config {
     }
 }
 
-/// Refuse a setting change that a running capture would make incoherent.
-///
-/// Only `sessions_dir` is at stake, and only while something is recording:
-/// moving it then splits one conversation across two folders for nothing, since
-/// the capture keeps writing into the directory it claimed at the start. The
-/// window already said no; saying it here too means the CLI cannot walk past a
-/// rule the GUI enforces.
+/// A capture keeps writing into the folder it claimed at start, so moving
+/// `sessions_dir` mid-recording would split one conversation across two.
 pub fn refuse_while_live(key: &str, live: Option<&Path>) -> Result<()> {
     if key == "sessions_dir" {
         if let Some(dir) = live {
@@ -204,12 +175,8 @@ pub fn refuse_while_live(key: &str, live: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Parse a boolean setting, refusing anything it does not recognise.
-///
-/// Treating every unrecognised word as `false` would mean `config diarize maybe`
-/// silently turns diarization off and reports success — the silent fallback this
-/// project keeps having to remove, reintroduced in the one layer that must not
-/// have it.
+/// Unknown words are refused: reading them as `false` would silently turn a
+/// setting off and report success.
 fn flag(value: &str) -> Result<bool> {
     match value {
         "true" | "yes" | "on" | "1" => Ok(true),
@@ -308,8 +275,6 @@ mod tests {
     fn moving_the_sessions_folder_mid_recording_is_refused() {
         let e = refuse_while_live("sessions_dir", Some(Path::new("/x"))).unwrap_err();
         assert!(e.to_string().contains("/x"), "{e}");
-        // Nothing is recording, and every other setting is free to change
-        // either way: only the folder the capture is writing into is at stake.
         assert!(refuse_while_live("sessions_dir", None).is_ok());
         assert!(refuse_while_live("diarize", Some(Path::new("/x"))).is_ok());
     }

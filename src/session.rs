@@ -1,11 +1,8 @@
 //! Recording to, and reading back, an on-disk session.
 //!
-//! The format is deliberately append-only. `raw.jsonl` is what the recogniser
-//! heard and is never rewritten; `edits.jsonl` carries everything applied on top
-//! — repairs, speaker names, and the reverts of both. Folding the second over
-//! the first gives the tidied view, and ignoring it gives the verbatim one, so
-//! "what did it actually hear" always has an answer that does not depend on
-//! trusting the layer above it.
+//! Append-only: `raw.jsonl` is what the recogniser heard and is never
+//! rewritten; `edits.jsonl` layers repairs, speaker names and their reverts on
+//! top, so the verbatim view never depends on the edit layer.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -18,9 +15,7 @@ use crate::capture::ProcessTap;
 use crate::config::CaptureMode;
 use crate::resample;
 
-/// Which of the two captured tracks a line of speech came from. This is the
-/// only speaker attribution available before diarization, and for a one-to-one
-/// call it is already complete: the room track is you, the call track is them.
+/// Which captured track a line came from: the room is you, the call is them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Track {
@@ -44,11 +39,8 @@ pub struct RawRecord {
     pub start_ms: u64,
     pub end_ms: u64,
     pub text: String,
-    /// Mean probability of the tokens the decoder emitted for this line.
-    /// Parakeet invents fluent sentences from an empty room and no threshold
-    /// upstream can catch that, so the number is carried here for a cleanup
-    /// pass that can read the words. `default` keeps sessions recorded before
-    /// this field loadable.
+    /// Mean token probability. Parakeet invents fluent sentences from an empty
+    /// room, which no upstream threshold catches. `default` loads older sessions.
     #[serde(default)]
     pub confidence: f32,
 }
@@ -103,10 +95,8 @@ pub struct SessionMeta {
     pub mic_channels: u32,
     pub apps: Vec<String>,
     pub model: String,
-    /// What the capture wanted to say and could only say to stderr: a silent
-    /// room track, a tap that returned nothing. Stored so it is still there
-    /// when the session is opened tomorrow. `default` keeps sessions written
-    /// before this field loadable.
+    /// Capture warnings that would otherwise reach only stderr. `default` loads
+    /// older sessions.
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]
@@ -115,19 +105,15 @@ pub struct SessionMeta {
     pub notes: String,
     #[serde(default)]
     pub pinned: bool,
-    /// What this recording captured. `all` for every session written before
-    /// the field existed; `mic` means there is no `call` track.
+    /// `all` for older sessions; `mic` means there is no `call` track.
     #[serde(default)]
     pub capture: CaptureMode,
 }
 
-/// Written at the start of a capture, because `session.json` only appears at
-/// the end: whoever watches a recording live needs to know whether a call
-/// track will ever exist.
+/// Written at capture start: `session.json` appears only at the end, and a
+/// live watcher needs to know whether a call track will exist.
 const CAPTURE_FILE: &str = "capture";
 
-/// How a session captured audio: the live marker first, then `session.json`,
-/// and `all` for a session that has neither (older ones).
 pub fn capture_mode(dir: &Path) -> CaptureMode {
     if let Some(m) = std::fs::read_to_string(dir.join(CAPTURE_FILE))
         .ok()
@@ -145,15 +131,13 @@ pub fn capture_mode(dir: &Path) -> CaptureMode {
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_sigint(_: libc::c_int) {
-    // Storing to an atomic is async-signal-safe; anything else here is not.
+    // Only an atomic store is async-signal-safe here.
     STOP.store(true, Ordering::SeqCst);
 }
 
-/// Where sessions live. Visible on purpose — Time Machine picks it up and the
-/// user can open the folder without being told a hidden path.
+/// Visible on purpose, so Time Machine backs it up.
 pub fn home() -> PathBuf {
-    // The environment wins over the stored setting so a test harness can point
-    // somewhere harmless without editing the user's config.
+    // The environment wins so a test harness never touches the user's config.
     if let Ok(p) = std::env::var("AMBIENT_HOME") {
         return PathBuf::from(p);
     }
@@ -164,20 +148,15 @@ pub fn home() -> PathBuf {
     PathBuf::from(home).join("Documents").join("Ambient")
 }
 
-/// Locate the `models/` directory. Launched from a terminal the working
-/// directory is the repo, but launched as a bundle via `open -a` it is `/` —
-/// and the bundle is the only launch that has the audio-capture grant, so
-/// relative paths alone would break the one path that actually works.
+/// Under `open -a` the working directory is `/`, and that bundle launch is
+/// the only one with the audio-capture grant, so relative paths are not enough.
 pub fn models_root() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("AMBIENT_MODELS") {
         return Ok(PathBuf::from(p));
     }
     let mut candidates = vec![PathBuf::from("models")];
     if let Ok(exe) = std::env::current_exe() {
-        // A release bundle ships its models in Contents/Resources/models, which
-        // is a *sibling* of Contents/MacOS — the parent walk below climbs past
-        // it and would never look inside. This is the only candidate that makes
-        // a downloaded .app work with no repo checkout anywhere on the machine.
+        // A sibling of Contents/MacOS, which the parent walk below never visits.
         if let Some(macos) = exe.parent() {
             candidates.push(macos.join("../Resources/models"));
         }
@@ -238,21 +217,17 @@ pub fn write_wav_16k(path: &Path, samples: &[f32]) -> Result<()> {
     Ok(())
 }
 
-/// Capture both tracks until interrupted, then transcribe and write a session.
-/// Name of the file whose existence asks a running `record` to stop. A file
-/// rather than a signal because the only launch that gets system audio is
-/// LaunchServices', which has no terminal to Ctrl-C and no pid a user can see.
+/// A file, not a signal: the LaunchServices launch that gets system audio has
+/// no terminal and no pid a user can see.
 pub const STOP_FILE: &str = "STOP";
-/// Live level meter, rewritten each second. Under `open -a` stderr goes
-/// nowhere, so this is the only way to tell a live recording from a dead one.
+/// Rewritten each second. Under `open -a` stderr goes nowhere, so this is the
+/// only sign a recording is alive.
 pub const STATUS_FILE: &str = "status";
-/// When capture began (RFC 3339), written as it starts, before `session.json`
-/// exists.
+/// RFC 3339 capture start, written before `session.json` exists.
 pub const STARTED_FILE: &str = "started_at";
 
-/// Which stage of a recording's life the worker is in, as told to a
-/// [`Meter`]. Distinct from `Phase` in `state.rs`: that governs which
-/// transitions are legal, this is what the worker itself is doing right now.
+/// What the worker is doing now, for a [`Meter`]. `state.rs`'s `Phase`
+/// governs which transitions are legal.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeterPhase {
@@ -275,18 +250,9 @@ impl MeterPhase {
     }
 }
 
-/// A live recording's level meter, shared between the worker thread and
-/// whichever UI is drawing it.
-///
-/// This is deliberately not the same numbers `record_into` already tracks for
-/// [`crate::capture::silent_tap_advice`] and the room-silent warning below:
-/// those are cumulative over the whole capture, and are the app's only guard
-/// against a capture that reports success and contains silence — resetting
-/// them would make a dead mic read as healthy the moment the meter cleared.
-/// `room_peak_milli`/`call_peak_milli` here answer a different question, "is
-/// audio arriving *right now*", and are reset every second for exactly that
-/// reason. Peaks are stored as thousandths of full scale so an `f32` amplitude
-/// fits an atomic integer.
+/// Per-second peaks for a live UI. Kept apart from the cumulative peaks behind
+/// [`crate::capture::silent_tap_advice`], which must never reset or a dead mic
+/// would read as healthy. Peaks are thousandths of full scale to fit an atomic.
 pub struct Meter {
     pub elapsed_ms: AtomicU64,
     pub room_peak_milli: AtomicU32,
@@ -316,10 +282,6 @@ impl Meter {
         self.phase.store(p as u8, Ordering::Relaxed);
     }
 
-    /// One line, matching the shape of the status file for the phases that
-    /// have a level to show, and reading the per-interval peaks — so a muted
-    /// mic falls back to zero within a second rather than holding whatever it
-    /// last saw.
     pub fn status_line(&self) -> String {
         let elapsed = self.elapsed_ms.load(Ordering::Relaxed) / 1000;
         let (m, s) = (elapsed / 60, elapsed % 60);
@@ -341,23 +303,14 @@ impl Meter {
     }
 }
 
-/// A session directory this process created and therefore owns.
-///
-/// The only way to hold one is [`SessionDir::claim`], and claiming is what
-/// creates the directory — so a `SessionDir` is evidence that no other
-/// recording is writing there. That is what stops two recordings started in
-/// the same clock minute from sharing the directory their timestamp names.
+/// A session directory this process created through [`SessionDir::claim`],
+/// so no other recording writes there, even one started in the same minute.
 #[derive(Debug)]
 pub struct SessionDir(PathBuf);
 
 impl SessionDir {
-    /// The only constructor. `create_dir` — not `create_dir_all` — fails with
-    /// `AlreadyExists` rather than succeeding into an occupied directory, so
-    /// the claim is atomic against anything else racing for the same name.
-    ///
-    /// A collision retries with a **zero-padded** suffix (`-02`, `-03`).
-    /// `latest()` and every listing sort these names as bytes, and unpadded
-    /// `-10` sorts before `-2`.
+    /// `create_dir`, not `create_dir_all`, so the claim is atomic. Collision
+    /// suffixes are zero-padded because listings sort names as bytes.
     pub fn claim(home: &Path, name: Option<&str>) -> Result<Self> {
         std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
         let started = crate::clock::now();
@@ -391,9 +344,7 @@ impl SessionDir {
         &self.0
     }
 
-    /// The session id, which is the directory's own name and never the string
-    /// that was formatted to ask for it: a claim that collided is called
-    /// `-02`, and everything written inside has to say so.
+    /// The directory's own name, including any `-02` collision suffix.
     pub fn id(&self) -> String {
         self.0
             .file_name()
@@ -408,26 +359,20 @@ impl AsRef<Path> for SessionDir {
     }
 }
 
-/// Proof that a stop was asked for, and of nothing else. The unit field is
-/// private, so [`signal_stop`] is the only thing in the program that can make
-/// one — a "stopped" state cannot be constructed without having stopped.
+/// Proof that a stop was asked for. Only [`signal_stop`] can make one.
 #[derive(Debug)]
 pub struct StopSignalled(());
 
-/// Ask the recording in `dir` to stop. Unlike [`stop_recording`] this cannot
-/// signal the wrong directory: it is told which one, by a value only a claim
-/// could have produced, so moving the sessions folder mid-recording does not
-/// make the running capture unreachable.
+/// Unlike [`stop_recording`], addresses the claimed directory, so moving the
+/// sessions folder mid-recording cannot strand the capture.
 pub fn signal_stop(dir: &SessionDir) -> Result<StopSignalled> {
     let p = dir.path().join(STOP_FILE);
     std::fs::write(&p, "").with_context(|| format!("writing {}", p.display()))?;
     Ok(StopSignalled(()))
 }
 
-/// Removes a just-claimed directory unless the recording got far enough for it
-/// to hold something. Disarmed as soon as the tap is running: past that point
-/// the directory may hold the only copy of a conversation, and an empty
-/// directory left behind is the cheaper mistake by a wide margin.
+/// Removes a just-claimed directory unless disarmed. Disarmed once the tap
+/// runs: past that point the directory may hold the only copy of a conversation.
 struct ClaimGuard<'a>(Option<&'a Path>);
 
 impl ClaimGuard<'_> {
@@ -444,21 +389,17 @@ impl Drop for ClaimGuard<'_> {
     }
 }
 
-/// Held by whichever process is transcribing a session. Two transcribers on
-/// one directory would race to truncate `raw.jsonl`, and the launch-time
-/// re-queue cannot otherwise tell a transcriber that is running from one
-/// that died.
+/// Two transcribers on one directory would race to truncate `raw.jsonl`.
 pub const TRANSCRIBING_LOCK: &str = "transcribing.lock";
 
-/// Proof that this process holds the transcription lock for a session, for
-/// as long as it lives. Only [`claim_transcription`] makes one.
+/// Proof this process holds the transcription lock. Only
+/// [`claim_transcription`] makes one.
 #[derive(Debug)]
 pub struct TranscribeLock(PathBuf);
 
 impl Drop for TranscribeLock {
     fn drop(&mut self) {
-        // Only a lock that still names this process. If it was ever judged
-        // stale and taken over, the file is somebody else's now.
+        // A lock taken over as stale belongs to somebody else now.
         let ours = std::fs::read_to_string(&self.0)
             .is_ok_and(|s| s.trim() == std::process::id().to_string());
         if ours {
@@ -467,27 +408,20 @@ impl Drop for TranscribeLock {
     }
 }
 
-/// The pid written into a lock file, if the file names a live process. A pid
-/// that no longer answers `kill(pid, 0)` is a crash's leftovers, and the
-/// lock is stale.
+/// The lock holder's pid, if it is still alive.
 pub fn live_transcriber(dir: &Path) -> Option<u32> {
     let pid: u32 = std::fs::read_to_string(dir.join(TRANSCRIBING_LOCK))
         .ok()?
         .trim()
         .parse()
         .ok()?;
-    // Signal 0 delivers nothing and only reports whether the pid exists.
-    // Safe: no memory is involved and a wrong pid is answered, not acted on.
+    // SAFETY: signal 0 delivers nothing; it only reports whether the pid exists.
     (unsafe { libc::kill(pid as libc::pid_t, 0) } == 0).then_some(pid)
 }
 
-/// Take the transcription lock for `dir`, or say who holds it. A stale lock
-/// from a dead process is taken over; a live one is refused.
-///
-/// The pid is written to a private file first and hard-linked into place:
-/// `link` fails if the lock exists and otherwise publishes a file that
-/// already holds its contents, so no reader can ever see an empty lock and
-/// mistake a live claim for a stale one.
+/// Takes over a stale lock and refuses a live one. The pid is staged and
+/// hard-linked into place, so no reader ever sees an empty lock and mistakes a
+/// live claim for a stale one.
 pub fn claim_transcription(dir: &Path) -> Result<TranscribeLock> {
     let path = dir.join(TRANSCRIBING_LOCK);
     let pid = std::process::id();
@@ -505,8 +439,7 @@ pub fn claim_transcription(dir: &Path) -> Result<TranscribeLock> {
                             dir.display()
                         );
                     }
-                    // Dead holder: clear it and try once more. A second
-                    // AlreadyExists means someone else won the retry.
+                    // A second AlreadyExists means someone else won the retry.
                     std::fs::remove_file(&path).ok();
                 }
                 Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
@@ -518,7 +451,6 @@ pub fn claim_transcription(dir: &Path) -> Result<TranscribeLock> {
     result
 }
 
-/// Claim a directory under the sessions folder and record into it.
 pub fn record(
     name: Option<&str>,
     bundles: &[String],
@@ -529,15 +461,7 @@ pub fn record(
     record_into(&dir, name, bundles, seconds, capture, None)
 }
 
-/// Record into a directory that has already been claimed, then transcribe
-/// it, blocking for both. This creates no session directory of its own, so
-/// "record a second session into an occupied one" is not expressible by any
-/// caller, present or future.
-///
-/// The two halves are [`capture_into`] and [`transcribe_session`]. The CLI
-/// runs them back to back through this; the menu bar app runs the first on
-/// the capture thread and hands the second to its transcription queue, so a
-/// new recording can start while the last one is still being transcribed.
+/// [`capture_into`] then [`transcribe_session`], blocking.
 pub fn record_into(
     dir: &SessionDir,
     name: Option<&str>,
@@ -550,16 +474,8 @@ pub fn record_into(
     transcribe_session(&path, meter)
 }
 
-/// Capture into a claimed directory until stopped, and leave the audio on
-/// disk ready to transcribe: 16 kHz `audio/room.wav` and `audio/call.wav`,
-/// `session.json`, and `status` reading `captured`.
-///
-/// `name` is the human title stored in `session.json`; the id is the claimed
-/// directory's own name and comes from `dir`. `capture` overrides the
-/// `capture` setting for this recording; in `mic` mode no process tap is
-/// created and no `call` files are written. `meter`, when given, is written
-/// alongside the status file for a live UI to read without touching the
-/// filesystem.
+/// Capture until stopped, leaving 16 kHz `audio/room.wav` and
+/// `audio/call.wav`, `session.json`, and `status` reading `captured`.
 pub fn capture_into(
     dir: &SessionDir,
     name: Option<&str>,
@@ -572,8 +488,6 @@ pub fn capture_into(
     let id = dir.id();
     let dir = dir.path();
 
-    // A `--app` on the command line beats the stored setting; with no flag the
-    // settings window decides.
     let cfg = crate::config::Config::load();
     let mode = capture.unwrap_or(cfg.capture);
     let mic_only = mode == CaptureMode::Mic;
@@ -593,8 +507,7 @@ pub fn capture_into(
     let started = crate::clock::now();
     let audio = dir.join("audio");
     std::fs::create_dir_all(&audio).with_context(|| format!("creating {}", audio.display()))?;
-    // `session.json` is written only once capture ends; this records the start
-    // now, so a session that crashes mid-capture still knows when it began.
+    // A session that crashes mid-capture still knows when it began.
     std::fs::write(dir.join(STARTED_FILE), crate::clock::rfc3339(&started))
         .with_context(|| format!("writing {}", dir.join(STARTED_FILE).display()))?;
 
@@ -603,8 +516,7 @@ pub fn capture_into(
     } else {
         ProcessTap::start(bundles, 60, true, cfg.input_device.as_deref())?
     };
-    // Two devices, two clocks: the mic is on the input device and the call on
-    // the tap's aggregate, so they need not share a sample rate.
+    // The mic and the tap's aggregate are separate devices with separate rates.
     let mic_hz = tap.mic_rate as u32;
     let call_hz = tap.call_rate as u32;
     let (mic_ch, call_ch) = (tap.mic_channels, tap.call_channels);
@@ -632,8 +544,7 @@ pub fn capture_into(
         );
     }
 
-    // Native-rate scratch is the recoverable source; the 16 kHz tracks the
-    // helper reads are written from it after Stop.
+    // Native-rate scratch is the recoverable source until resampled after Stop.
     let room_native = audio.join("room.native.wav");
     let call_native = audio.join("call.native.wav");
     let spec = |hz: u32| hound::WavSpec {
@@ -656,9 +567,8 @@ pub fn capture_into(
     unsafe {
         libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
     }
-    // Ctrl-C means stop only while capturing. Afterwards it is the default
-    // again, so one during `record`'s transcription ends the CLI and its
-    // helper together, which is an abandoned job and not a counted failure.
+    // Ctrl-C means stop only while capturing. During transcription it kills
+    // the CLI and its helper together: an abandoned job, not a counted failure.
     struct DefaultSigint;
     impl Drop for DefaultSigint {
         fn drop(&mut self) {
@@ -671,10 +581,8 @@ pub fn capture_into(
 
     let stop_file = dir.join(STOP_FILE);
     let status_file = dir.join(STATUS_FILE);
-    // No stale-sentinel sweep here: the directory was claimed exclusively a
-    // moment ago, so it cannot hold one. Deleting a STOP written *since* the
-    // claim would swallow a real stop and leave the capture running under a
-    // caller that believes it stopped.
+    // Never clear STOP here: the directory is freshly claimed, so any STOP is
+    // a real one.
     let deadline = seconds.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
 
     let t0 = std::time::Instant::now();
@@ -682,9 +590,6 @@ pub fn capture_into(
     let mut frames = 0u64;
     let mut room_peak = 0.0f32;
     let mut call_peak = 0.0f32;
-    // Beside the cumulative peaks above, not instead of them: these reset
-    // every time the meter is written, so a mic that goes silent mid-capture
-    // reads as silent within a second rather than holding its last peak.
     let mut interval_room_peak = 0.0f32;
     let mut interval_call_peak = 0.0f32;
     let mut last_print = std::time::Instant::now();
@@ -695,13 +600,11 @@ pub fn capture_into(
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
-        // Already mono, and already padded for any stretch the tap slept
-        // through, so the two tracks stay level with each other.
+        // Mono, and padded for any stretch the tap slept through.
         let (room, call) = tap.drain(&mut drain);
 
-        // The status line has to be written even when nothing is arriving —
-        // a silent tap is exactly the case somebody is staring at the menu
-        // waiting for a number to move.
+        // Written even when nothing arrives: a silent tap is when someone is
+        // watching the menu.
         if last_print.elapsed().as_millis() >= 1000 {
             max_rendering = max_rendering.max(crate::probe::processes_rendering_output());
             let secs = t0.elapsed().as_secs();
@@ -759,16 +662,12 @@ pub fn capture_into(
     if let Some(w) = call_w.take() {
         w.finalize()?;
     }
-    // Read before the tap goes away: `frames` counts the silence `drain`
-    // inserts to keep the tracks level, so it cannot tell a stalled capture
-    // from a working one.
+    // `frames` counts the padding `drain` inserts, so it cannot tell a stalled
+    // capture from a working one.
     let (mic_real, _, call_real, call_total) = tap.real_seconds(&drain);
     drop(tap);
     std::fs::remove_file(&stop_file).ok();
-    // `Done` here means the *capture* is done: the tap is gone and the only
-    // work left on this thread is writing what it heard. The window draws it
-    // as "Finishing", which is the honest word for the seconds of resampling
-    // that follow a Stop.
+    // The capture is done; the window shows "Finishing" for the resample.
     std::fs::write(&status_file, "finishing\n").ok();
     if let Some(m) = &meter {
         m.set_phase(MeterPhase::Done);
@@ -799,15 +698,13 @@ pub fn capture_into(
         );
     }
 
-    // Cumulative peaks over the whole capture, untouched: these two checks are
-    // the only guard against a capture that reports success and contains
-    // silence, and a per-interval peak would answer a different question.
+    // Cumulative peaks: the only guard against a capture that reports success
+    // and contains silence.
     let mut warnings: Vec<String> = Vec::new();
     if room_peak < 1e-4 {
         eprintln!("  WARNING: the room track is silent — check the microphone grant.");
         warnings.push("the room track is silent — check the microphone grant.".into());
     }
-    // No tap in mic mode, so a silent call track means nothing there.
     if !mic_only {
         if let Some(advice) = crate::capture::silent_tap_advice(call_peak, max_rendering, bundles) {
             eprintln!("\n  WARNING: {advice}\n");
@@ -815,9 +712,8 @@ pub fn capture_into(
         }
     }
 
-    // Finalize one track at a time so both full native buffers are never
-    // retained together. The native scratch goes only once its 16 kHz copy
-    // is on disk.
+    // One track at a time so both native buffers are never held together. The
+    // scratch goes only once its 16 kHz copy is on disk.
     for (track, native, out) in [
         (Track::Room, &room_native, audio.join("room.wav")),
         (Track::Call, &call_native, audio.join("call.wav")),
@@ -832,9 +728,8 @@ pub fn capture_into(
         std::fs::remove_file(native).ok();
     }
 
-    // Written here, at the end of the capture, rather than after ASR: the
-    // session is complete as a *recording* now, and a transcript that never
-    // arrives must not leave it looking like a capture that was killed.
+    // Before ASR, so a transcript that never arrives does not make this look
+    // like a killed capture.
     let meta = SessionMeta {
         id: id.clone(),
         name: name.map(str::to_string),
@@ -857,22 +752,16 @@ pub fn capture_into(
         dir.join("session.json"),
         serde_json::to_string_pretty(&meta)?,
     )?;
-    // `captured` is the one status only this half writes, and the one
-    // `captured_awaiting_transcript` looks for after a crash.
     std::fs::write(&status_file, "captured\n").ok();
     eprintln!("  audio written — {:.1}s", duration_s);
     Ok(dir.to_path_buf())
 }
 
-/// Transcribe a session whose audio [`capture_into`] has already written,
-/// with the model helper (ADR 0020): words and speakers for each track into
-/// `raw.jsonl` and `edits.jsonl`, then `transcript.md`. Runs on whichever
-/// thread calls it — the CLI's, or the menu bar app's transcription queue —
-/// and the models run in the helper's process, not this one.
+/// Transcribe audio [`capture_into`] wrote, in the model helper's process
+/// (ADR 0020).
 pub fn transcribe_session(dir: &Path, meter: Option<std::sync::Arc<Meter>>) -> Result<PathBuf> {
-    // A missing helper or model is this machine's fault, not the session's:
-    // it is reported, and not counted toward the retry cap, or two launches
-    // without the models would park every session waiting for a transcript.
+    // A missing helper or model is not counted toward the retry cap, or two
+    // launches without models would park every session.
     let engine = match crate::pipeline::Engine::locate().and_then(|e| e.check().map(|()| e)) {
         Ok(engine) => engine,
         Err(e) => {
@@ -885,9 +774,7 @@ pub fn transcribe_session(dir: &Path, meter: Option<std::sync::Arc<Meter>>) -> R
     };
     let diarize = crate::config::Config::load().diarize;
     let done = transcribe_with(dir, &engine, diarize, meter.as_ref())?;
-    // Only now that the text exists is the audio safe to age out. This covers
-    // the session just recorded as well as every older one, which is why there
-    // is no launchd agent: the app runs whenever a recording happens.
+    // Audio may age out only once its text exists.
     match sweep_audio(&home(), crate::config::Config::load().audio_retention_days) {
         0 => {}
         n => eprintln!("  {n} track(s) of aged-out audio removed"),
@@ -902,22 +789,17 @@ pub fn transcribe_with(
     diarize: bool,
     meter: Option<&std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
-    // Taken before anything is written, held until the transcript is. A
-    // second transcriber — the CLI and the app on the same session — is
-    // refused here rather than racing it, and that refusal is not a failure
-    // of this session's job.
+    // A refusal here is not a failure of this session's job.
     let _lock = claim_transcription(dir)?;
-    // Finished while this waited (the queue, the window and the CLI can each
-    // ask): there is nothing to do, and running again would re-transcribe it.
+    // Finished while this waited for the lock.
     if dir.join("transcript.md").is_file() {
         return Ok(dir.to_path_buf());
     }
     run_locked(dir, engine, diarize, meter)
 }
 
-/// Transcribe a finished session again from its audio. The transcript it
-/// has now is archived under `previous/`, never deleted, and the names a
-/// person typed carry over (see [`crate::pipeline::carry_names`]).
+/// The current transcript is archived under `previous/`, never deleted, and
+/// typed names carry over ([`crate::pipeline::carry_names`]).
 pub fn rerun_with(
     dir: &Path,
     engine: &crate::pipeline::Engine,
@@ -929,8 +811,7 @@ pub fn rerun_with(
     run_locked(dir, engine, diarize, meter)
 }
 
-/// [`rerun_with`] with the helper beside this executable and the saved
-/// diarize setting.
+/// [`rerun_with`] with the located helper and the saved diarize setting.
 pub fn rerun_session(dir: &Path, meter: Option<std::sync::Arc<Meter>>) -> Result<PathBuf> {
     let engine = crate::pipeline::Engine::locate()?;
     rerun_with(
@@ -959,10 +840,6 @@ fn run_locked(
     }
 }
 
-/// The session's own record of what went wrong, and one more observed
-/// failure toward [`crate::pipeline::RETRY_CAP`]. The menu bar app may be
-/// recording something else when this lands and have nowhere to draw it yet;
-/// the file is there whenever the session is opened.
 fn fail(dir: &Path, e: &anyhow::Error, meter: Option<&std::sync::Arc<Meter>>) {
     std::fs::write(dir.join(STATUS_FILE), format!("failed: {e:#}\n")).ok();
     crate::pipeline::note_failure(dir);
@@ -971,9 +848,8 @@ fn fail(dir: &Path, e: &anyhow::Error, meter: Option<&std::sync::Arc<Meter>>) {
     }
 }
 
-/// Rewrite `transcript.md` after an edit, but only on a finished session: on
-/// one still waiting for its transcript, writing it would mark the session
-/// finished and take it off the queue.
+/// Only on a finished session: writing `transcript.md` for a pending one
+/// would take it off the queue.
 fn refresh_transcript(dir: &Path) -> Result<()> {
     let md = dir.join("transcript.md");
     if md.is_file() {
@@ -982,7 +858,6 @@ fn refresh_transcript(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove the warnings that begin with `prefix` from the session's metadata.
 pub fn clear_warnings(dir: &Path, prefix: &str) -> Result<()> {
     let path = dir.join("session.json");
     let text = std::fs::read_to_string(&path)?;
@@ -997,7 +872,6 @@ pub fn clear_warnings(dir: &Path, prefix: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether the session carries a warning that begins with `prefix`.
 fn has_warning(dir: &Path, prefix: &str) -> bool {
     std::fs::read_to_string(dir.join("session.json"))
         .ok()
@@ -1005,7 +879,6 @@ fn has_warning(dir: &Path, prefix: &str) -> bool {
         .is_some_and(|m| m.warnings.iter().any(|w| w.starts_with(prefix)))
 }
 
-/// Append a warning to the session's metadata, where the window shows it.
 pub fn add_warning(dir: &Path, warning: &str) -> Result<()> {
     let path = dir.join("session.json");
     let text = std::fs::read_to_string(&path)?;
@@ -1019,13 +892,8 @@ pub fn add_warning(dir: &Path, warning: &str) -> Result<()> {
     Ok(())
 }
 
-/// Every session directory under `root`, oldest first. Session ids are
-/// timestamps, so sorting by name sorts by time without stat-ing anything —
-/// and the `is_dir` filter is what keeps a loose file in the folder (`app.log`
-/// sorts after every `2…` id) out of the answer.
-///
-/// This is the one enumeration of the sessions folder. Anything else walking
-/// it with `read_dir` is the same bug in a new place.
+/// Oldest first: ids are timestamps. Follows symlinks; `is_dir` keeps loose
+/// files such as `app.log`, which sorts after every id, out.
 pub fn list(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -1039,14 +907,8 @@ pub fn list(root: &Path) -> Vec<PathBuf> {
     all
 }
 
-/// One session as `ambient sessions` reports it: what the directory says about
-/// itself, and what the filesystem says is happening to it right now.
-///
-/// Every metadata field is optional because every one of them comes from
-/// `session.json`, which a session being captured has not written yet and a
-/// session interrupted mid-write may have written only half of. Both are
-/// listed rather than hidden — a session that has gone wrong is the one a
-/// person most needs to see.
+/// Metadata fields are optional: a live capture has no `session.json` yet and
+/// an interrupted one may not parse. Both are listed, never hidden.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionSummary {
     pub id: String,
@@ -1066,10 +928,7 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
-    /// The one word for what is happening to this session. Ordered by what is
-    /// happening *now*: a capture in flight is `live` whatever else the
-    /// directory holds, and `broken` outranks the rest because unreadable
-    /// metadata makes every other answer a guess.
+    /// `broken` outranks `done` because unreadable metadata makes it a guess.
     pub fn state(&self) -> &'static str {
         match self {
             s if s.live => "live",
@@ -1081,31 +940,22 @@ impl SessionSummary {
     }
 }
 
-/// Every session under `root`, newest first, summarised.
-///
-/// A directory counts as a session when it holds a `session.json` or when its
-/// native scratch wav is growing — the two ends of a recording's life. Nothing
-/// else in the folder is one, which is what keeps a stray `notes` directory
-/// out of the answer.
+/// Newest first, pinned first.
 pub fn summaries(root: &Path) -> Vec<SessionSummary> {
     let mut out: Vec<SessionSummary> = list(root)
         .iter()
         .rev()
         .filter_map(|d| summarise(d))
         .collect();
-    // Stable: ties (nothing pinned, or several sessions pinned) keep the
-    // newest-first order the collection above already established.
+    // Stable, so ties keep newest-first.
     out.sort_by_key(|s| !s.pinned);
     out
 }
 
-/// One directory, or `None` when it is not a session at all. Public so a
-/// caller enumerating the folder under its own rule — the MCP server refuses
-/// symlinks that [`list`] follows — can summarise the directories it kept.
+/// `None` unless `dir` holds `session.json` or a growing native wav.
 pub fn summarise(dir: &Path) -> Option<SessionSummary> {
     let json = dir.join("session.json");
-    // `symlink_metadata` rather than `metadata`: a symlink here is followed by
-    // nothing, so the file is described, not the thing it points at.
+    // Describes a symlink itself, never its target.
     let present = std::fs::symlink_metadata(&json);
     let live = is_growing(&dir.join("audio").join("room.native.wav"));
     if present.is_err() && !live {
@@ -1130,8 +980,7 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
             .any(|name| dir.join("audio").join(name).is_file()),
     };
     match present {
-        // A capture in flight writes `session.json` last, so its absence here
-        // is the normal state of a live session rather than a fault.
+        // A live capture has not written `session.json` yet.
         Err(_) => {}
         Ok(m) if !m.is_file() => s.error = Some("session.json is a symlink".into()),
         Ok(_) => match std::fs::read_to_string(&json)
@@ -1147,20 +996,15 @@ pub fn summarise(dir: &Path) -> Option<SessionSummary> {
                 s.warnings = meta.warnings;
                 s.pinned = meta.pinned;
             }
-            // The id stays the directory name: it is what the caller typed to
-            // get here and the only thing left that identifies the session.
             Err(e) => s.error = Some(format!("session.json: {e}")),
         },
     }
     Some(s)
 }
 
-/// A change to a session's metadata: only the `Some` fields are applied, and
-/// `add_tag`/`remove_tag` change one tag at a time so two clients each adding
-/// a different tag both keep theirs rather than one clobbering the other's
-/// list. No `deny_unknown_fields` — the api arm deserialises this out of the
-/// same params object that also carries `session`, and rejecting an unknown
-/// key there would refuse a perfectly good request.
+/// Only `Some` fields apply. Tags change one at a time so two clients adding
+/// different tags both keep theirs. No `deny_unknown_fields`: the api
+/// deserialises this from params that also carry `session`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MetaPatch {
     pub name: Option<String>,
@@ -1170,19 +1014,9 @@ pub struct MetaPatch {
     pub remove_tag: Option<String>,
 }
 
-/// Apply `patch` to `dir`'s `session.json` and return the result.
-///
-/// Lock-free on purpose: the transcriber calls sibling writers
-/// (`diarize_session`, `name_speaker`, `undo_last_naming`) while already
-/// holding [`claim_transcription`]'s lock, and this function joins that
-/// family rather than a special case — every *entry point* (the `api::call`
-/// arm, the CLI's `meta` arm) claims the lock once around the call. Claiming
-/// it again in here would make the entry point's own claim collide with
-/// itself on the success path.
-///
-/// The write is atomic: a newly created staging file is written in full and then
-/// renamed over `session.json`, so a reader never sees a half-written file
-/// and a crash mid-write leaves the old one intact.
+/// Lock-free: entry points claim [`claim_transcription`] once around the
+/// call, and claiming it here would collide with theirs. Staged and renamed,
+/// so a crash mid-write leaves the old file intact.
 pub fn update_meta(dir: &Path, patch: &MetaPatch) -> Result<SessionMeta> {
     let path = dir.join("session.json");
     let text = std::fs::read_to_string(&path).map_err(|_| {
@@ -1237,26 +1071,12 @@ pub fn update_meta(dir: &Path, patch: &MetaPatch) -> Result<SessionMeta> {
     Ok(meta)
 }
 
-/// The most recently written session. Built on [`list`] so a second walk
-/// cannot drift from the first.
 pub fn latest(root: &Path) -> Option<PathBuf> {
     list(root).pop()
 }
 
-/// Sessions whose audio was written and whose transcript never was, oldest
-/// first — what a crash mid-queue leaves behind, and what the menu bar app
-/// re-queues at launch.
-///
-/// The shape is `session.json` present and `transcript.md` absent, with
-/// audio to transcribe. `raw.jsonl` is deliberately *not* consulted: a crash
-/// after the transcriber created it but before it finished would otherwise
-/// leave the session excluded for ever, and `transcript.md` is the last thing
-/// written — the same test [`sweep_audio`] uses for "finished". Sessions from
-/// before the split wrote `session.json` after ASR, so they qualify only if
-/// they were killed in that window, which is exactly when they should. A
-/// native scratch wav still growing means a capture is in flight in another
-/// process, and a [`TRANSCRIBING_LOCK`] naming a live pid means a transcriber
-/// is; neither session is ours to touch.
+/// What the menu bar app re-queues at launch. `raw.jsonl` is not consulted: a
+/// transcriber that died after creating it would strand the session for ever.
 pub fn captured_awaiting_transcript(root: &Path) -> Vec<PathBuf> {
     list(root)
         .into_iter()
@@ -1272,20 +1092,15 @@ pub fn captured_awaiting_transcript(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Delete track audio older than the retention window, leaving every transcript
-/// untouched. `None` keeps audio forever; `Some(0)` deletes it as soon as the
-/// transcript exists.
-///
-/// Age is taken from the audio file itself rather than its session directory,
-/// so renaming a speaker months later does not resurrect the recording.
-/// Whether a session directory holds at least one transcribed line. Also the
-/// test for "is this a session at all" — anything else in the folder has no
-/// `raw.jsonl` and is left alone.
+/// Also the "is this a session" test: anything else has no `raw.jsonl`.
 fn has_transcribed_words(session: &Path) -> bool {
     std::fs::read_to_string(session.join("raw.jsonl"))
         .is_ok_and(|t| t.lines().any(|l| !l.trim().is_empty()))
 }
 
+/// Delete track audio older than the retention window. `None` keeps it
+/// forever. Age comes from the audio file, not the directory, so renaming a
+/// speaker months later does not resurrect the recording.
 pub fn sweep_audio(root: &Path, keep_days: Option<u32>) -> usize {
     sweep_audio_at(root, keep_days, SystemTime::now())
 }
@@ -1300,9 +1115,7 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
     };
     let mut removed = 0;
     for entry in entries.filter_map(|e| e.ok()) {
-        // Never follow a symlink out of the sessions folder: this deletes
-        // files, and a link placed here must not make it delete somebody
-        // else's.
+        // This deletes files: never follow a link out of the sessions folder.
         if entry
             .path()
             .symlink_metadata()
@@ -1312,16 +1125,9 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
         }
         let session = entry.path();
         let audio = session.join("audio");
-        // Both halves are needed, and each guards a different way of losing
-        // the only copy of a conversation:
-        //
-        // - no `transcript.md` means the recording is still being written, and
-        //   `raw.jsonl` is already growing by then;
-        // - a `transcript.md` with no words behind it means ASR found nothing,
-        //   which is exactly when the audio is still the only record. `markdown`
-        //   writes a transcript saying so, so the file alone proves nothing.
-        // - a transcript written without speakers after the diariser failed
-        //   is one a person is likely to transcribe again, which needs it.
+        // Each guards the only copy of a conversation: no transcript yet; a
+        // transcript with no words (`markdown` writes one when ASR found
+        // nothing); or one without speakers, which a person will likely rerun.
         if !session.join("transcript.md").is_file()
             || !has_transcribed_words(&session)
             || has_warning(&session, crate::pipeline::UNLABELLED_WARNING)
@@ -1341,8 +1147,6 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
                 removed += 1;
             }
         }
-        // Tidy the empty directory, but only if it is genuinely empty — a file
-        // this code did not put there is not its business to delete.
         if std::fs::read_dir(&audio).is_ok_and(|mut d| d.next().is_none()) {
             std::fs::remove_dir(&audio).ok();
         }
@@ -1350,29 +1154,10 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
     removed
 }
 
-/// Remove a session directory and everything under it — the audio, every
-/// transcript layer, the lock file itself. Takes proof of
-/// [`claim_transcription`] rather than claiming it, following the protocol
-/// every writer here does: the *entry point* (the `api` method, the CLI arm)
-/// claims the lock once and passes the guard in, so this function stays
-/// lock-free and cannot self-conflict with a caller who is already holding it.
-///
-/// `id` is validated before anything is opened: empty, `.`, `..`, or
-/// containing a `/` is a request for something other than one directory
-/// directly under `root`, refused before it can escape it. The directory
-/// itself is tested with `symlink_metadata`, so a symlink placed at that name
-/// is refused rather than followed and its target destroyed.
-///
-/// A live capture is never removed: [`live_session_in`] naming this directory,
-/// or either native scratch track still growing, refuses with a message
-/// containing "still recording" — [`is_growing`]'s window is 10s, not the 5s
-/// this rule is sometimes described with, but that still separates a fresh
-/// file from an hour-old one. A directory with no `session.json` and no fresh
-/// audio on either track is a failed capture, and is deleted like any other.
-///
-/// Then `std::fs::remove_dir_all` while the caller still holds the lock — the
-/// lock file goes with the directory, and [`TranscribeLock`]'s `Drop` already
-/// tolerates a missing file.
+/// Takes the lock as proof rather than claiming it, so a caller holding it
+/// cannot collide with itself. A symlink at `id` is refused, never followed,
+/// and a live capture is never removed. The lock file goes with the
+/// directory; [`TranscribeLock`]'s `Drop` tolerates that.
 pub fn delete(root: &Path, id: &str, _lock: &TranscribeLock) -> Result<()> {
     if id.is_empty() || id == "." || id == ".." || id.contains('/') {
         bail!("{id:?} is not a session id");
@@ -1392,9 +1177,7 @@ pub fn delete(root: &Path, id: &str, _lock: &TranscribeLock) -> Result<()> {
     Ok(())
 }
 
-/// A raw record with whatever the edit layer has said about it. `Serialize`
-/// is what `show --json` hands to scripts, so the field names and the
-/// `room`/`call` spelling are a contract.
+/// `show --json` output, so field names and `room`/`call` are a contract.
 #[derive(Debug, Clone, Serialize)]
 pub struct Line {
     pub track: Track,
@@ -1404,24 +1187,18 @@ pub struct Line {
     pub text: String,
 }
 
-/// Read `raw.jsonl` and fold `edits.jsonl` over it, in clock order. With
-/// `verbatim`, the edit layer is ignored entirely — the same bytes the
-/// recogniser produced.
+/// Clock order; `verbatim` ignores the edit layer.
 pub fn transcript(dir: &Path, verbatim: bool) -> Result<Vec<Line>> {
     fold_edits(dir, verbatim, true)
 }
 
-/// [`transcript`] in the order `raw.jsonl` holds, which is the order the lines
-/// were appended. A reader wants the clock; anything counting lines it has
-/// already seen wants this, because the two tracks are written one after the
-/// other and their clocks are independent — so a line's arrival tells you
-/// nothing about its `start_ms`, and a cursor on the clock would skip it.
+/// [`transcript`] in append order, the only order a cursor can count: the
+/// tracks are written one after the other on independent clocks.
 pub fn transcript_appended(dir: &Path, verbatim: bool) -> Result<Vec<Line>> {
     fold_edits(dir, verbatim, false)
 }
 
-/// One line of [`search`]'s reply: which session it came from, its position
-/// in that session's [`transcript_appended`] order, and the line itself.
+/// `index` is the line's position in [`transcript_appended`] order.
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
     pub session: String,
@@ -1432,20 +1209,8 @@ pub struct Hit {
     pub text: String,
 }
 
-/// Case-insensitive substring search for `query` over the folded (non-
-/// verbatim) transcript of every session under `root`, newest session first,
-/// truncated at `limit` hits total.
-///
-/// `index` is a line's position in [`transcript_appended`] order — the order
-/// the window renders and the `transcript` API method reports — never
-/// [`transcript`]'s clock order, so a caller can hand it straight back to
-/// either one.
-///
-/// Enumeration is defensive: a candidate is a directory found with
-/// [`std::fs::symlink_metadata`] (never one `is_dir()` alone would find,
-/// which follows a link), and a session whose `raw.jsonl` is missing, not a
-/// regular file, or unparsable — a live capture, a failed one, or a
-/// half-written directory — is skipped rather than failing the whole query.
+/// Case-insensitive, newest session first, at most `limit` hits. Never
+/// follows symlinks, and skips a session it cannot read rather than failing.
 pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Hit>> {
     if query.trim().is_empty() {
         bail!("empty query");
@@ -1495,7 +1260,6 @@ pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Hit>> {
     Ok(hits)
 }
 
-/// The one body both orders share, so they cannot drift.
 fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
     let mut lines: Vec<Line> = Vec::new();
     for l in complete_jsonl(&dir.join("raw.jsonl"))? {
@@ -1517,7 +1281,6 @@ fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
                 .map(|l| serde_json::from_str(&l).context("parsing edits.jsonl"))
                 .collect::<Result<_>>()?;
 
-            // A revert names an earlier line, so gather them before applying.
             let reverted: std::collections::HashSet<usize> = edits
                 .iter()
                 .filter_map(|e| match e {
@@ -1561,9 +1324,7 @@ fn fold_edits(dir: &Path, verbatim: bool, sort: bool) -> Result<Vec<Line>> {
     Ok(lines)
 }
 
-/// Snapshot complete newline-terminated JSONL records while another thread
-/// may be appending. An incomplete UTF-8/JSON tail is ignored; malformed data
-/// before the last newline remains an error at the typed parse site.
+/// Ignores an unterminated tail, which another thread may still be appending.
 fn complete_jsonl(path: &Path) -> Result<Vec<String>> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let complete = bytes
@@ -1581,9 +1342,6 @@ fn complete_jsonl(path: &Path) -> Result<Vec<String>> {
 
 pub fn show(dir: &Path, verbatim: bool, json: bool) -> Result<()> {
     let lines = transcript(dir, verbatim)?;
-    // Under `--json` the reader is a script, so an empty session is an empty
-    // array on stdout rather than a note on stderr — a consumer that always
-    // gets JSON needs no special case for a session with nothing in it.
     if json {
         println!("{}", serde_json::to_string_pretty(&lines)?);
         return Ok(());
@@ -1607,25 +1365,14 @@ pub fn show(dir: &Path, verbatim: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Who an automatic speaker edit is attributed to. Load-bearing: a re-run
-/// carries over every speaker edit *not* by this name, because those are
-/// names a person typed. Labels are track-prefixed (`room-1`, `call-2`)
-/// because speaker 1 in the room and speaker 1 on the call are different
-/// people, and nothing downstream should be able to assume otherwise.
+/// A re-run carries over every speaker edit *not* by this name. Labels are
+/// track-prefixed because speaker 1 in the room is not speaker 1 on the call.
 pub const DIARIZE_BY: &str = "diarize";
 
-/// Attribution for a name a person typed, as opposed to a cluster id.
 pub const USER_BY: &str = "user";
 
-/// Give every line currently labelled `label` a human name. Appends one
-/// `Speaker` edit per line, so it is undoable like anything else.
-/// Speaker labels nobody has named yet, each with the first thing that voice
-/// said. The sample line is what makes the roster picker usable: `call-2` means
-/// nothing, but `call-2` next to "right, shall we start with the export spec"
-/// is recognisable.
-///
-/// A label counts as unnamed while it still has diarization's shape,
-/// `<track>-<n>`. Once a person types a name it stops matching and drops out.
+/// Generated `<track>-<n>` labels, each with the first thing that voice said
+/// so a person can recognise it.
 pub fn unnamed_labels(dir: &Path) -> Result<Vec<(String, String)>> {
     let lines = transcript(dir, false)?;
     let mut out: Vec<(String, String)> = Vec::new();
@@ -1687,10 +1434,7 @@ pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
     Ok(targets.len())
 }
 
-/// `edits.jsonl` as a list. The index of a line *is* its `target_seq`, which
-/// is why this reads the whole file rather than streaming it. A session
-/// nobody has edited has no file at all, and that is an empty list, not an
-/// error.
+/// A line's index is its `target_seq`.
 fn read_edits(dir: &Path) -> Result<Vec<Edit>> {
     let path = dir.join("edits.jsonl");
     if !path.exists() {
@@ -1704,7 +1448,6 @@ fn read_edits(dir: &Path) -> Result<Vec<Edit>> {
         .collect()
 }
 
-/// The seqs an existing `revert` already names — the set `transcript` skips.
 fn reverted_seqs(edits: &[Edit]) -> std::collections::HashSet<usize> {
     edits
         .iter()
@@ -1715,8 +1458,7 @@ fn reverted_seqs(edits: &[Edit]) -> std::collections::HashSet<usize> {
         .collect()
 }
 
-/// Append one `revert` per seq, all sharing an `at` so a batch stays legible
-/// as a batch, then rewrite `transcript.md` the way [`name_speaker`] does.
+/// The reverts share an `at` so a batch stays legible as a batch.
 fn append_reverts(dir: &Path, seqs: &[usize]) -> Result<()> {
     let now = crate::clock::now_rfc3339();
     let mut f = std::fs::OpenOptions::new()
@@ -1737,19 +1479,8 @@ fn append_reverts(dir: &Path, seqs: &[usize]) -> Result<()> {
     Ok(())
 }
 
-/// Take back the newest batch of names a person typed, returning how many
-/// edits were reverted.
-///
-/// [`name_speaker`] appends one edit per line, all carrying the same `at`, so
-/// the thing a person means by "the last name I set" is that whole batch and
-/// not its final line. Undoing appends like every other change here —
-/// `edits.jsonl` only grows — and whatever speaker edit is still live for the
-/// line surfaces again. That is usually diarization's, but a `diarize` re-run
-/// reverts its own previous labels and writes no replacement for a line
-/// somebody has named, so after a retune a line can come back with no speaker
-/// until `diarize` runs again. Only `user` edits are candidates: reverting
-/// diarization's labels is what re-running `diarize` does, and it is not what
-/// somebody asking to undo a naming means.
+/// Reverts the newest batch of `user` namings: one [`name_speaker`] call
+/// shares an `at`, and that whole batch is "the last name I set".
 pub fn undo_last_naming(dir: &Path) -> Result<usize> {
     let edits = read_edits(dir)?;
     let reverted = reverted_seqs(&edits);
@@ -1776,17 +1507,13 @@ pub fn undo_last_naming(dir: &Path) -> Result<usize> {
     Ok(batch.len())
 }
 
-/// Revert one edit by its zero-based line in `edits.jsonl` — the way to reach
-/// a change [`undo_last_naming`] does not address, such as a repair or a
-/// single line of a naming batch.
+/// Reaches what [`undo_last_naming`] does not: a repair, or one line of a batch.
 pub fn undo_seq(dir: &Path, seq: usize) -> Result<()> {
     let edits = read_edits(dir)?;
     let edit = edits
         .get(seq)
         .ok_or_else(|| anyhow!("no edit {seq} in {}", dir.join("edits.jsonl").display()))?;
-    // Reverting a revert would mean redo, which is a different verb and a
-    // different question about what "current" means. Say so rather than
-    // writing a record `transcript` would fold in a way nobody predicted.
+    // Reverting a revert would be redo, which `transcript` does not fold.
     if matches!(edit, Edit::Revert { .. }) {
         bail!("edit {seq} is itself a revert — undo the edit it names instead");
     }
@@ -1796,16 +1523,11 @@ pub fn undo_seq(dir: &Path, seq: usize) -> Result<()> {
     append_reverts(dir, &[seq])
 }
 
-/// The session currently being captured, if any.
-///
-/// The native-rate scratch files exist only between the start of a capture and
-/// the resample that follows it — which is exactly the window in which a
-/// recording can be said to be in progress.
+/// Native scratch exists only from capture start until the resample.
 pub fn live_session() -> Option<PathBuf> {
     live_session_in(&home())
 }
 
-/// [`live_session`] against a given sessions folder, so a test can ask.
 pub fn live_session_in(root: &Path) -> Option<PathBuf> {
     let mut live: Vec<PathBuf> = std::fs::read_dir(root)
         .ok()?
@@ -1816,10 +1538,8 @@ pub fn live_session_in(root: &Path) -> Option<PathBuf> {
     live.pop()
 }
 
-/// Written to within the last few seconds. A process killed mid-recording
-/// leaves its scratch wavs behind for ever, and without this check that corpse
-/// answers to `ambient stop` and to the menu's level meter — pointing both at a
-/// directory nothing is writing to.
+/// A killed recorder leaves scratch wavs behind for ever; only a recent write
+/// means a capture is alive.
 pub fn is_growing(p: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(p) else {
         return false;
@@ -1830,8 +1550,6 @@ pub fn is_growing(p: &Path) -> bool {
         .is_some_and(|age| age.as_secs() < 10)
 }
 
-/// Ask a running `record` to stop, by session directory or by finding the one
-/// currently in flight. Returns the directory it signalled.
 pub fn stop_recording(dir: Option<&Path>) -> Result<PathBuf> {
     let dir = match dir {
         Some(d) => d.to_path_buf(),
@@ -1848,7 +1566,7 @@ pub fn stop_recording(dir: Option<&Path>) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// How much of the shorter line's wording appears in the longer one, 0.0–1.0.
+/// The share of the shorter line's words found in the longer, 0.0–1.0.
 fn containment(a: &str, b: &str) -> f32 {
     let tok = |s: &str| -> Vec<String> {
         s.to_lowercase()
@@ -1870,18 +1588,13 @@ fn containment(a: &str, b: &str) -> f32 {
     short.iter().filter(|t| set.contains(t)).count() as f32 / short.len() as f32
 }
 
-/// At or above this, two overlapping lines are the same utterance heard twice.
-/// Low enough to survive two independent ASR passes disagreeing on a word or
-/// two, high enough that two people saying different things over each other
-/// both survive.
+/// Tolerates two ASR passes disagreeing on a word or two, yet keeps two people
+/// talking over each other.
 const BLEED_SIMILARITY: f32 = 0.6;
 
-/// Drop room lines that are the microphone overhearing the call.
-///
-/// The room mic picks up the laptop speakers, so on speakerphone every remote
-/// utterance is transcribed twice. Only room lines are ever dropped: the call
-/// track is both the better copy — 0.87 peak against the mic's 0.26 — and the
-/// side that cannot be reconstructed if it goes missing.
+/// Drop room lines that are the mic overhearing the call. Only room lines
+/// drop: the call track is the better copy (0.87 peak against the mic's 0.26)
+/// and cannot be reconstructed.
 pub fn dedup_bleed(lines: &[Line]) -> (Vec<Line>, usize) {
     let calls: Vec<&Line> = lines.iter().filter(|l| l.track == Track::Call).collect();
     let mut kept = Vec::with_capacity(lines.len());
@@ -1916,10 +1629,7 @@ fn mmss(ms: u64) -> String {
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
-/// The session as a markdown document, for whatever files it onward.
-///
-/// Derived, never authoritative: `raw.jsonl` and `edits.jsonl` remain the
-/// source of truth, so regenerating this file loses nothing.
+/// Derived, never authoritative, so regenerating it loses nothing.
 pub fn markdown(dir: &Path) -> Result<String> {
     let lines = transcript(dir, false)?;
     let (lines, suppressed) = dedup_bleed(&lines);
@@ -1935,8 +1645,7 @@ pub fn markdown(dir: &Path) -> Result<String> {
         }
     }
 
-    // JSON string escaping is valid YAML double-quoted scalar escaping, so this
-    // survives a session named with a colon or a quote.
+    // JSON string escaping is valid YAML double-quoted escaping.
     let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
     let mut out = String::from("---\n");
     if let Some(m) = &meta {
@@ -1998,9 +1707,7 @@ pub fn markdown(dir: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// A session directory as `record()` leaves one: a transcript, some raw
-    /// lines, and the two track wavs. Built in a temp dir — the sweep deletes
-    /// files, so it must never be pointed at the real sessions folder.
+    /// Temp dirs only: the sweep deletes files.
     fn fake_session(root: &Path, id: &str, with_transcript: bool) -> PathBuf {
         let dir = root.join(id);
         std::fs::create_dir_all(dir.join("audio")).unwrap();
@@ -2055,22 +1762,18 @@ mod tests {
     fn audio_within_the_window_is_left_alone() {
         let root = sweep_root("window");
         let dir = fake_session(&root, "2026-01-01T0900", true);
-        // Seven days of retention, judged one day after the file was written.
         let a_day_later = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
         assert_eq!(sweep_audio_at(&root, Some(7), a_day_later), 0);
         assert!(dir.join("audio").join("room.wav").exists());
 
-        // ...and eight days after, it goes.
         let later = SystemTime::now() + Duration::from_secs(8 * 24 * 60 * 60);
         assert_eq!(sweep_audio_at(&root, Some(7), later), 2);
         assert!(!dir.join("audio").exists());
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The one that would hurt most. `markdown` writes a transcript saying
-    /// "no speech was transcribed" when ASR finds nothing, so a file-exists
-    /// check would delete the audio of a recording that produced no text —
-    /// destroying the only copy precisely when transcription failed.
+    /// `markdown` writes a transcript even when ASR found nothing, so the file
+    /// alone must not authorise deleting the only copy.
     #[test]
     fn a_transcript_with_no_words_in_it_does_not_authorise_deleting_the_audio() {
         let root = sweep_root("nowords");
@@ -2081,8 +1784,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The sweep deletes files, so anything in the folder that is not a session
-    /// is none of its business.
     #[test]
     fn a_directory_that_is_not_a_session_is_left_alone() {
         let root = sweep_root("notasession");
@@ -2095,8 +1796,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The one that would hurt: a recording still being transcribed has no
-    /// transcript yet, and its audio is the only copy of what was said.
     #[test]
     fn a_session_without_a_transcript_is_never_swept() {
         let root = sweep_root("inflight");
@@ -2106,23 +1805,16 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Bug 4. Two recordings starting inside the same clock minute used to be
-    /// handed the same directory name, and the second `create_dir_all`
-    /// succeeded straight into the first's session — overwriting its
-    /// transcript with its own.
     #[test]
     fn two_claims_in_one_clock_minute_yield_two_directories() {
         let root = sweep_root("claim-collide");
 
-        // Two claims microseconds apart share a clock minute unless one lands
-        // across a minute boundary. Retry on a clean root rather than assert
-        // against the wall clock.
+        // Retried in case the two claims straddle a minute boundary.
         let mut pair = None;
         for _ in 0..3 {
             std::fs::remove_dir_all(&root).ok();
             std::fs::create_dir_all(&root).unwrap();
             let first = SessionDir::claim(&root, None).unwrap();
-            // The first session's only copy of what was said.
             std::fs::write(first.path().join("transcript.md"), "the first conversation").unwrap();
             let second = SessionDir::claim(&root, None).unwrap();
             if second.id() == format!("{}-02", first.id()) {
@@ -2134,14 +1826,11 @@ mod tests {
 
         assert_ne!(first.path(), second.path());
         assert!(second.path().is_dir());
-        // The claim is what makes the second directory empty: nothing of the
-        // first's survived into it, and nothing of the first's was lost.
         assert_eq!(
             std::fs::read_to_string(first.path().join("transcript.md")).unwrap(),
             "the first conversation"
         );
         assert!(!second.path().join("transcript.md").exists());
-        // The id every file inside will carry is the directory's own name.
         assert_eq!(
             second.id(),
             second.path().file_name().unwrap().to_string_lossy()
@@ -2150,9 +1839,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The suffix is zero-padded because every listing here is a byte sort.
-    /// Unpadded, `-10` sorts before `-2` and the sidebar shows the tenth
-    /// recording of a minute above its second.
     #[test]
     fn a_padded_suffix_sorts_between_its_minute_and_the_next() {
         let root = sweep_root("padding");
@@ -2184,9 +1870,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Bug 2's other half. `app.log` sorts after every `2…` session id, so a
-    /// walk without the `is_dir` filter hands back the log file as the newest
-    /// session.
     #[test]
     fn list_ignores_files_in_the_sessions_folder() {
         let root = sweep_root("applog");
@@ -2206,8 +1889,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// `warnings` is new, and every session recorded before it exists has a
-    /// `session.json` without the field.
     #[test]
     fn a_session_json_without_warnings_still_parses() {
         let old = r#"{"id":"2026-01-01T0900","name":null,"started_at":"a","ended_at":"b",
@@ -2217,9 +1898,6 @@ mod tests {
         assert!(meta.warnings.is_empty());
     }
 
-    /// The witness: a `StopSignalled` cannot be made without writing the
-    /// sentinel, and the sentinel lands in the claimed directory rather than
-    /// in whatever `home()` says at the time.
     #[test]
     fn signal_stop_writes_the_sentinel_into_the_claimed_directory() {
         let root = sweep_root("signalstop");
@@ -2243,8 +1921,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A session with two raw lines and whatever edits are handed in, written
-    /// the way `record` and `diarize_session` write them.
     fn session_with(root: &Path, edits: &[Edit]) -> PathBuf {
         let dir = root.join("2026-01-01T0900");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2299,7 +1975,6 @@ mod tests {
         let unnamed = unnamed_labels(&dir).unwrap();
         assert_eq!(unnamed.len(), 2);
         assert_eq!(unnamed[0].0, "call-1");
-        // The sample line is the point: `call-1` alone is unrecognisable.
         assert_eq!(unnamed[0].1, "shall we start with the export spec");
         std::fs::remove_dir_all(&root).ok();
     }
@@ -2321,8 +1996,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Someone genuinely called "call-1" is not a case worth handling, but a
-    /// person named "Room-2" would be — the shape test must not eat a real name.
+    /// A person named "Room-2" must not read as a generated label.
     #[test]
     fn a_name_that_merely_resembles_a_label_is_left_named() {
         let root = sweep_root("resembles");
@@ -2337,9 +2011,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Retention and re-running interact badly if this is not guarded: the
-    /// re-run would archive and remove the transcript before discovering
-    /// there is no audio left to make a new one from.
+    /// Unguarded, a re-run would archive the transcript before finding no
+    /// audio to rebuild it from.
     #[test]
     fn rerunning_a_session_whose_audio_was_swept_refuses_and_keeps_the_transcript() {
         let root = sweep_root("swept");
@@ -2353,7 +2026,6 @@ mod tests {
         };
         let e = rerun_with(&dir, &engine, true, None).unwrap_err();
         assert!(e.to_string().contains("no audio left"), "{e}");
-        // The important half: nothing was archived or removed on the way out.
         assert_eq!(
             std::fs::read_to_string(dir.join("edits.jsonl")).unwrap(),
             before
@@ -2363,10 +2035,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// `show --json` is the scripting surface, so the field names and the
-    /// `room`/`call` spelling are part of the contract, not an implementation
-    /// detail — and an unnamed speaker has to survive as `null` rather than
-    /// vanishing, or a consumer cannot tell "nobody knows" from "no field".
+    /// An unnamed speaker stays `null`, so a script can tell "nobody knows"
+    /// from "no field".
     #[test]
     fn a_folded_transcript_serialises_as_the_documented_json() {
         let root = sweep_root("json");
@@ -2410,10 +2080,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Undo has to move the whole naming: `name_speaker` appends one edit per
-    /// line, so taking a name back one edit at a time would leave a session
-    /// half-renamed. The labels underneath come back because diarization's own
-    /// edits were never touched.
     #[test]
     fn undoing_a_naming_puts_the_label_back_on_every_line_it_took() {
         let root = sweep_root("undo-batch");
@@ -2435,16 +2101,11 @@ mod tests {
             "{lines:?}"
         );
 
-        // Diarization's labels are not something a person typed, so with the
-        // naming gone there is nothing left for `undo` to address.
         let e = undo_last_naming(&dir).unwrap_err();
         assert!(e.to_string().contains("nothing to undo"), "{e}");
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The `--seq` form addresses one line of `edits.jsonl`, including edits no
-    /// person typed — and refuses both ways of naming a line that is not there
-    /// to revert.
     #[test]
     fn undoing_one_seq_reverts_it_once_and_then_refuses() {
         let root = sweep_root("undo-seq");
@@ -2477,8 +2138,7 @@ mod tests {
         }
     }
 
-    /// Both strings are real: the same utterance as the mic and the tap each
-    /// transcribed it in the diarization end-to-end.
+    /// Real strings: one utterance as the mic and the tap each transcribed it.
     #[test]
     fn the_microphone_overhearing_the_call_is_dropped() {
         let lines = vec![
@@ -2501,8 +2161,6 @@ mod tests {
         assert_eq!(kept[0].track, Track::Call);
     }
 
-    /// The one that matters: real cross-talk must survive. A dedup that eats
-    /// speech is worse than no dedup at all.
     #[test]
     fn genuine_cross_talk_is_kept() {
         let lines = vec![
@@ -2551,10 +2209,6 @@ mod tests {
         assert!(containment("completely different words here", "retry storm gone") < 0.2);
     }
 
-    /// What the menu bar app re-queues at launch: captured, never
-    /// transcribed, and not being written by anyone. Everything else in the
-    /// folder — finished, mid-transcription, killed mid-capture, or still
-    /// recording in another process — is left alone.
     #[test]
     fn only_captured_untranscribed_sessions_are_awaiting_transcript() {
         let root = std::env::temp_dir().join(format!("ambient-awaiting-{}", std::process::id()));
@@ -2567,20 +2221,16 @@ mod tests {
             }
             d
         };
-        // Captured by the new half, never transcribed: the one to re-queue.
         let queued = mk("2026-09-02T0900", &["audio/room.wav", "session.json"]);
-        // A transcriber started (raw.jsonl exists) and died before the
-        // transcript: re-queued too, or the session is stuck for ever.
+        // A transcriber died after creating raw.jsonl.
         let half = mk(
             "2026-09-02T1000",
             &["audio/room.wav", "session.json", "raw.jsonl"],
         );
-        // Finished, audio swept.
         mk(
             "2026-09-02T1100",
             &["session.json", "raw.jsonl", "transcript.md"],
         );
-        // Finished, audio still present.
         mk(
             "2026-09-02T1130",
             &[
@@ -2590,18 +2240,15 @@ mod tests {
                 "transcript.md",
             ],
         );
-        // Killed mid-capture: no session.json, so not ours to guess about.
         mk("2026-09-02T1200", &["audio/room.wav"]);
-        // Still being captured by another process.
         mk(
             "2026-09-02T1300",
             &["audio/room.wav", "audio/room.native.wav", "session.json"],
         );
-        // Being transcribed by a live process — this one — right now.
+        // Locked by this live process.
         let busy = mk("2026-09-02T1400", &["audio/room.wav", "session.json"]);
         std::fs::write(busy.join(TRANSCRIBING_LOCK), std::process::id().to_string()).unwrap();
-        // A transcriber that died holding the lock: the pid is gone, so the
-        // lock is stale and the session is re-queued.
+        // Stale lock: no such pid.
         let stale = mk("2026-09-02T1500", &["audio/room.wav", "session.json"]);
         std::fs::write(stale.join(TRANSCRIBING_LOCK), "2147483646").unwrap();
 
@@ -2612,9 +2259,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Two transcribers on one session would race to truncate `raw.jsonl`.
-    /// The lock refuses the second while the first is alive, and takes over
-    /// from one that died.
     #[test]
     fn the_transcription_lock_refuses_a_live_holder_and_replaces_a_dead_one() {
         let dir = std::env::temp_dir().join(format!("ambient-lock-{}", std::process::id()));
@@ -2622,7 +2266,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let first = claim_transcription(&dir).unwrap();
-        // Published with its contents, and the staging file is gone.
         assert_eq!(
             std::fs::read_to_string(dir.join(TRANSCRIBING_LOCK)).unwrap(),
             std::process::id().to_string()
@@ -2654,11 +2297,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `sessions` answers with what is on disk, which includes the sessions
-    /// that are still being written and the ones whose metadata cannot be
-    /// read. Hiding either is how a session goes missing: a capture in flight
-    /// has no `session.json` yet, and one interrupted mid-write has a
-    /// `session.json` that will not parse.
     #[test]
     fn summaries_list_every_session_including_the_unreadable_ones() {
         let root = std::env::temp_dir().join(format!("ambient-summaries-{}", std::process::id()));
@@ -2676,22 +2314,17 @@ mod tests {
                      "mic_hz":48000,"channels":1,"mic_channels":1,"apps":[],"model":"parakeet"}}"#
             )
         };
-        // Recorded and transcribed.
         let a = mk("a");
         std::fs::write(a.join("session.json"), meta("a")).unwrap();
         std::fs::write(a.join("transcript.md"), "# transcript\n").unwrap();
-        // Captured, no transcript yet.
         let b = mk("b");
         std::fs::write(b.join("session.json"), meta("b")).unwrap();
-        // Interrupted mid-write: the metadata is truncated.
         let c = mk("c");
         std::fs::write(c.join("session.json"), r#"{"id":"#).unwrap();
-        // A capture in progress: `session.json` is written only once the
-        // scratch wavs have closed, so all this session has is a growing wav.
+        // A capture in progress has only a growing wav.
         let d = mk("d");
         std::fs::create_dir_all(d.join("audio")).unwrap();
         std::fs::write(d.join("audio").join("room.native.wav"), b"RIFF....").unwrap();
-        // Neither of these is a session.
         mk("notes");
         std::fs::write(root.join("README"), "not a session\n").unwrap();
 
@@ -2735,10 +2368,7 @@ mod tests {
         );
         assert_eq!(slugify("  --x--  "), "x", "no leading or trailing dash");
         assert_eq!(slugify(""), "", "nothing in, nothing out");
-        // Non-ASCII letters are dropped like any other non-alphanumeric, which
-        // means they *separate* too: the "ï" in "Ünïcode" leaves a dash behind
-        // exactly as the comma in "Hello, World!" does. A leading "Ü" drops
-        // without a dash only because the output is still empty.
+        // Non-ASCII separates like punctuation; a leading one leaves no dash.
         assert_eq!(
             slugify("Ünïcode ok"),
             "n-code-ok",
@@ -2758,8 +2388,7 @@ mod tests {
         assert_eq!(mmss(999), "00:00", "sub-second remainders truncate");
     }
 
-    /// The menu bar parses these strings, so the exact bytes are the contract:
-    /// a change here is a change to what the user sees.
+    /// The menu bar parses these exact bytes.
     #[test]
     fn status_line_pins_the_string_each_phase_shows() {
         let m = Meter::default();
@@ -2789,10 +2418,6 @@ mod tests {
         assert_eq!(m.status_line(), "failed");
     }
 
-    /// `raw.jsonl` is written one track at a time, so a line's position in the
-    /// file says nothing about when it was said. [`transcript`] sorts by the
-    /// clock, for a person reading; [`transcript_appended`] keeps the file's
-    /// order, which is the only order a cursor can count.
     #[test]
     fn appended_order_is_the_file_and_transcript_is_the_clock() {
         let dir = std::env::temp_dir().join(format!("ambient-appended-{}", std::process::id()));
@@ -2858,11 +2483,8 @@ mod tests {
     }
 }
 
-/// `libtest` matches a filter as a substring of the full test path, so
-/// `session::tests::search_…` would not be selected by `cargo test
-/// session::search` — only a *module* named `search` puts `session::search`
-/// in every one of its tests' paths. This module exists for that reason as
-/// much as for keeping [`search`]'s tests apart from `mod tests` above.
+/// Named so `cargo test session::search` selects these: libtest filters by
+/// substring of the full test path.
 #[cfg(test)]
 mod search_tests {
     use super::*;
@@ -2893,18 +2515,13 @@ mod search_tests {
         std::fs::write(dir.join("raw.jsonl"), body).unwrap();
     }
 
-    /// The older session, an unrelated line only. Kept out of the newest
-    /// session so it cannot accidentally land on an index the two orders
-    /// agree on.
     fn older_session(root: &Path) -> PathBuf {
         let dir = root.join("2026-01-01T0900");
         write_raw(&dir, &[record(Track::Room, 0, "just a budget line")]);
         dir
     }
 
-    /// The newest session, exactly two lines, written so append order and
-    /// clock order disagree: `Room@5000` first on disk, `Call@0` second.
-    /// Only the room line matches "budget".
+    /// Append order and clock order disagree: `Room@5000` first, `Call@0` second.
     fn newest_session(root: &Path) -> PathBuf {
         let dir = root.join("2026-02-01T0900");
         write_raw(
@@ -2923,8 +2540,6 @@ mod search_tests {
         let newest = newest_session(&root);
         older_session(&root);
 
-        // The fixture is only a real test of `index` if the two orders
-        // disagree for the matching line.
         let clock_order: Vec<String> = transcript(&newest, false)
             .unwrap()
             .iter()
@@ -2980,9 +2595,7 @@ mod search_tests {
     }
 }
 
-/// Same reasoning as [`search_tests`]: `session::meta_tests::…` contains
-/// `session::meta`, so `cargo test session::meta` selects these, which a
-/// module named `tests` would not.
+/// Named so `cargo test session::meta` selects these.
 #[cfg(test)]
 mod meta_tests {
     use super::*;
@@ -3187,10 +2800,7 @@ mod meta_tests {
     }
 }
 
-/// A module of its own for the same reason [`search_tests`] and
-/// [`meta_tests`] are: `cargo test session::delete` selects a test by
-/// substring of its full path, and only a module named `delete` puts
-/// `session::delete` in every one of these.
+/// Named so `cargo test session::delete` selects these.
 #[cfg(test)]
 mod delete_tests {
     use super::*;
@@ -3229,8 +2839,7 @@ mod delete_tests {
         .unwrap();
     }
 
-    /// An hour old — well outside [`is_growing`]'s 10s window, but nowhere
-    /// near the 7-day retention sweep either.
+    /// Outside [`is_growing`]'s 10 s window, far inside a 7-day retention.
     fn backdate(p: &Path) {
         let f = std::fs::File::options().write(true).open(p).unwrap();
         f.set_times(
@@ -3312,9 +2921,7 @@ mod delete_tests {
         let root = fixture("delete-dotdot");
         let throwaway = root.join("_lock");
         std::fs::create_dir_all(&throwaway).unwrap();
-        // Id validation runs before the directory is ever touched, which is
-        // the only reason claiming the lock on an unrelated directory is
-        // valid proof here.
+        // Id validation runs first, so a lock on an unrelated directory suffices.
         let lock = claim_transcription(&throwaway).unwrap();
         let err = delete(&root, "../x", &lock).unwrap_err();
         assert!(format!("{err:#}").contains("not a session id"), "{err:#}");

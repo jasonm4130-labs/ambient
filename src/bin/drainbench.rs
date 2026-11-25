@@ -1,16 +1,9 @@
 //! Does transcribing beside a live capture starve the capture's drain loop?
 //!
-//! During back-to-back meetings the transcription queue runs `ambient-engine`
-//! (ADR 0020) while a new capture is being drained every 200 ms (ADR-0015). Audio is lost only
-//! if the drain thread falls behind the tap's ring — 30 s on the mic, 60 s on
-//! the call — so the number that matters is the *overshoot* of the drain
-//! period while the models run, not the CPU they use.
-//!
-//! This runs the same 200 ms sleep loop `capture_into` runs, on a default-QoS
-//! thread, and measures each period's overshoot while a background-QoS thread
-//! runs the helper's transcribe and diarize stages back to back over a 16 kHz
-//! mono wav, the way the queue does. No tap is needed: the drain loop is what
-//! we are measuring, and it does not touch the tap while the ring is written.
+//! Audio is lost only if the 200 ms drain falls behind the tap's ring (30 s
+//! mic, 60 s call), so this measures the drain period's overshoot on a
+//! default-QoS thread while a background-QoS thread runs the helper's stages
+//! over a 16 kHz mono wav. No tap is needed.
 //!
 //!   cargo run --release --bin drainbench -- [seconds] [16k-mono.wav]
 
@@ -49,8 +42,6 @@ fn main() -> anyhow::Result<()> {
         wav.display()
     );
 
-    // The drain loop alone first, so the ASR numbers have something to be
-    // compared with on this machine.
     let idle = measure(seconds.min(5), &AtomicBool::new(false));
     println!("\nidle (no models):   {}", idle);
 
@@ -61,7 +52,6 @@ fn main() -> anyhow::Result<()> {
         let passes = passes.clone();
         let scratch = scratch.clone();
         std::thread::spawn(move || -> anyhow::Result<()> {
-            // Exactly what `queue::Queue::spawn` sets.
             #[cfg(target_os = "macos")]
             unsafe {
                 libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
@@ -80,13 +70,12 @@ fn main() -> anyhow::Result<()> {
     let under_asr = measure(seconds, &stop);
     let after = passes.load(Ordering::Relaxed);
     stop.store(true, Ordering::Relaxed);
-    // The pass in flight when the clock stops finishes before this returns.
     worker.join().expect("model thread panicked")?;
     std::fs::remove_dir_all(&scratch).ok();
     println!("under the models:   {under_asr}");
     println!("passes completed:   {}", after - before);
 
-    // The verdict, against the smaller of the two rings.
+    // Against the smaller ring.
     let budget = Duration::from_secs(30);
     let verdict = if under_asr.max < budget / 100 {
         "ok — worst overshoot is under 1% of the 30 s ring"
@@ -99,7 +88,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Overshoot statistics for a 200 ms sleep loop run for `seconds`.
 struct Overshoot {
     periods: usize,
     max: Duration,

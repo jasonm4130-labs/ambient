@@ -1,6 +1,3 @@
-// ambient-engine: the app's model helper. One stage, one track, one process:
-// the app runs it after Stop, reads the file it writes, and the process exits
-// and gives back every page the models used. See docs/adr/0020.
 import AVFoundation
 import CoreML
 import EngineCore
@@ -9,19 +6,12 @@ import Foundation
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
-/// Ties a model job to the app that started it, and keeps it out of a live
-/// capture's way.
+/// Stdin EOF means the app has gone, so the job exits; the app re-queues it at
+/// next launch. Only a pipe arms this: by hand, stdin is a terminal or
+/// /dev/null, already at EOF. `fetch` never arms it.
 ///
-/// The app holds our stdin open and never writes to it. End of file means the
-/// app has gone, so the job goes with it rather than running on unowned; the
-/// app re-queues the session at its next launch and resumes from the last
-/// finished stage. Only a pipe means that: run by hand, stdin is a terminal or
-/// /dev/null, and /dev/null is at end of file from the start. `fetch` never
-/// arms it, so a script with a closed stdin can still download.
-///
-/// Background priority is set here, for the whole process, rather than
-/// inherited: the app's queue thread runs at background QoS, but a spawned
-/// process does not take its parent thread's class.
+/// Background priority is set here because a spawned process does not inherit
+/// its parent thread's QoS.
 func runAsBackgroundJob() {
     setpriority(PRIO_DARWIN_PROCESS, 0, PRIO_DARWIN_BG)
     var st = stat()
@@ -33,10 +23,8 @@ func runAsBackgroundJob() {
     }
 }
 
-/// Folder names inside `--models`, as FluidAudio lays them out.
 let asrFolder = "parakeet-ultra"
 let diarFolder = "nemotron-3-diarization"
-/// Written into every output so the app can tell which models made it.
 let asrModel = "parakeet-ultra/fluidaudio-e2ea498"
 let diarModel = "nemotron3-fast32/fluidaudio-e2ea498"
 
@@ -64,8 +52,7 @@ func fetch(_ models: URL) async throws {
     progress(0)
     _ = try await AsrModels.download(to: models.appendingPathComponent(asrFolder), version: .ultra)
     progress(0.5)
-    // Downloads only what is missing, then compiles and loads once, which is
-    // what proves the copy on disk is whole.
+    // Compiling and loading once is what proves the copy on disk is whole.
     _ = try await Nemotron3Models.loadFromHuggingFace(config: .fast32, cacheDirectory: models)
     progress(1)
 }
@@ -75,16 +62,15 @@ func transcribe(models: URL, audio: URL, out: URL, key: String) async throws {
     progress(0)
     let loaded = try AsrModels.loadLocal(
         from: models.appendingPathComponent(asrFolder), version: .ultra)
-    // The library's defaults with Ultra's decoder shape: the configuration
-    // the CLI ran for the benchmark on issue #168.
+    // Library defaults with Ultra's decoder shape, as benchmarked in issue #168.
     let config = ASRConfig(
         tdtConfig: TdtConfig(blankId: AsrModelVersion.ultra.blankId),
         encoderHiddenSize: AsrModelVersion.ultra.encoderHiddenSize)
     let manager = AsrManager(config: config)
     try await manager.loadModels(loaded)
     var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-    // Files over the library's threshold are decoded from disk in windows, so
-    // memory stays flat however long the meeting was.
+    // The library decodes files over its threshold from disk in windows, so
+    // memory stays flat however long the meeting.
     let result = try await manager.transcribe(audio, decoderState: &state)
     let tokens = (result.tokenTimings ?? []).map {
         Token(text: $0.token, start: $0.startTime, end: $0.endTime, confidence: $0.confidence)
@@ -108,9 +94,8 @@ func diarize(models: URL, audio: URL, out: URL, key: String) async throws {
         throw EngineError.message(
             "\(audio.path) is \(format.sampleRate) Hz × \(format.channelCount); expected 16 kHz mono")
     }
-    // Fed through the streaming path in 100 ms pieces, read from disk as it
-    // goes: the speaker model's memory no longer grows with the meeting
-    // (593 MB against 891 MB at 49.5 min on AMI, same speaker counts).
+    // Streamed from disk in 100 ms pieces so the speaker model's memory does not
+    // grow with the meeting (593 MB vs 891 MB at 49.5 min on AMI).
     let piece: AVAudioFrameCount = 1600
     guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: piece) else {
         throw EngineError.message("could not allocate an audio buffer")

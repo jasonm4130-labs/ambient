@@ -3,16 +3,10 @@
 //!
 //! `memrun <16k.wav>`
 //!
-//! Puts `<16k.wav>` on both tracks of a fresh session and runs
-//! `session::transcribe_session`, which runs each stage in `ambient-engine`
-//! (ADR 0020). Nothing is transcribed while recording any more, so the
-//! capture half holds no model and is not replayed. Each helper stage prints
-//! `ENGINE_PEAK <stage> <bytes>` on stderr; `scripts/memory` gates on the
-//! largest of those and of this process's own peak.
-//!
-//! Each phase prints `MARK <seconds> <phase>`. Sessions, config and roster go
-//! to a temporary directory, removed on success, so real sessions are
-//! untouched. The helper is `$AMBIENT_ENGINE` (scripts/memory builds it).
+//! Puts `<16k.wav>` on both tracks of a fresh session in a temporary
+//! directory and runs `session::transcribe_session`. Each helper stage prints
+//! `ENGINE_PEAK <stage> <bytes>` and each phase `MARK <seconds> <phase>`;
+//! `scripts/memory` gates on the largest peak, including this process's own.
 use ambient::session;
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -33,11 +27,11 @@ fn main() -> Result<()> {
     };
 
     let root = std::env::temp_dir().join(format!("ambient-memrun-{}", std::process::id()));
-    // Refuse a collision rather than removing any existing directory.
+    // `create_dir`, not `create_dir_all`: refuse a collision rather than reuse
+    // an existing directory.
     std::fs::create_dir(&root)?;
     let dir = root.join("replay");
     std::fs::create_dir_all(dir.join("audio"))?;
-    // Isolate the retention sweep and configuration from real sessions.
     std::env::set_var("AMBIENT_HOME", &root);
     std::env::set_var("AMBIENT_CONFIG", root.join("config.json"));
     std::env::set_var("AMBIENT_ROSTER", root.join("roster.json"));

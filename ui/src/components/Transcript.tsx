@@ -4,8 +4,6 @@ import { useBridge } from "@/lib/bridge-context";
 import { useLatest } from "@/lib/latest";
 import { cn } from "@/lib/utils";
 
-/// `session::Line` (`src/session.rs:1290`) as `transcript` serialises it.
-/// `track` is `"room" | "call"` (`Track`'s `#[serde(rename_all = "lowercase")]`).
 interface TranscriptLine {
   track: "room" | "call";
   start_ms: number;
@@ -34,11 +32,7 @@ interface Group {
   lines: TranscriptLine[];
 }
 
-/// Groups by *consecutive* runs of the same speaker, in the order
-/// `transcript` returned the lines (append order) — never a `groupBy` that
-/// reorders. The fallback for an unnamed speaker is the track name, matching
-/// `transcript_text` (`src/window.rs:552`), not "Unknown". Keyed on each
-/// group's starting index rather than `start_ms`: the room and call tracks
+/// Keyed on each group's start index, not `start_ms`: the room and call tracks
 /// have independent clocks and can repeat a timestamp.
 function groupLines(lines: TranscriptLine[]): Group[] {
   const groups: Group[] = [];
@@ -61,7 +55,6 @@ function gutter(ms: number): string {
   return `[${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}]`;
 }
 
-/// `window.ambient.event("diarize", …)`'s payload.
 interface DiarizeEvent {
   session: string;
   state: "done" | "failed";
@@ -72,20 +65,10 @@ interface TranscriptProps {
   session: string;
   unavailable?: string | undefined;
   revision?: number;
-  /// The absolute append-order index (over `reply.lines`, not group-local)
-  /// of a line to scroll into view and highlight for ~2 s — set by a
-  /// `SearchPalette` hit. Optional: `Transcript.test.tsx` renders without it.
+  /// Absolute index into `reply.lines`, not group-local.
   highlightIndex?: number;
 }
 
-/// The transcript for one session, reloaded through `useLatest` whenever the
-/// session or the Tidied/Verbatim choice changes — a later selection's reply
-/// always wins over an earlier one still in flight.
-///
-/// Two divergences from the deleted native pane are correct and intentional:
-/// the API never calls `session::dedup_bleed`, so this never re-implements
-/// it, and the empty-transcript note here is short because the API does not
-/// expose the `Detail` flags the native pane's note picked between.
 export function Transcript({ session, revision, highlightIndex, unavailable }: TranscriptProps) {
   const bridge = useBridge();
   const [verbatim, setVerbatim] = useState(false);
@@ -130,9 +113,7 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
     });
   }, [bridge, session]);
 
-  // Only a finished session (Transcribe again) or a failed one (Retry) has
-  // something to do; one waiting its turn is the queue's, and a second job
-  // beside it would only collide.
+  // A queued session belongs to the queue; a second job beside it would collide.
   const waiting =
     reply !== undefined && reply.state !== "done" && reply.state !== "failed"
       ? "This session is waiting its turn to be transcribed."
@@ -157,9 +138,7 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
     [bridge, copyMarkdown, reveal],
   );
 
-  // Ignores an event for a session other than the one on screen — the bridge
-  // runs one diarize job at a time, but the selection can move on while it
-  // is still running.
+  // The selection can move on while a diarize job for another session runs.
   useEffect(
     () =>
       bridge.on("diarize", (payload) => {
@@ -181,8 +160,7 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
     [bridge, session, verbatim, loadTranscript],
   );
 
-  // Scrolls to and flashes `highlightIndex` for ~2 s. `scrollIntoView` is
-  // undefined in jsdom, so it is called only if present.
+  // `scrollIntoView` is undefined in jsdom.
   useEffect(() => {
     if (highlightIndex === undefined) return;
     const el = lineRefs.current.get(highlightIndex);
@@ -190,10 +168,8 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
     setFlashIndex(highlightIndex);
     const timer = setTimeout(() => setFlashIndex(undefined), 2000);
     return () => clearTimeout(timer);
-    // Also re-runs when `reply` changes: `highlightIndex` and `selected`
-    // land in the same state batch, so the first run after a hit fires
-    // against the *previous* session's still-mounted lines, before the new
-    // session's `transcript` reply has arrived.
+    // Also keyed on `reply`: `highlightIndex` lands in the same batch as the new
+    // selection, so the first run hits the previous session's lines.
   }, [highlightIndex, reply]);
 
   const groups = reply === undefined ? [] : groupLines(reply.lines);
@@ -285,10 +261,7 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
                 <span>{group.speaker}</span>
               </div>
               {group.lines.map((line, i) => {
-                // `group.key` is the absolute index of `group.lines[0]`
-                // (`groupLines` only ever appends a consecutive run), so
-                // `group.key + i` is this line's absolute index — the same
-                // number `search`'s `Hit.index` names.
+                // `group.key` is the absolute index of the group's first line.
                 const absoluteIndex = group.key + i;
                 return (
                   <div

@@ -1,10 +1,5 @@
-//! The one dispatcher every session verb goes through — `ambient mcp` today,
-//! and later the window's bridge.
-//!
-//! A method name and a JSON `params` value in, a JSON `Value` or an
-//! [`ApiError`] out. Keeping this signature frozen (see the plan's
-//! Non-goals) is what lets `ambient mcp` and the window call the same code
-//! without either one growing a special case for the other.
+//! The one dispatcher for every session method, shared by `ambient mcp` and
+//! the window.
 
 use crate::config::Config;
 use crate::export;
@@ -13,32 +8,23 @@ use crate::session;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// A call that never ran (the client's bug, mapped to JSON-RPC `-32602`) or
-/// one that ran and could not answer (mapped to a tool result with
-/// `isError: true`). The distinction is what lets a caller retry a `Failed`
-/// with different arguments and know a `InvalidParams` needs a different
-/// shape instead.
+/// `InvalidParams`: the call never ran (JSON-RPC `-32602`). `Failed`: it ran
+/// and could not answer (an `isError` tool result).
 #[derive(Debug)]
 pub enum ApiError {
     InvalidParams(String),
     Failed(String),
 }
 
-/// One entry of [`methods`]: a name, a human description and a JSON Schema
-/// for its arguments, the same shape `tools/list` reports over MCP.
+/// One entry of [`methods`], in the shape MCP `tools/list` reports.
 pub struct Method {
     pub name: &'static str,
     pub description: &'static str,
     pub input_schema: Value,
 }
 
-/// Every method `ambient mcp`'s `tools/list` advertises as an MCP tool, in
-/// that order — not every method [`call`] answers. `search` is a `call` match
-/// arm without an entry here: `mcp.rs` selects its three tools out of this
-/// list by name, and `search` is deliberately dispatcher-only, reachable from
-/// the CLI and the window but not offered to an MCP client. Descriptions and
-/// schemas here are unchanged from what `mcp::tools()` hardcoded before this
-/// module existed.
+/// The methods advertised as MCP tools. [`call`] answers more, for the CLI
+/// and the window only.
 pub fn methods() -> Vec<Method> {
     vec![
         Method {
@@ -68,24 +54,17 @@ pub fn methods() -> Vec<Method> {
     ]
 }
 
-/// The files and folders every `api::call` reads and writes through, rather
-/// than a global default: a test builds one pointed entirely at temp files,
-/// and the real process builds one pointed at the user's.
+/// Every file [`call`] touches, so a test can point all of them at temp files.
 pub struct Paths {
     pub config_file: PathBuf,
     pub roster_file: PathBuf,
-    /// Set only when the caller handed a sessions root over explicitly
-    /// (`mcp::serve`'s `root` argument, or `AMBIENT_HOME` for the real
-    /// process). Anything else re-reads `sessions_dir` from the config file
+    /// A pinned root. When `None`, `sessions_dir` is re-read from the config
     /// on every call, so a `config.set` of it moves the very next call.
     pub sessions_root: Option<PathBuf>,
 }
 
 impl Paths {
-    /// The sessions root for this call, read fresh every time: a pinned
-    /// `sessions_root` wins, otherwise today's config file, otherwise the
-    /// `~/Documents/Ambient` default — mirroring [`session::home`]'s tail
-    /// without going through it, since a test must never call that function.
+    /// Never calls [`session::home`], which reaches the user's real files.
     pub fn root(&self) -> PathBuf {
         if let Some(root) = &self.sessions_root {
             return root.clone();
@@ -98,9 +77,7 @@ impl Paths {
     }
 }
 
-/// The dispatcher. `mcp::call` and (later) the window's bridge both route
-/// through this one function; its signature is frozen once this unit lands,
-/// so later methods are new match arms here, never new arguments.
+/// New methods are new match arms, never new arguments.
 pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiError> {
     match method {
         "status" => Ok(status(&paths.root())),
@@ -124,9 +101,6 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
     }
 }
 
-/// The nine checks `ambient doctor` prints, as JSON, for the window's Welcome
-/// page. The paths come from `Paths` rather than `config::path()` /
-/// `session::home()`, so a test points them at temp files.
 fn doctor_checks(paths: &Paths) -> Value {
     json!(crate::doctor::run(
         session::models_root(),
@@ -136,14 +110,9 @@ fn doctor_checks(paths: &Paths) -> Value {
     ))
 }
 
-/// The `sessions` method: every session directory under the root, newest
-/// first.
-///
-/// Enumerated by [`session_dirs`] rather than by [`session::summaries`], which
-/// walks with `is_dir` and so would summarise — and read the `session.json` of
-/// — whatever a link in the folder points at. A session whose files include a
-/// symlink is listed with `error` set and no metadata: it is on this machine
-/// and a person should see it, but nothing behind that link is read.
+/// Enumerated by [`session_dirs`], not [`session::summaries`], which follows
+/// symlinks. A session with a symlinked file is listed with `error` set and
+/// nothing behind the link read.
 fn sessions(root: &Path) -> Value {
     let mut listed: Vec<session::SessionSummary> = session_dirs(root)
         .iter()
@@ -172,10 +141,6 @@ fn sessions(root: &Path) -> Value {
     json!(listed)
 }
 
-/// The `transcript` method. Every argument's JSON type is checked here,
-/// before any of them reaches the filesystem: a wrong type is the client's
-/// bug and an `InvalidParams`, while a session that cannot be read is a call
-/// that ran and could not answer.
 fn transcript(root: &Path, params: &Value) -> Result<Value, ApiError> {
     let args = params
         .as_object()
@@ -199,15 +164,9 @@ fn transcript(root: &Path, params: &Value) -> Result<Value, ApiError> {
     read(root, id, since, verbatim).map_err(ApiError::Failed)
 }
 
-/// One session from `since` lines on, or the reason it could not be read.
-///
-/// The cursor counts lines in the order `raw.jsonl` holds them, which is why
-/// this reads [`session::transcript_appended`] and not [`session::transcript`]:
-/// the room track is written before the call track and their clocks are
-/// independent, so a cursor on `start_ms` would step past call lines that
-/// arrived later and never show them. A session with no `raw.jsonl` yet is not
-/// a failure — it is a recording that has produced no words so far, and it
-/// answers with an empty list and a `next` of 0.
+/// The cursor counts lines in `raw.jsonl` order, not by `start_ms`: room and
+/// call tracks have independent clocks, so a time cursor would skip call
+/// lines written later.
 fn read(root: &Path, id: &str, since: u64, verbatim: bool) -> Result<Value, String> {
     let dir = session_dir(root, id)?;
     if let Some(refusal) = symlinked(&dir) {
@@ -224,10 +183,6 @@ fn read(root: &Path, id: &str, since: u64, verbatim: bool) -> Result<Value, Stri
     Ok(json!({"session": id, "state": state(&dir), "next": next, "lines": unseen}))
 }
 
-/// The `search` method. `query` is required and must be a string; `limit`
-/// defaults to 50 and, when given, must be a whole number. Argument shape is
-/// checked here, the same way [`transcript`] does it, before anything reaches
-/// [`session::search`].
 fn search(root: &Path, params: &Value) -> Result<Value, ApiError> {
     let args = params
         .as_object()
@@ -248,18 +203,8 @@ fn search(root: &Path, params: &Value) -> Result<Value, ApiError> {
     serde_json::to_value(hits).map_err(|e| ApiError::Failed(format!("{e}")))
 }
 
-/// The `session.update` method: rename, tag, note or pin a session by
-/// rewriting its `session.json`. `session` is required and must be a string;
-/// everything else in `params` is [`session::MetaPatch`], deserialised
-/// straight out of the same object so a client can send `session` and the
-/// patch fields together in one request.
-///
-/// Resolved through [`session_dir`] and [`symlinked`] — the same containment
-/// [`read`] uses — before anything is written, so a write path is never
-/// weaker than the read path next to it. The lock is claimed once, here at
-/// the entry point: [`session::update_meta`] stays lock-free so the
-/// transcriber can call it (and its siblings) while already holding the lock
-/// it took for itself.
+/// The lock is claimed here, not in [`session::update_meta`], so the
+/// transcriber can call that while holding its own lock.
 fn session_update(root: &Path, params: &Value) -> Result<Value, ApiError> {
     let args = params.as_object().ok_or_else(|| {
         ApiError::InvalidParams("`session.update` needs a string `session`".into())
@@ -283,14 +228,7 @@ fn session_update(root: &Path, params: &Value) -> Result<Value, ApiError> {
     serde_json::to_value(meta).map_err(|e| ApiError::Failed(format!("{e}")))
 }
 
-/// The `session.delete` method: remove a session directory and its audio.
-/// `session` is required and must be a string. The window shows its own
-/// confirm dialog before calling this; the API does not ask again.
-///
-/// Resolved through [`session_dir`] and [`symlinked`], the same containment
-/// [`read`] and [`session_update`] use, before the lock is claimed once here
-/// at the entry point: [`session::delete`] stays lock-free so it joins the
-/// same protocol every other writer here follows.
+/// Does not ask: the window confirms before calling.
 fn session_delete(root: &Path, params: &Value) -> Result<Value, ApiError> {
     let args = params.as_object().ok_or_else(|| {
         ApiError::InvalidParams("`session.delete` needs a string `session`".into())
@@ -311,15 +249,7 @@ fn session_delete(root: &Path, params: &Value) -> Result<Value, ApiError> {
     Ok(json!({"session": id, "deleted": true}))
 }
 
-/// The `export` method: a session rendered in one of `export::Format`'s six
-/// shapes. `session` is required and must be a string; `format` is optional
-/// and defaults to `"markdown"`, and a name `export::Format` does not
-/// recognise is `InvalidParams` naming all six. Dispatcher-only, the same
-/// posture as [`search`] — not in [`methods`] and not offered over MCP.
-///
-/// Resolved through [`session_dir`] and [`symlinked`], the same containment
-/// every other method here uses. No lock: export only reads, and the
-/// transcriber never needs to exclude a reader.
+/// No lock: the transcriber never needs to exclude a reader.
 fn export_session(root: &Path, params: &Value) -> Result<Value, ApiError> {
     let args = params
         .as_object()
@@ -347,9 +277,7 @@ fn export_session(root: &Path, params: &Value) -> Result<Value, ApiError> {
     Ok(json!({"session": id, "format": format_name, "text": text}))
 }
 
-/// Input device names, the shape both `config.get`'s `devices` field and the
-/// `devices` method want. `capture::input_devices()` hits real CoreAudio, so
-/// no test may assert its contents — only that the shape is an array.
+/// Real CoreAudio devices, so tests assert only the shape.
 fn input_device_names() -> Vec<String> {
     crate::capture::input_devices()
         .into_iter()
@@ -357,10 +285,8 @@ fn input_device_names() -> Vec<String> {
         .collect()
 }
 
-/// The `config.get` method: the settings payload the window's Settings page
-/// receives, built the same way [`crate::settings`]'s `push` does but reading
-/// only through `paths` — never `Config::load`, `roster::load` or
-/// `session::home()`, all of which reach the user's real files.
+/// Reads only through `paths`: `Config::load`, `roster::load` and
+/// `session::home` reach the user's real files.
 fn config_get(paths: &Paths) -> Value {
     let cfg = Config::load_from(&paths.config_file);
     let home = std::env::var("HOME").unwrap_or_default();
@@ -385,10 +311,6 @@ fn config_get(paths: &Paths) -> Value {
     })
 }
 
-/// The `config.set` method: change one setting and hand back the fresh
-/// `config.get` payload. Refuses a `sessions_dir` change while a session is
-/// recording before anything is loaded, and refuses an unknown key before
-/// anything is saved — nothing is written on either refusal.
 fn config_set(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     let args = params.as_object().ok_or_else(|| {
         ApiError::InvalidParams("`config.set` needs a string `key` and `value`".into())
@@ -414,12 +336,10 @@ fn config_set(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     Ok(config_get(paths))
 }
 
-/// The `roster.list` method: every name on the roster.
 fn roster_list(paths: &Paths) -> Value {
     json!(roster::load_from(&paths.roster_file))
 }
 
-/// The `roster.add` method: add a name, then answer the roster.
 fn roster_add(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     let name = params
         .as_object()
@@ -432,7 +352,6 @@ fn roster_add(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     Ok(json!(names))
 }
 
-/// The `roster.remove` method: remove a name, then answer the roster.
 fn roster_remove(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     let name = params
         .as_object()
@@ -445,9 +364,6 @@ fn roster_remove(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     Ok(json!(names))
 }
 
-/// The `speakers.name` method: give every line labelled `label` the name
-/// `name`. Writes `edits.jsonl`, so the entry point claims the lock around
-/// the call the same way [`session_update`] does.
 fn speakers_name(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     let args = params.as_object().ok_or_else(|| {
         ApiError::InvalidParams("`speakers.name` needs `session`, `label` and `name`".into())
@@ -476,9 +392,6 @@ fn speakers_name(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     Ok(json!({"renamed": renamed}))
 }
 
-/// The `speakers.undo` method: take back the newest batch of names a person
-/// typed for one session. Writes `edits.jsonl`, locked the same way
-/// [`speakers_name`] is.
 fn speakers_undo(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     let id = params
         .as_object()
@@ -497,10 +410,6 @@ fn speakers_undo(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     Ok(json!({"reverted": reverted}))
 }
 
-/// The `speakers.unnamed` method: speaker labels nobody has named yet, each
-/// with the first thing that voice said. Read-only, so no lock, but resolved
-/// through the same [`session_dir`]/[`symlinked`] containment as every other
-/// session-taking method.
 fn speakers_unnamed(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
     let id = params
         .as_object()
@@ -519,11 +428,8 @@ fn speakers_unnamed(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
         .collect::<Vec<_>>()))
 }
 
-/// `root/id`, or why that is not a session of this machine. An id is one path
-/// segment: a separator or a `..` in it is a request for a path outside the
-/// sessions folder, and is answered before anything is opened. The directory
-/// itself is tested with `symlink_metadata`, so a link in the folder is no
-/// more a session here than it is to [`session_dirs`].
+/// An id must be one path segment, checked before anything is opened, and a
+/// link in the folder is not a session.
 fn session_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
     if id.is_empty() || id == "." || id == ".." || id.contains('/') {
         return Err(format!("{id:?} is not a session id"));
@@ -535,10 +441,6 @@ fn session_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// The one word for what is happening to a session, in the order it is
-/// happening: a capture in flight outranks a transcriber, which outranks the
-/// `transcript.md` a previous run left. `pending` is the rest — captured, and
-/// waiting for the queue.
 fn state(dir: &Path) -> &'static str {
     if session::is_growing(&dir.join("audio").join("room.native.wav")) {
         "live"
@@ -549,21 +451,15 @@ fn state(dir: &Path) -> &'static str {
     } else if std::fs::read_to_string(dir.join(session::STATUS_FILE))
         .is_ok_and(|s| s.starts_with("failed"))
     {
-        // The job failed and is waiting on the queue or, past the retry
-        // cap, on someone pressing Retry.
         "failed"
     } else {
         "pending"
     }
 }
 
-/// The files a method reads out of a session directory.
 const READ_FROM_SESSIONS: [&str; 3] = ["session.json", "raw.jsonl", "edits.jsonl"];
 
-/// The refusal for the first of those files that exists and is not a regular
-/// file. Containment is the whole point: the directory being inside the root
-/// says nothing about where a file inside it points, and following one would
-/// serve a file from anywhere on disk as a session of this machine.
+/// A directory inside the root says nothing about where a file in it points.
 fn symlinked(dir: &Path) -> Option<String> {
     READ_FROM_SESSIONS
         .iter()
@@ -572,16 +468,10 @@ fn symlinked(dir: &Path) -> Option<String> {
         .map(|p| format!("refusing symlink {}", p.display()))
 }
 
-/// Every field of `status` is drawn from [`session_dirs`], and none of them
-/// from anywhere else.
-///
-/// `session::live_session_in` and `session::captured_awaiting_transcript` both
-/// enumerate the root with `is_dir`, which follows a symlink: left to
-/// themselves they will happily report a directory somewhere else on disk as a
-/// session of this machine. `live` repeats `live_session_in`'s rule here — the
-/// last id whose native scratch wav is still growing — rather than filtering
-/// its answer, because a link sorting after the real live session would
-/// otherwise not merely be excluded but hide it.
+/// Every field comes from [`session_dirs`]: `session::live_session_in` and
+/// `session::captured_awaiting_transcript` follow symlinks. `live` repeats
+/// `live_session_in`'s rule rather than filtering its answer, which a link
+/// sorting after the real live session would hide.
 fn status(root: &Path) -> Value {
     let dirs = session_dirs(root);
     let live = dirs
@@ -600,15 +490,7 @@ fn status(root: &Path) -> Value {
     })
 }
 
-/// The directories under `root` that are sessions, sorted by id.
-///
-/// A directory counts when it holds a `session.json` or a growing native
-/// scratch wav — the two ends of a recording's life — which is what keeps a
-/// stray `notes` folder out of the count. Unlike [`session::list`] the test is
-/// `symlink_metadata`, so a link in the sessions folder is not a session
-/// whatever it points at. This is the server's containment, which is why
-/// [`status`] answers every one of its fields from this set, and why both
-/// `sessions` and `status.sessions` count it and so cannot disagree.
+/// Unlike [`session::list`], a link in the sessions folder is never a session.
 fn session_dirs(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
@@ -626,9 +508,7 @@ fn session_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// `api::call("doctor", …)` answers the checks `doctor::run` reports, with
-/// the paths from `Paths` — a free test function rather than one inside
-/// `mod tests`, so `cargo test api::doctor` matches it.
+/// Outside `mod tests` so `cargo test api::doctor` matches it.
 #[cfg(test)]
 #[test]
 fn doctor_answers_the_checks_doctor_run_reports() {
@@ -709,8 +589,6 @@ mod tests {
         std::fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
-    /// A `Paths` pointed entirely at temp files unique to this test — never
-    /// the user's real config, roster or sessions folder.
     fn temp_paths(test: &str) -> (Paths, PathBuf) {
         let base = std::env::temp_dir().join(format!("ambient-{test}-{}", std::process::id()));
         std::fs::remove_dir_all(&base).ok();
@@ -763,8 +641,7 @@ mod tests {
         assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`search\`` section,
-    /// so the doc and the dispatcher cannot drift apart.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn search_answers_the_documented_request_with_the_documented_shape() {
         let (paths, root) = temp_paths("search-docs");
@@ -792,8 +669,6 @@ mod tests {
         );
     }
 
-    /// `limit: 0` must ask for no hits, not one — the truncation check has
-    /// to precede the push in `session::search` rather than follow it.
     #[test]
     fn search_with_limit_zero_returns_no_hits() {
         let (paths, root) = temp_paths("search-limit-zero");
@@ -817,8 +692,7 @@ mod tests {
         assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`session.update\``
-    /// section, so the doc and the dispatcher cannot drift apart.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn session_update_answers_the_documented_request_with_the_documented_shape() {
         let (paths, root) = temp_paths("session-update-docs");
@@ -886,8 +760,7 @@ mod tests {
         assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`session.delete\``
-    /// section, so the doc and the dispatcher cannot drift apart.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn session_delete_answers_the_documented_request_with_the_documented_shape() {
         let (paths, root) = temp_paths("session-delete-docs");
@@ -929,8 +802,7 @@ mod tests {
         assert!(dir.exists());
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`export\`` section,
-    /// so the doc and the dispatcher cannot drift apart.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn export_answers_the_documented_request_with_the_documented_shape() {
         let (paths, root) = temp_paths("export-docs");
@@ -966,8 +838,6 @@ mod tests {
         }
     }
 
-    /// Exercises the `roster_file` field so it is not dead code ahead of the
-    /// unit that reads and writes through it.
     #[test]
     fn paths_carries_a_roster_file_untouched_here() {
         let (paths, _root) = temp_paths("roster-field");
@@ -975,10 +845,6 @@ mod tests {
         assert!(roster::path() != paths.roster_file);
     }
 
-    /// A session fixture with two lines, both `SPEAKER_00`, one per track —
-    /// the same shape `session.rs`'s
-    /// `undoing_a_naming_puts_the_label_back_on_every_line_it_took` builds, so
-    /// `speakers.name` renames exactly 2 lines and not 1 or 3.
     fn speaker_session(root: &Path, id: &str) -> PathBuf {
         let dir = root.join(id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1032,10 +898,8 @@ mod tests {
         dir
     }
 
-    /// The same shape as [`speaker_session`], but labelled `call-1`/`room-1`
-    /// — diarization's own generated labels, the shape `unnamed_labels`
-    /// requires. `SPEAKER_00` does not match `<track>-<n>` and so would leave
-    /// `speakers.unnamed` empty.
+    /// `unnamed_labels` only reports generated `<track>-<n>` labels, never
+    /// `SPEAKER_00`.
     fn unnamed_session(root: &Path, id: &str) -> PathBuf {
         let dir = root.join(id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1089,9 +953,7 @@ mod tests {
         dir
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`config.get\`` and
-    /// `## \`config.set\`` sections. Item 3's first named test: `diarize`
-    /// flips off through `config.set` and shows up off through `config.get`.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn config_set_answers_the_documented_request_with_the_documented_shape() {
         let (paths, _root) = temp_paths("config-set-docs");
@@ -1128,9 +990,6 @@ mod tests {
         assert!(got["devices"].is_array());
     }
 
-    /// Item 3's second named test: `config.set` of `sessions_dir` while a
-    /// session is recording is `Err(Failed)` mentioning "recording", and
-    /// nothing is written.
     #[test]
     fn config_set_of_sessions_dir_refuses_while_a_session_is_recording() {
         let (paths, root) = temp_paths("config-set-live");
@@ -1159,8 +1018,7 @@ mod tests {
         assert!(matches!(err, ApiError::InvalidParams(_)), "{err:?}");
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`roster.add\`` and
-    /// `## \`roster.list\`` sections.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn roster_add_answers_the_documented_request_with_the_documented_shape() {
         let (paths, _root) = temp_paths("roster-add-docs");
@@ -1173,8 +1031,7 @@ mod tests {
         assert_eq!(listed, json!(["Ana"]));
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`roster.remove\``
-    /// section.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn roster_remove_answers_the_documented_request_with_the_documented_shape() {
         let (paths, _root) = temp_paths("roster-remove-docs");
@@ -1185,11 +1042,7 @@ mod tests {
         assert_eq!(got, json!([]));
     }
 
-    /// The exact JSON in `docs/developing/api.md`'s `## \`speakers.name\``
-    /// and `## \`speakers.undo\`` sections. Item 3's remaining named tests:
-    /// `speakers.name` returns `{"renamed": 2}`, and `speakers.undo` run
-    /// after it in the same test (so `edits.jsonl` exists) returns
-    /// `{"reverted": 2}`.
+    /// Pinned to the example in `docs/developing/api.md`.
     #[test]
     fn speakers_name_and_undo_answer_the_documented_request_with_the_documented_shape() {
         let (paths, root) = temp_paths("speakers-name-docs");
@@ -1231,10 +1084,6 @@ mod tests {
         assert!(got["devices"].is_array());
     }
 
-    /// Item 3's last named test: the real config and roster files, which
-    /// this whole unit is forbidden from touching, are unchanged (or still
-    /// absent) after a run that exercises `config.*`, `roster.*` and
-    /// `speakers.*` end to end.
     #[test]
     fn the_real_config_and_roster_files_are_never_touched() {
         let before_config = std::fs::read(crate::config::path()).ok();
