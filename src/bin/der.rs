@@ -1,33 +1,27 @@
 //! Diarization error rate for Ambient's own speaker-separation path.
 //!
-//!   cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
-//!                                    [--collar <f64>] [--json <path>]
+//!   cargo run --release --bin der -- [--manifest <path>] [--collar <f64>]
+//!                                    [--json <path>]
 //!
-//! Scores the AMI fixture `scripts/fetch-fixtures` builds by running what
-//! `ambient record` runs for a finished session: the same model resolution as
-//! `session::diarize_session`, the same `Diarizer::diarize` at the same default
-//! threshold. A harness with its own clustering would measure a pipeline no
-//! user has.
-//!
-//! `--threshold` is the one knob worth sweeping — it is the clustering
-//! distance `record` passes through from the settings — and `--collar` exists
-//! so a number here can be compared with a published one, which is quoted at
-//! 0.25 s far more often than at 0.
+//! Scores the AMI fixture from `scripts/fetch-fixtures` by running what the app
+//! runs, `ambient-engine diarize` located the way the app locates it, and
+//! scores its turns before the app folds phantom speakers into neighbours.
+//! `--collar` makes results comparable with published ones, usually at 0.25 s.
 
 use ambient::{
-    der::{parse_rttm, score, spans_to_turns, Der},
-    diarize::{Diarizer, DEFAULT_THRESHOLD},
+    der::{parse_rttm, score, Der, Turn},
+    engine::{SpeakersFile, Stage},
+    pipeline::Engine,
     resample::{read_wav_any, to_16k, TARGET_HZ},
-    session::{models_root, utf8_path},
+    session::write_wav_16k,
 };
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// One fixture as `scripts/fetch-fixtures` writes it. `seconds` is in the
-/// manifest too and deliberately unread: the duration below comes from the
-/// audio actually decoded, so a stale manifest cannot quietly change a rate.
+/// `seconds` is deliberately unread: duration comes from the decoded audio,
+/// so a stale manifest cannot change a rate.
 #[derive(Deserialize)]
 struct Entry {
     wav: PathBuf,
@@ -35,10 +29,8 @@ struct Entry {
     meeting: String,
 }
 
-/// One printed row, and one element of the `--json` array. The last row is the
-/// total, with `meeting` reading `total`; its DER is computed over the summed
-/// error seconds, not averaged over the rows, so a meeting with little speech
-/// in it cannot outvote a talkative one.
+/// The total row's DER is over summed error seconds, not averaged, so a meeting
+/// with little speech cannot outvote a talkative one.
 #[derive(Serialize)]
 struct Row {
     meeting: String,
@@ -57,7 +49,6 @@ fn default_manifest() -> PathBuf {
     PathBuf::from(home).join(".cache/ambient/fixtures/der/manifest.json")
 }
 
-/// How many distinct speakers a turn list names.
 fn speakers(turns: &[ambient::der::Turn]) -> usize {
     let mut names: Vec<&str> = turns.iter().map(|t| t.speaker.as_str()).collect();
     names.sort_unstable();
@@ -68,7 +59,6 @@ fn speakers(turns: &[ambient::der::Turn]) -> usize {
 fn main() -> Result<()> {
     let mut manifest = None;
     let mut json = None;
-    let mut threshold = DEFAULT_THRESHOLD;
     let mut collar = 0.25f64;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -76,22 +66,13 @@ fn main() -> Result<()> {
         match a.as_str() {
             "--manifest" => manifest = Some(PathBuf::from(value("--manifest")?)),
             "--json" => json = Some(PathBuf::from(value("--json")?)),
-            "--threshold" => {
-                let raw = value("--threshold")?;
-                threshold = raw
-                    .parse()
-                    .with_context(|| format!("--threshold {raw:?} is not a number"))?;
-            }
             "--collar" => {
                 let raw = value("--collar")?;
                 collar = raw
                     .parse()
                     .with_context(|| format!("--collar {raw:?} is not a number"))?;
             }
-            _ => bail!(
-                "usage: der [--manifest <path>] [--threshold <f32>] \
-                 [--collar <f64>] [--json <path>]"
-            ),
+            _ => bail!("usage: der [--manifest <path>] [--collar <f64>] [--json <path>]"),
         }
     }
     let manifest = manifest.unwrap_or_else(default_manifest);
@@ -108,19 +89,9 @@ fn main() -> Result<()> {
         bail!("{} lists no fixtures", manifest.display());
     }
 
-    // Copied line for line from `session::diarize_session`, which resolves
-    // these inline rather than through a helper. Keep the two in step: a
-    // harness pointed at different weights measures a different product, and
-    // nothing here would notice.
-    let root = models_root()?;
-    let seg = root.join("pyannote-segmentation-3.0").join("model.onnx");
-    let emb = root.join("wespeaker_en_voxceleb_resnet34_LM.onnx");
-    for p in [&seg, &emb] {
-        if !p.exists() {
-            bail!("missing {} — run ./fetch-models.sh", p.display());
-        }
-    }
-    let mut diar = Diarizer::load(utf8_path(&seg)?, utf8_path(&emb)?)?;
+    let engine = Engine::locate()?;
+    let scratch = std::env::temp_dir().join(format!("ambient-der-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch)?;
 
     let mut rows: Vec<Row> = Vec::new();
     let mut total = Der::default();
@@ -144,8 +115,7 @@ fn main() -> Result<()> {
         })?;
         let reference =
             parse_rttm(&text).with_context(|| format!("parsing {}", entry.rttm.display()))?;
-        // `score` would reject this too, but only as "empty reference" with no
-        // clue which of three files is the empty one.
+        // `score` would reject this too, without naming the empty file.
         if reference.is_empty() {
             bail!(
                 "{} holds no turns — nothing to score against; run scripts/fetch-fixtures --force",
@@ -153,12 +123,22 @@ fn main() -> Result<()> {
             );
         }
 
-        // The clock starts after the models load: a load is a fixed cost per
-        // session, and what this column is about is seconds of audio.
+        let wav = scratch.join("track.wav");
+        write_wav_16k(&wav, &samples)?;
+        // Includes model load, which the app also pays once per track.
         let t0 = Instant::now();
-        let spans = diar.diarize(&samples, threshold)?;
+        let speakers_file: SpeakersFile =
+            engine.once(Stage::Diarize, &wav, &scratch.join("speakers.json"))?;
         let run = t0.elapsed().as_secs_f64();
-        let hypothesis = spans_to_turns(&spans, TARGET_HZ as usize);
+        let hypothesis: Vec<Turn> = speakers_file
+            .turns
+            .iter()
+            .map(|t| Turn {
+                start_s: t.start,
+                end_s: t.end,
+                speaker: t.speaker.to_string(),
+            })
+            .collect();
 
         let scored = score(&reference, &hypothesis, collar)
             .with_context(|| format!("scoring {}", entry.meeting))?;
@@ -218,6 +198,7 @@ fn main() -> Result<()> {
         );
     }
 
+    std::fs::remove_dir_all(&scratch).ok();
     if let Some(path) = json {
         let body = serde_json::to_string_pretty(&rows)?;
         std::fs::write(&path, format!("{body}\n"))

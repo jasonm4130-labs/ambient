@@ -2,9 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useBridge } from "@/lib/bridge-context";
 import { useLatest } from "@/lib/latest";
 
-/// `session::Line` as `transcript` serialises it — duplicated from
-/// `Transcript.tsx:9-22` rather than exported, so this file never restructures
-/// `Transcript`.
 interface TranscriptLine {
   track: "room" | "call";
   start_ms: number;
@@ -26,12 +23,7 @@ interface PollState {
   error: string | undefined;
 }
 
-/// Polls `transcript {session, since}` every two seconds, starting at
-/// `since: 0`, and appends whatever lines come back. `reply.next` is the
-/// absolute line count (`src/api.rs`'s `let next = lines.len() as u64`), so it
-/// is threaded straight back as the next `since` rather than accumulated
-/// locally. Calls `onDone` exactly once, when a reply's `state` reaches
-/// `"done"`, and stops polling.
+/// `reply.next` is the absolute line count, threaded straight back as the next `since`.
 function usePollingTranscript(session: string, onDone: () => void): PollState {
   const bridge = useBridge();
   const [state, setState] = useState<string>();
@@ -51,11 +43,6 @@ function usePollingTranscript(session: string, onDone: () => void): PollState {
     onDoneRef.current = onDone;
   }, [onDone]);
 
-  // Reset per session, and drive the self-rescheduling poll loop. `since` is
-  // a closure-local variable rather than a ref: it lives only for the
-  // duration of this effect, which is exactly the lifetime of one session's
-  // polling — a new `session` gets a fresh closure and a fresh cursor for
-  // free, instead of relying only on `Sessions`' `key={selected}` to remount.
   useEffect(() => {
     let since = 0;
     let cancelled = false;
@@ -103,12 +90,9 @@ function usePollingTranscript(session: string, onDone: () => void): PollState {
 
 interface LiveTranscriptProps {
   session: string;
-  /// Called exactly once, when a poll reply's `state` becomes `"done"`.
   onDone: () => void;
 }
 
-/// The live view for a session that is still `live` or `transcribing`,
-/// swapped in by `Sessions` in place of `Transcript` until `onDone` fires.
 export function LiveTranscript({ session, onDone }: LiveTranscriptProps) {
   const { state, lines, error } = usePollingTranscript(session, onDone);
 
@@ -120,8 +104,6 @@ export function LiveTranscript({ session, onDone }: LiveTranscriptProps) {
         </p>
       )}
       {lines.length === 0 ? (
-        // Nothing renders until the first reply lands: before that, `state`
-        // is `undefined` and neither empty-state string is warranted yet.
         state !== undefined && (
           <p className="text-muted-foreground text-sm" data-testid="live-transcript-empty">
             {state === "transcribing" ? "Transcribing…" : "Listening…"}

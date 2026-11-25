@@ -14,15 +14,11 @@ the app does not keep, so the struct in `src/config.rs` and the key list in
 | --- | --- | --- | --- |
 | `apps` | Bundle IDs to tap. Empty taps everything the Mac plays. | Comma-separated list; blanks trimmed and dropped | empty |
 | `input_device` | Record the room with a named device rather than the system default. | Device name as `ambient config` lists it; `default` or the empty string clears it | system default |
-| `diarize` | Separate voices once the transcript exists. | `true`/`yes`/`on`/`1`, or `false`/`no`/`off`/`0` | `true` |
-| `threshold` | How readily two utterances are called different people. Governs `record`'s automatic diarization only — a standalone `ambient diarize` ignores it and takes `--threshold`. | Float | `0.5` |
+| `diarize` | Separate voices as part of transcription. Off, a transcript has no speaker labels. | `true`/`yes`/`on`/`1`, or `false`/`no`/`off`/`0` | `true` |
 | `sessions_dir` | Where sessions are written. | Path; `default` or the empty string clears it | `~/Documents/Ambient` |
 | `ask_before_recording` | Wait to be told before recording a call the app noticed. | `true`/`yes`/`on`/`1`, or `false`/`no`/`off`/`0` | `true` |
 | `capture` | What a recording captures. `all` is the microphone (the `room` track) plus system audio (the `call` track). `mic` records the microphone only: no system-audio tap is created and the session has no `call` track. `ambient record --mic-only` and the menu's **Record microphone only** choose `mic` for one recording without changing this. | `all` or `mic`; anything else is refused | `all` |
 | `audio_retention_days` | How long the track wavs are kept. `0` deletes them as soon as the transcript exists. | Unsigned integer, or `forever` / `never` to keep them indefinitely | `7` |
-| `assistant` | The live assistant's on/off switch, also in the status menu as **Live Assistant**. | Boolean, as above | `false` |
-| `assistant.*`, `voice.*` | The assistant's name, limits on speaking, and voice. | See [the live assistant](assistant.md#settings) | |
-| `talk.firstmate_home` | The firstmate home that [`ambient talk`](commands.md#talk) sends notes to, through its `bin/fm-inbox.sh`. Unset, talking is refused. | Path; `default` or the empty string clears it | unset |
 
 Booleans accept nothing outside those eight words: `ambient config diarize maybe`
 is refused and leaves the setting as it was, rather than reading an unrecognised
@@ -36,10 +32,7 @@ through `Config::load()`. So `AMBIENT_HOME` beats `sessions_dir`, a `--app` on t
 command line beats the stored `apps` list, `ambient record --mic-only` beats a `capture` of `all`, and an existing harness that sets
 neither is unaffected.
 
-`threshold` is the exception, and it is worth knowing before you tune it: the
-standalone `ambient diarize <dir>` never loads the config file at all. It starts
-from the built-in `0.5` and only `--threshold` moves it. `ambient config` with no
-arguments prints the resolved values and says outright when `AMBIENT_HOME` is
+`ambient config` with no arguments prints the resolved values and says outright when `AMBIENT_HOME` is
 overriding `sessions_dir`.
 
 `sessions_dir` is the one setting the GUI will refuse. Changing it while a

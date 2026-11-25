@@ -24,11 +24,6 @@ function summary(overrides: Partial<SessionSummary> = {}): SessionSummary {
   };
 }
 
-/// Owns the `sessions` reply and re-requests it after `onChanged`, the same
-/// contract `Sessions` follows — this is what makes the "renders from the
-/// `sessions` reply, not local state" assertion below load-bearing: a header
-/// that kept the typed name in local state would still pass every other
-/// test here.
 function Harness({ bridge, onDeleted }: { bridge: FakeBridge; onDeleted?: () => void }) {
   const [current, setCurrent] = useState<SessionSummary | null>(null);
 
@@ -67,6 +62,11 @@ describe("SessionHeader", () => {
 
     const name = await screen.findByRole("textbox", { name: "Session name" });
     await userEvent.clear(name);
+    // On a slow runner the clear can land before React commits it, so typing
+    // appends to the old name (seen in CI).
+    await waitFor(() => {
+      expect(name).toHaveValue("");
+    });
     await userEvent.type(name, "Standup v2{Enter}");
 
     await waitFor(() => {
@@ -74,9 +74,6 @@ describe("SessionHeader", () => {
       expect(call?.params).toEqual({ session: "a", name: "Standup v2" });
     });
 
-    // The refetch triggered by `onChanged` returns a *different* name than
-    // what was typed — only a component that re-renders from the reply
-    // shows it.
     await screen.findByDisplayValue("Standup (renamed)");
   });
 

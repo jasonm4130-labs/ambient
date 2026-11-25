@@ -13,13 +13,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Fork PRs use standard GitHub-hosted runners; maintainer branches retain
-# Blacksmith. Also require outside-contributor approval in repository settings.
+# Fork PRs get GitHub-hosted runners, maintainer branches Blacksmith; also
+# require outside-contributor approval in repository settings.
 jobs:
-  # Which jobs a change needs. `hygiene` always runs (it is cheap and reads the
-  # whole tree); the others are skipped when nothing they check has moved, and
-  # `gate` treats skipped as passed. On a push to main the comparison is against
-  # the commit before the push.
+  # Jobs skip when nothing they check moved; `gate` treats skipped as passed.
   changes:
     timeout-minutes: 5
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
@@ -29,7 +26,6 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       ui: ${{ steps.filter.outputs.ui }}
-      voice: ${{ steps.filter.outputs.voice }}
       docs: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.docs == 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,6 +39,7 @@ jobs:
           filters: |
             code:
               - 'src/**'
+              - 'engine/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -63,9 +60,6 @@ jobs:
               - 'ui/**'
               - 'assets/settings.html'
               - '.github/workflows/ci.yml'
-            voice:
-              - 'voice/**'
-              - '.github/workflows/ci.yml'
             docs:
               - 'docs/**'
               - 'docs-site/**'
@@ -78,9 +72,8 @@ jobs:
               - '.github/scripts/**'
               - '.github/workflows/ci.yml'
 
-  # Hygiene checks run on Linux without compiling the macOS crate.
-  # cargo-deny resolves the dependency graph from Cargo.lock without invoking
-  # rustc, so the macOS-only dependencies are read rather than built.
+  # Linux: cargo-deny reads the graph from Cargo.lock without compiling the
+  # macOS-only crate.
   hygiene:
     timeout-minutes: 10
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
@@ -106,8 +99,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # `version` is not optional here: it may only be omitted when a
-      # `packageManager` field is present, and the repo root has no package.json.
+      # `version` is required: the repo root has no package.json `packageManager`.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11
@@ -126,28 +118,8 @@ jobs:
         working-directory: ui
       - run: pnpm run build
         working-directory: ui
-      # assets/settings.html is committed but generated. This catches a bundle
-      # that no longer matches the TypeScript it was built from.
+      # assets/settings.html is committed but generated; catch a stale bundle.
       - run: git diff --exit-code assets/settings.html
-
-  # The live assistant's voice helper. Its tests use a fake engine, so no
-  # model runtime (MLX is macOS-only) is installed here: only the base package.
-  voice:
-    timeout-minutes: 10
-    needs: changes
-    if: needs.changes.outputs.voice == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - run: uv run --locked ruff format --check .
-        working-directory: voice
-      - run: uv run --locked ruff check .
-        working-directory: voice
-      - run: uv run --locked pytest
-        working-directory: voice
 
   # The crate does not compile anywhere but macOS: process taps, objc2-app-kit
   # and objc2-web-kit have no other target.
@@ -155,14 +127,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || 'blacksmith-6vcpu-macos-latest' }}
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      # Outside the runner's home, where the release build must sit; see
+      # scripts/build-engine. Fixed so the cache below can name it.
+      AMBIENT_ENGINE_BUILD: /tmp/ambient-engine-build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The pin lives in rust-toolchain.toml so local builds and the work-M5
-      # port use it too; the action requires the version as an input, so read it
-      # from the file rather than repeating it here.
+      # The action needs the version as an input; read it from rust-toolchain.toml.
       - id: pin
         run: |
           echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
@@ -170,22 +144,22 @@ jobs:
         with:
           toolchain: ${{ steps.pin.outputs.channel }}
           components: rustfmt, clippy
-      # ort-sys downloads ONNX Runtime to its own cache directory, NOT to
-      # $OUT_DIR under target/. Without this line every run re-downloads 80 MB
-      # from cdn.pyke.io, warm cache included.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-directories: ~/Library/Caches/ort.pyke.io
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
-      # A menu bar icon that does not resolve leaves the previous one showing,
-      # so the app would claim to be recording while merely armed. Silent, and
-      # only catchable by asking the OS.
+      # An unresolved menu bar icon silently leaves the previous one showing, so the
+      # app would claim to be recording while merely armed.
       - run: cargo run --bin symbolcheck
-      # Assembles the .app. Capture, transcription and diarization cannot be
-      # exercised on any hosted runner — no audio device, no way to grant TCC —
-      # so CI verifies that the bundle builds, not that it records.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            engine/.build
+            /tmp/ambient-engine-build
+          key: engine-${{ runner.os }}-${{ hashFiles('engine/Package.resolved') }}
+      - run: scripts/test-engine
+      # Hosted runners have no audio device or TCC grant: CI checks that the bundle
+      # builds, not that it records.
       - run: ./make-app.sh
       - run: |
           codesign -v --verbose=2 build/Ambient.app
@@ -195,10 +169,6 @@ jobs:
           test -s build/Ambient.app/Contents/Resources/THIRD_PARTY_NOTICES.md
           ./scripts/check-bundle build/Ambient.app
 
-  # The docs site. Its own workflow until 2026-09-04; folded in so that one
-  # workflow's conclusion covers every check, which is what merge-pr.sh
-  # waits on. The paths: filter that kept
-  # docs commits off the macOS runner is now the `changes` job below.
   docs:
     timeout-minutes: 15
     needs: changes
@@ -210,48 +180,43 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # `version` is required: the repo root has no package.json `packageManager`.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
           cache-dependency-path: |
-            docs-site/package-lock.json
-            .github/scripts/package-lock.json
+            docs-site/pnpm-lock.yaml
+            .github/scripts/pnpm-lock.yaml
 
-      # The markdown lives in docs/, not in docs-site/src/content — see
-      # docs-site/src/content.config.ts for why and how.
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
         working-directory: docs-site
 
       - name: Typecheck
-        run: npx astro check
+        run: pnpm exec astro check
         working-directory: docs-site
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
         working-directory: docs-site
 
-      # Nimbus's own linter. It is MDX-only and takes no path, so it sees
-      # src/content/partials and nothing under docs/ — the markdown is checked
-      # by check-links.mjs below instead. Kept because the partial is real
-      # content and the frontmatter-shape rule is worth having on it.
+      # MDX-only and takes no path, so it lints only src/content/partials;
+      # check-links.mjs covers docs/.
       - name: Lint MDX partials
-        run: npx nimbus-docs lint
+        run: pnpm exec nimbus-docs lint
         working-directory: docs-site
 
-      # Nimbus renders `mermaid` as a Shiki *language*, so an untouched fence
-      # ships as a code listing. docs-site/src/plugins/mermaid-passthrough.ts
-      # rewrites it to <pre class="mermaid"> for the client-side renderer —
-      # assert that happened rather than trusting the build's exit code.
+      # Nimbus renders `mermaid` as a Shiki language; assert mermaid-passthrough
+      # rewrote every fence rather than trusting the build's exit code.
       - name: Every mermaid fence reached the renderer
         run: |
           set -euo pipefail
-          # --include='*.html' matters: Nimbus emits an .md and an .mdx
-          # alternate beside every page, so an unrestricted grep counts each
-          # page two or three times and the comparison is meaningless.
-          # `|| true` on each grep: with pipefail a no-match exit 1 would kill
-          # the step before the counts are printed, turning a clear failure into
-          # a silent one.
+          # --include='*.html': Nimbus emits .md and .mdx alternates beside every page.
+          # `|| true`: under pipefail a no-match grep would kill the step before the
+          # counts print.
           fences=$( { grep -rl '^```mermaid' docs/ || true; } | wc -l)
           rendered=$( { grep -rl '<pre class="mermaid">' docs-site/dist/ --include='*.html' || true; } | wc -l)
           echo "pages with a fence: $fences, pages with a rendered block: $rendered"
@@ -259,52 +224,38 @@ jobs:
             echo "::error::$fences pages carry a mermaid fence but $rendered reached the renderer"
             exit 1
           fi
-          # Deliberately narrower than a bare search for the attribute: the page
-          # documenting this guard necessarily quotes it, and a mention inside
-          # <code> is prose, not a failure. `[^>]*` cannot cross a `>`, so this
-          # matches only the attribute sitting in a real element's opening tag —
-          # which is the shape Shiki actually emits.
+          # `[^>]*` matches only the attribute in a real opening tag, so the docs page
+          # quoting this guard inside <code> does not trip it.
           if grep -rEq '<(figure|pre)[^>]*data-nb-lang="mermaid"' docs-site/dist/ --include='*.html'; then
             grep -rEln '<(figure|pre)[^>]*data-nb-lang="mermaid"' docs-site/dist/ --include='*.html'
             echo "::error::a mermaid fence shipped as a Shiki code block"
             exit 1
           fi
 
-      # mermaid-passthrough only *moves* a fence; it never parses the diagram,
-      # so a syntax error builds cleanly and renders as an error box in the
-      # browser. This is the only check here that reads the source rather than
-      # the output.
-      - run: npm ci
+      # mermaid-passthrough never parses a diagram, so a syntax error builds cleanly
+      # and renders as an error box.
+      - run: pnpm install --frozen-lockfile
         working-directory: .github/scripts
       - run: node .github/scripts/check-mermaid.mjs
 
-      # The only check that resolves relative links in docs/ and README.md.
       # The Astro build renders a dead link happily, and README.md sits outside
-      # every content pipeline in this repo.
+      # every content pipeline.
       - run: node .github/scripts/check-links.mjs
 
-      # check-links.mjs above checks the SOURCE links, which is what GitHub's
-      # file view needs. This checks the BUILT ones, which is a different
-      # question: Nimbus passes a relative `foo.md` href straight through to the
-      # HTML, where it resolves against the page route and 404s. That shipped
-      # once — 111 links across 28 pages — with the build, astro check and every
-      # other guard here green, so source-side checking demonstrably does not
-      # cover it. Proven both directions: removing rewrite-md-links.ts from
-      # astro.config.ts makes this step report exactly those 111 links.
+      # Built links differ from source links: Nimbus passes a relative `foo.md` href
+      # through, and it 404s against the page route. That once shipped 111 broken
+      # links with every other guard green.
       - name: Every built link resolves to a built route
         run: node .github/scripts/check-routes.mjs
 
-      # A record with no frontmatter is not a page: the content collection
-      # rejects it and the build fails, but a record that builds can still be
-      # missing from the nav ordering, which makes it hard to find on the site.
+      # A record that builds can still be missing from the nav ordering.
       - name: Every ADR is a nav-ordered page
         run: |
           set -euo pipefail
           shopt -s nullglob
           records=(docs/adr/[0-9]*.md)
-          # Without nullglob an unmatched glob expands to the literal and the
-          # loop below runs zero times, so the guard passes on an empty
-          # directory. Assert the count first.
+          # Under nullglob an empty directory loops zero times and passes, so assert a
+          # count first.
           if [ "${#records[@]}" -lt 12 ]; then
             echo "::error::found ${#records[@]} ADRs under docs/adr/, expected at least 12 — did the directory move?"
             exit 1
@@ -316,7 +267,6 @@ jobs:
               || { echo "::error::$f has no sidebar.order, so it is unplaced in the nav"; exit 1; }
           done
 
-      # Preserve a reviewable site artifact for pull requests and private builds.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: site
@@ -331,8 +281,7 @@ jobs:
 
   pages:
     needs: [gate, docs]
-    # Path-filtered Rust/UI jobs may be skipped upstream of gate. Evaluate
-    # our explicit acceptance conditions even when those ancestors skipped.
+    # Path-filtered jobs upstream of gate may skip; evaluate these conditions anyway.
     if: always() && !cancelled() && needs.gate.result == 'success' && needs.docs.result == 'success' && github.ref == 'refs/heads/main' && !github.event.repository.private
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -351,20 +300,18 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
-  # The one check to wait on. Every job above either succeeded or was skipped
-  # by `changes`; anything else fails here. merge-pr.sh reads this
-  # instead of a per-job list, which is what removes the "a check never
-  # registered" failure: a job that does not run is a skip, and a skip passes.
+  # The one check to wait on (merge-pr.sh reads it): a job `changes` skipped
+  # passes, and anything else but success fails.
   gate:
     timeout-minutes: 5
-    needs: [changes, hygiene, ui, voice, rust, docs]
+    needs: [changes, hygiene, ui, rust, docs]
     if: always()
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'blacksmith-2vcpu-ubuntu-2404' }}
     steps:
       - run: |
           set -euo pipefail
           ok=1
-          for pair in "changes=${{ needs.changes.result }}" "hygiene=${{ needs.hygiene.result }}" "ui=${{ needs.ui.result }}" "voice=${{ needs.voice.result }}" "rust=${{ needs.rust.result }}" "docs=${{ needs.docs.result }}"; do
+          for pair in "changes=${{ needs.changes.result }}" "hygiene=${{ needs.hygiene.result }}" "ui=${{ needs.ui.result }}" "rust=${{ needs.rust.result }}" "docs=${{ needs.docs.result }}"; do
             echo "$pair"
             case "${pair#*=}" in
               success) ;;

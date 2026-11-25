@@ -6,17 +6,18 @@ const USAGE: &str = "\
 ambient — local-first ambient capture
 
 USAGE
-  ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>]
-                 [--seconds <n>] [--mic-only]
-                                       record with live transcription;
+  ambient record [--name <s>] [--app <bundle-id>]... [--seconds <n>]
+                 [--mic-only]          record, then transcribe after Stop;
                                        --mic-only skips the system audio
   ambient stop [<session-dir>]         stop the recording in progress
   ambient sessions [--json]            list the sessions on disk
   ambient search <query> [--json]      find words across every session
   ambient show <session-dir> [--verbatim] [--json]
                                        print a recorded session
-  ambient diarize <session-dir> [--threshold <f>]
-                                       assign speakers to a recorded session
+  ambient retry <session-dir>          transcribe a session whose job failed
+  ambient rerun <session-dir>          transcribe again from the audio; the
+                                       old transcript moves to previous/ and
+                                       typed names carry over
   ambient name <session-dir> <label> <name>
                                        name a speaker, e.g. call-1 Priya
   ambient undo <session-dir> [--seq <n>]
@@ -27,32 +28,22 @@ USAGE
   ambient export <session-dir> [--format <f>] [--out <path>]
                                        write markdown, text, json, srt, vtt or assistant
   ambient config [<key> <value>]       show or change settings
-  ambient mcp [--no-play] [--save-audio <dir>]
-                                       serve sessions, and the live assistant's
-                                       tools, over MCP on stdio
+  ambient mcp                          serve the session library, read-only,
+                                       over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
-  ambient talk --wav <a.wav> [--dry-run]
-                                       say one thing to firstmate and hear
-                                       its reply (see `ambient talk --help`)
-  ambient doctor [--json]              say which of ten things is missing
+  ambient doctor [--json]              say which of nine things is missing
   ambient probe                        check this machine is viable
-  ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
-  ambient vad <a.wav>                  show detected speech segments
   ambient peak <a.wav>...              per-channel peak level of a wav
 
 Sessions are written to ~/Documents/Ambient (override with AMBIENT_HOME).
 ";
 
-/// What `ambient record` was asked to do.
 #[derive(Debug, Default, PartialEq)]
 struct RecordArgs {
     name: Option<String>,
-    model: Option<String>,
     seconds: Option<u64>,
     apps: Vec<String>,
-    /// `--mic-only`: capture the microphone alone for this recording,
-    /// whatever the `capture` setting says.
     mic_only: bool,
 }
 
@@ -61,7 +52,6 @@ fn parse_record_args(mut args: impl Iterator<Item = String>) -> Result<RecordArg
     while let Some(a) = args.next() {
         match a.as_str() {
             "--name" => r.name = args.next(),
-            "--model" => r.model = args.next(),
             "--seconds" => {
                 r.seconds = Some(
                     args.next()
@@ -87,16 +77,14 @@ fn parse_record_args(mut args: impl Iterator<Item = String>) -> Result<RecordArg
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        // No arguments: the menu bar app. With arguments it stays the CLI, so
-        // one signed executable serves both and `open -a Ambient.app --args …`
-        // still reaches the diagnostics.
+        // No arguments: the menu bar app. One signed executable serves both,
+        // so `open -a Ambient.app --args …` still reaches the CLI.
         None => ambient::menubar::run(),
         Some("record") => {
             let r = parse_record_args(args)?;
             let dir = ambient::session::record(
                 r.name.as_deref(),
                 &r.apps,
-                r.model.as_deref(),
                 r.seconds,
                 r.mic_only.then_some(ambient::config::CaptureMode::Mic),
             )?;
@@ -367,78 +355,34 @@ fn main() -> Result<()> {
             if dir.is_empty() {
                 bail!("{USAGE}");
             }
-            // Collected first so the two flags work in either order.
             let flags: Vec<String> = args.collect();
             let verbatim = flags.iter().any(|a| a == "--verbatim");
             let json = flags.iter().any(|a| a == "--json");
             ambient::session::show(std::path::Path::new(&dir), verbatim, json)
         }
-        // Not in USAGE: the menu bar app's queue runs this in a child process
-        // so the memory finalizing takes goes back to the system when it
-        // exits, and its stdout is a protocol for that parent, not a person.
-        Some(ambient::finalize::SUBCOMMAND) => {
+        Some(verb @ ("retry" | "rerun")) => {
             let dir = args.next().unwrap_or_default();
             if dir.is_empty() || args.next().is_some() {
                 bail!("{USAGE}");
             }
-            ambient::finalize::serve(std::path::Path::new(&dir))
-        }
-        Some("diarize") => {
-            let dir = args.next().unwrap_or_default();
-            if dir.is_empty() {
-                bail!("{USAGE}");
-            }
-            let mut threshold = ambient::diarize::DEFAULT_THRESHOLD;
-            while let Some(a) = args.next() {
-                match a.as_str() {
-                    "--threshold" => {
-                        threshold = args
-                            .next()
-                            .ok_or_else(|| anyhow::anyhow!("--threshold needs a value"))?
-                            .parse()?
-                    }
-                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
-                }
-            }
             let path = std::path::Path::new(&dir);
-            let _lock = ambient::session::claim_transcription(path)?;
-            let n = ambient::session::diarize_session(path, threshold)?;
-            eprintln!("  {n} edit(s) appended");
+            if verb == "retry" {
+                ambient::session::transcribe_session(path, None)?;
+            } else {
+                ambient::session::rerun_session(path, None)?;
+            }
             ambient::session::show(path, false, false)
         }
-        // The whole of it is on stdin and stdout: nothing else may print to
-        // stdout while this runs or the client sees a protocol error instead
-        // of an answer. Sessions are read-only here; the assistant's tools
-        // write only its heartbeat and `assistant.jsonl`.
+        // stdout is the MCP protocol: anything else printed there breaks it.
         Some("mcp") => {
-            let mut voice_args: Vec<String> = Vec::new();
-            while let Some(a) = args.next() {
-                match a.as_str() {
-                    // For a demo or a test: the voice runs, nobody hears it.
-                    "--no-play" => voice_args.push("--no-play".into()),
-                    "--save-audio" => {
-                        let dir = args
-                            .next()
-                            .ok_or_else(|| anyhow::anyhow!("--save-audio needs a folder"))?;
-                        voice_args.extend(["--save-dir".into(), dir]);
-                    }
-                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
-                }
+            if let Some(other) = args.next() {
+                bail!("unexpected argument {other:?}\n\n{USAGE}");
             }
-            ambient::mcp::serve_with(
+            ambient::mcp::serve(
                 std::io::stdin().lock(),
                 std::io::stdout().lock(),
                 &ambient::session::home(),
-                ambient::assist::real_voice(voice_args),
             )
-        }
-        Some(ambient::talk::SUBCOMMAND) => {
-            let rest: Vec<String> = args.collect();
-            if rest.iter().any(|a| a == "--help" || a == "-h") {
-                print!("{}", ambient::talk::USAGE);
-                return Ok(());
-            }
-            ambient::talk::main(rest)
         }
         Some("doctor") => {
             let flags: Vec<String> = args.collect();
@@ -448,6 +392,7 @@ fn main() -> Result<()> {
             }
             let checks = ambient::doctor::run(
                 ambient::session::models_root(),
+                ambient::engine::locate(),
                 &ambient::config::path(),
                 &ambient::session::home(),
             );
@@ -473,77 +418,13 @@ fn main() -> Result<()> {
             ambient::probe::run()?;
             Ok(())
         }
-        Some("transcribe") => {
-            let model = args.next().unwrap_or_default();
-            let wav = args.next().unwrap_or_default();
-            if model.is_empty() || wav.is_empty() {
-                bail!("{USAGE}");
-            }
-            // Accept any sample rate: features::read_wav insists on 16 kHz and
-            // tells you to resample first, which until now nothing could do.
-            let (raw, rate) = ambient::resample::read_wav_any(std::path::Path::new(&wav))?;
-            let samples = ambient::resample::to_16k(&raw, rate)?;
-            let secs = samples.len() as f64 / 16_000.0;
-            let t = std::time::Instant::now();
-            let mut rec = ambient::asr::Recognizer::load(&model)?;
-            // Prefer VAD chunking when the model is present; it cuts in silence
-            // and skips it entirely.
-            let silero = ambient::session::models_root()
-                .map(|m| m.join("silero_vad.onnx"))
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "models/silero_vad.onnx".into());
-            let text = match ambient::vad::Vad::load(&silero) {
-                Ok(mut vad) => {
-                    let chunks = vad.chunks(&samples, 30)?;
-                    let speech = chunks.iter().map(|c| c.seconds()).sum::<f64>().max(0.0);
-                    eprintln!(
-                        "vad: {} chunk(s), {speech:.1}s speech of {secs:.1}s",
-                        chunks.len()
-                    );
-                    rec.transcribe_chunked(&samples, &chunks)?
-                }
-                Err(_) => rec.transcribe_long(&samples)?,
-            };
-            let el = t.elapsed().as_secs_f64();
-            eprintln!("{secs:.1}s audio in {el:.2}s ({:.0}x realtime)", secs / el);
-            println!("{text}");
-            Ok(())
-        }
-        Some("vad") => {
-            let wav = args.next().unwrap_or_default();
-            if wav.is_empty() {
-                bail!("{USAGE}");
-            }
-            let samples = ambient::features::read_wav(&wav)?;
-            let silero = ambient::session::models_root()?.join("silero_vad.onnx");
-            let mut vad = ambient::vad::Vad::load(&silero.display().to_string())?;
-            let segs = vad.segments(&samples)?;
-            let total = segs.iter().map(|s| s.seconds()).sum::<f64>().max(0.0);
-            let dur = samples.len() as f64 / 16_000.0;
-            for (i, s) in segs.iter().enumerate() {
-                println!(
-                    "{i:3}  {:7.2}s -> {:7.2}s  ({:.2}s)",
-                    s.start as f64 / 16_000.0,
-                    s.end as f64 / 16_000.0,
-                    s.seconds()
-                );
-            }
-            println!(
-                "\n{} segments, {total:.1}s speech of {dur:.1}s ({:.0}% skipped)",
-                segs.len(),
-                100.0 * (1.0 - total / dur)
-            );
-            Ok(())
-        }
         Some("tap") => {
             let out = args.next().unwrap_or_default();
             let secs: u64 = args.next().unwrap_or_default().parse().unwrap_or(10);
             let rest: Vec<String> = args.collect();
             let include_mic = !rest.iter().any(|a| a == "--no-mic");
-            // Diagnostic: does a process *spawned by* the bundle inherit its
-            // audio-capture grant? The answer decides whether a front-end can
-            // shell out to this binary or has to link it. Cannot be answered by
-            // reading anything — TCC hands back silence, not an error.
+            // Whether a child of the bundle inherits its audio-capture grant.
+            // TCC hands back silence, not an error, so only a capture can tell.
             let via_child = rest.iter().any(|a| a == "--via-child");
             let bundles: Vec<String> = rest
                 .into_iter()
@@ -561,7 +442,6 @@ fn main() -> Result<()> {
                 eprintln!("child exited: {status}");
                 return Ok(());
             }
-            // Same precedence as `record`: an argument beats the setting.
             let cfg = ambient::config::Config::load();
             let from_config = bundles.is_empty() && !cfg.apps.is_empty();
             let bundles = if from_config {
@@ -602,7 +482,7 @@ fn main() -> Result<()> {
                 max_rendering = max_rendering.max(ambient::probe::processes_rendering_output());
             }
 
-            // Two clocks now, so two files rather than one interleaved wav.
+            // Mic and call run on separate clocks, so they get separate files.
             let peak = |v: &[f32]| v.iter().fold(0.0f32, |a, s| a.max(s.abs()));
             let (mic_real, _, call_real, _) = tap.real_seconds(&drain);
             let base = out.strip_suffix(".wav").unwrap_or(&out).to_string();
@@ -656,11 +536,9 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        // Reads a file and needs no audio permission, which is the point: the
-        // bundle launch that *does* have the grant is `open -a`, and that
-        // discards stdout — so the only way to see whether a capture actually
-        // produced sound is to inspect the wav afterwards. setup-signing.sh's
-        // verification step depends on this.
+        // Needs no audio permission: a bundle launch via `open -a` discards
+        // stdout, so the wav is the only evidence a capture made sound.
+        // setup-signing.sh depends on this.
         Some("peak") => {
             let wavs: Vec<String> = args.collect();
             if wavs.is_empty() {
@@ -684,8 +562,7 @@ fn main() -> Result<()> {
                     .map(|p| format!("{p:.4}"))
                     .collect::<Vec<_>>()
                     .join(" ");
-                // 1e-4 is the same floor capture.rs uses to call a tap silent.
-                let quiet = peaks.iter().all(|p| *p < 1e-4);
+                let quiet = peaks.iter().all(|p| *p < ambient::capture::SILENT_PEAK);
                 if quiet {
                     silent += 1;
                 }
@@ -695,10 +572,11 @@ fn main() -> Result<()> {
                     if quiet { "  SILENT" } else { "" }
                 );
             }
-            // Non-zero exit when every file was silent, so a script can branch
-            // on it without parsing this output.
             if silent == wavs.len() {
-                bail!("every wav was silent (peak < 1e-4)");
+                bail!(
+                    "every wav was silent (peak < {})",
+                    ambient::capture::SILENT_PEAK
+                );
             }
             Ok(())
         }
@@ -749,7 +627,6 @@ fn main() -> Result<()> {
                             Some(n) => format!("{n}"),
                         }
                     );
-                    println!("{:<14} {}", "threshold", cfg.threshold);
                     println!(
                         "{:<14} {}",
                         "sessions_dir",
@@ -757,73 +634,6 @@ fn main() -> Result<()> {
                             .clone()
                             .map(|p| p.display().to_string())
                             .unwrap_or_else(|| "(~/Documents/Ambient)".into())
-                    );
-                    let a = &cfg.assistant;
-                    println!(
-                        "{:<14} {}",
-                        "assistant",
-                        if a.enabled { "on" } else { "off" }
-                    );
-                    println!("  {:<24} {}", "assistant.name", a.name);
-                    println!("  {:<24} {}", "assistant.cooldown_s", a.cooldown_s);
-                    println!(
-                        "  {:<24} {}",
-                        "assistant.max_per_meeting", a.max_per_meeting
-                    );
-                    println!("  {:<24} {}", "assistant.settle_s", a.settle_s);
-                    let ram = ambient::assist::voice::total_ram();
-                    println!(
-                        "  {:<24} {}",
-                        "voice.engine",
-                        match cfg.voice.engine {
-                            Some(e) => e.to_string(),
-                            None => format!(
-                                "auto ({} for {} GB)",
-                                ambient::assist::voice::auto_engine(ram),
-                                ram >> 30
-                            ),
-                        }
-                    );
-                    println!(
-                        "  {:<24} {}",
-                        "voice.speaker",
-                        cfg.voice.speaker.as_deref().unwrap_or("(engine default)")
-                    );
-                    println!(
-                        "  {:<24} {}",
-                        "voice.style",
-                        cfg.voice.style.as_deref().unwrap_or("(none)")
-                    );
-                    for (key, value) in [
-                        ("voice.description", &cfg.voice.description),
-                        ("voice.cue", &cfg.voice.cue),
-                    ] {
-                        println!("  {:<24} {}", key, value.as_deref().unwrap_or("(none)"));
-                    }
-                    println!(
-                        "  {:<24} {}",
-                        "voice.reference",
-                        cfg.voice
-                            .reference
-                            .as_ref()
-                            .map_or_else(|| "(none)".into(), |p| p.display().to_string())
-                    );
-                    println!(
-                        "  {:<24} {}",
-                        "voice.helper_dir",
-                        cfg.voice
-                            .helper_dir
-                            .clone()
-                            .unwrap_or_else(ambient::assist::voice::default_helper_dir)
-                            .display()
-                    );
-                    println!(
-                        "{:<14} {}",
-                        "talk.firstmate_home",
-                        cfg.talk
-                            .firstmate_home
-                            .as_ref()
-                            .map_or_else(|| "(none)".into(), |p| p.display().to_string())
                     );
                     println!();
                     println!(

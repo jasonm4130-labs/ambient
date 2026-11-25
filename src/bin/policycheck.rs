@@ -1,24 +1,13 @@
-//! Drives the real activation-policy flip and reports what the app actually
-//! becomes.
-//!
-//! The flip is the highest-risk piece of the design and none of it is visible
-//! to inspection: whether the app has a Dock icon is a property of the running
-//! process, and both guards on the demotion are about windows that only exist
-//! at run time. In particular `NSApp.windows()` carries AppKit's own furniture
-//! — the status item's bar window, the carrier behind an open menu — and a
-//! guard that counted those would mean the app never demoted at all. This
-//! prints the list rather than assuming it.
-//!
-//! It opens the same `MainWindow` the menu bar app opens, closes it the way
-//! ⌘W does (`performClose:`, so `windowWillClose:` really runs), and asserts:
+//! Drives the real activation-policy flip and reports what the app becomes.
+//! Opens the menu bar app's `MainWindow`, closes it with `performClose:` so
+//! `windowWillClose:` really runs, and asserts:
 //!
 //! 1. launch is Accessory,
 //! 2. showing the window promotes to Regular,
 //! 3. closing it demotes back to Accessory,
 //! 4. a modal session in progress refuses the demotion,
 //! 5. another visible window refuses it too,
-//! 6. the refresh tick's retry demotes once that window goes away — without it
-//!    the guards are one-shot and the app stays Regular with no window, and
+//! 6. the refresh tick's retry demotes once that window goes away, and
 //! 7. minimising is not closing and keeps Regular.
 //!
 //! Run: `AMBIENT_HOME=<scratch> cargo run --bin policycheck`
@@ -41,11 +30,9 @@ use objc2_foundation::{
     NSRunLoopCommonModes, NSSize, NSTimer,
 };
 
-/// Only here because `applicationShouldTerminateAfterLastWindowClosed` is one
-/// of the two things step 8 has to get right, and the default is the wrong
-/// answer. Returning false from the real delegate is what keeps the background
-/// agent alive when the reader is closed; this stands in for it so closing the
-/// window here does not end the check.
+/// Stands in for the real delegate, whose
+/// `applicationShouldTerminateAfterLastWindowClosed` returns false, so closing
+/// the window does not end the check.
 struct ProbeIvars {
     reopened: Cell<bool>,
 }
@@ -72,8 +59,6 @@ define_class!(
     }
 );
 
-/// Everything `NSApp.windows()` holds, and the two properties the demotion
-/// guard reads. This is the measurement the guard's filter was written from.
 fn dump_windows(app: &NSApplication) {
     println!("   NSApp.windows():");
     for w in app.windows().iter() {
@@ -94,14 +79,11 @@ fn main() {
     println!("sessions folder: {}", home.display());
 
     let app = NSApplication::sharedApplication(mtm);
-    // Launch, unchanged: LSUIElement in the bundle, Accessory here.
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     ambient::window::install_main_menu(mtm);
 
-    // The shipped app always has one, and its window is in `NSApp.windows()`
-    // for the whole of the app's life. If that counted as "another window is
-    // visible" the app would promote once and never come back down, so it is
-    // created here rather than reasoned about.
+    // The shipped app's status item window is always in `NSApp.windows()`; it
+    // is created here so the guard is proven to ignore it.
     let status_item =
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     if let Some(b) = status_item.button(mtm) {
@@ -118,7 +100,6 @@ fn main() {
     let phase = Phase::idle();
     let step = Cell::new(0u32);
     let failures = Cell::new(0u32);
-    // A second window, to prove the "another window is visible" guard.
     let other: RefCell<Option<Retained<NSWindow>>> = RefCell::new(None);
 
     let expect = move |cond: bool, what: &str, failures: &Cell<u32>| {
@@ -180,11 +161,9 @@ fn main() {
                 );
             }
             3 => {
-                // The guard that deadlocks if it is missing. `runModal` would
-                // block this whole function, so the session is begun rather
-                // than run — `NSApp.modalWindow` is set either way, and that
-                // is what the guard reads. The real path is the settings
-                // page's Choose… button, which runs `NSOpenPanel::runModal`.
+                // `runModal` would block this function, so the session is begun
+                // instead; `NSApp.modalWindow` is set either way, and that is
+                // what the guard reads.
                 println!("\n-- demote refused under a modal session --");
                 let panel = unsafe {
                     NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -227,18 +206,15 @@ fn main() {
                 panel.makeKeyAndOrderFront(None);
                 *other.borrow_mut() = Some(panel);
                 dump_windows(&app);
-                // The main window is passed as the one being closed, so the
-                // only thing left that can refuse is the panel — otherwise
-                // this would pass whether or not the guard looked past the
-                // window it was closing.
+                // The main window is passed as the one closing, so only the
+                // panel can refuse.
                 let main = app
                     .windows()
                     .iter()
                     .find(|w| w.title().to_string() == "Ambient")
                     .expect("the main window is in NSApp.windows()");
-                // Ordered out first, exactly as `windowWillClose:` does it, so
-                // the state this leaves behind is the real one: main window
-                // gone, panel still up, policy stuck at Regular.
+                // Ordered out first, as `windowWillClose:` does, leaving the
+                // real state: main window gone, panel up, policy Regular.
                 main.orderOut(None);
                 demote_to_accessory(mtm, Some(&main));
                 expect(
@@ -248,12 +224,8 @@ fn main() {
                 );
             }
             5 => {
-                // The guard in case 4 refused, correctly. But `windowWillClose:`
-                // is the only other caller and it will not fire again — the main
-                // window is already ordered out. Without a second ask the app is
-                // left in Regular for ever: Dock icon and Cmd-Tab entry with no
-                // window behind them. That second ask is the refresh tick, which
-                // calls the demotion with `None`; this is that exact call.
+                // `windowWillClose:` will not fire again, so this is the
+                // refresh tick's exact retry call, with `None`.
                 println!("\n-- retry after the blocking window went away --");
                 if let Some(p) = other.borrow_mut().take() {
                     p.orderOut(None);
@@ -264,16 +236,13 @@ fn main() {
                     "the retry demotes once the window that blocked it is gone",
                     &failures,
                 );
-                // Back to Regular for the minimise case, the way reopening does
-                // it. `show` reuses this window; `MainWindow::open` would build
-                // a second one and the lookup by title below would be ambiguous.
+                // `show` reuses this window; `MainWindow::open` would build a
+                // second and make the lookup by title below ambiguous.
                 window.show(mtm);
             }
             6 => {
-                // Minimising is not closing. An app that dropped out of the
-                // Dock and Cmd-Tab when its window was minimised would have
-                // put the window out of reach, which is the one thing
-                // Accessory cannot undo.
+                // Minimising must keep Regular: Accessory would put the
+                // minimised window out of reach.
                 println!("\n-- minimise --");
                 let main = app
                     .windows()
@@ -295,9 +264,7 @@ fn main() {
                     &failures,
                 );
                 println!("\n-- ⌘W: performClose: on the main window --");
-                // Found the way the menu finds it, not by holding a handle:
-                // this is the window `performClose:` acts on when the File
-                // menu's Close is chosen.
+                // Found the way the File menu's Close finds it, not by handle.
                 let target = app
                     .windows()
                     .iter()

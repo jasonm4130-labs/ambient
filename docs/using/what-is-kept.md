@@ -17,11 +17,6 @@ Sessions are ordinary files in `~/Documents/Ambient` unless you choose another
 folder. Ambient does not encrypt them separately from your Mac's storage.
 Cloud folder sync and backups can copy them elsewhere. Exports and MCP clients
 can also share transcript text beyond this Mac; see [MCP access](mcp.md#access-and-privacy).
-The [live assistant](assistant.md#what-leaves-this-mac), when you turn it on,
-hands the transcript to the agent you run in Claude Code, which sends it to
-that agent's model, and keeps a log of what it said in the session's
-`assistant.jsonl`.
-
 The recording prompt asks you, not the other participants. Obtain appropriate
 permission before recording. Ambient does not join the call or announce the
 recording to the people in it.
@@ -63,8 +58,8 @@ phase at `Recording`, because that is the honest state — the worker really is
 still recording, so Stop stays enabled and Start stays disabled rather than the
 app advancing past a capture it never stopped. `Failed` is watched exactly
 like `Idle`: a failure nobody has dismissed does not stop the next call being
-noticed. Transcription runs beside these recording states: completed turns
-appear during capture, and the queue finishes remaining text and speaker labels
+noticed. Transcription runs beside these recording states: nothing is
+transcribed during capture, and the queue transcribes and labels speakers
 after Stop. A new recording can start while the previous session finishes.
 The menu shows what the queue is doing and how
 many sessions are waiting, and the icon is an hourglass until it is empty
@@ -106,10 +101,13 @@ recording — the app is running whenever a recording happens, so no launchd
 agent is needed — and it never touches `raw.jsonl`, `edits.jsonl`,
 `session.json` or `transcript.md`.
 
-Live transcription temporarily keeps an additional native-rate PCM copy of
-each track under `audio/`. Those working copies are removed after the finished
-transcript is written. A small `live-asr.json` checkpoint remains so retries
-preserve lines already read by the window or an MCP client.
+Transcription keeps the model helper's output for each track under `stages/`,
+so a failed job can resume where it stopped. Those files hold the recognised
+words and speaker turns, and they stay until the session is deleted. A re-run copies the previous
+`raw.jsonl`, `edits.jsonl` and `transcript.md` into `previous/<time>/` rather
+than deleting them. Sessions recorded while Ambient still transcribed during
+recording may hold native-rate PCM copies and a `live-asr.json`; the next
+successful transcription of that session removes them.
 
 Two guards matter. A session with no `transcript.md` is never swept: it is
 still being written, and its audio is the only copy of what was said. That guard
@@ -117,12 +115,11 @@ has a consequence worth stating plainly — a recording that *failed* also has n
 `transcript.md`, so its audio is kept indefinitely rather than ageing out. Those
 directories are the ones to check by hand if you care about the retention
 window holding. And
-`ambient diarize` **refuses** on a session whose audio has been swept, because
-a re-run reverts the previous labels before it discovers there is nothing to
-read — which would silently unlabel every speaker nobody had named by hand. The
-window says the same thing before you can ask: on a swept session *Separate
-voices* is disabled and carries the reason under it, rather than offering a
-button that would only refuse.
+`ambient rerun` **refuses** on a session whose audio has been swept, and leaves
+its transcript as it was: there is nothing to transcribe again from. The window
+says the same thing before you can ask: on a swept session *Transcribe again*
+is disabled and carries the reason under it, rather than offering a button that
+would only refuse.
 
 ## Who's who
 
@@ -138,6 +135,6 @@ a person across sessions. You choose which name belongs to a speaker; check the
 result before sharing the transcript.
 
 Naming from the window writes the same edit `ambient name` does, so it is
-recorded as the user's and survives a re-diarize.
+recorded as the user's and carries over when a session is transcribed again.
 
 See [ADR-0009](../adr/0009-armed-consent-state.md), [ADR-0010](../adr/0010-names-not-voiceprints.md) and [ADR-0011](../adr/0011-audio-retention-sweep.md).

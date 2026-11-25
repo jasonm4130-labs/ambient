@@ -1,12 +1,5 @@
-//! Settings that outlive a single run.
-//!
-//! Kept in `~/Library/Application Support/Ambient/config.json` rather than
-//! under the sessions folder, because the sessions folder is itself a setting
-//! and a config that lives inside the thing it configures cannot be found
-//! before it is read.
-//!
-//! Only settings with something behind them live here. A stored value that no
-//! code reads is a promise the app does not keep.
+//! Settings that outlive a run. Kept outside the sessions folder because that
+//! folder is itself a setting.
 
 use std::path::{Path, PathBuf};
 
@@ -16,45 +9,25 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Bundle IDs to tap. Empty means everything the Mac plays.
+    /// Bundle IDs to tap; empty taps everything.
     pub apps: Vec<String>,
     /// Input device by name. `None` follows the system default.
     pub input_device: Option<String>,
-    /// Separate voices once the transcript exists.
     pub diarize: bool,
-    /// How readily two utterances are called different people.
-    pub threshold: f32,
     /// Where sessions are written. `None` means `~/Documents/Ambient`.
     pub sessions_dir: Option<PathBuf>,
-    /// Wait to be told before recording a call this app noticed. Defaults on:
-    /// a recording nobody sanctioned is the behaviour that gets a tool banned.
+    /// Defaults on: an unsanctioned recording is what gets a tool banned.
     pub ask_before_recording: bool,
-    /// Days to keep the track audio. `Some(0)` deletes it as soon as the
-    /// transcript exists; `None` keeps it forever. The audio is the most
-    /// sensitive artefact here and the least useful once the text exists.
+    /// `Some(0)` deletes the audio once the transcript exists; `None` keeps it.
     pub audio_retention_days: Option<u32>,
-    /// The live assistant (`ambient mcp`'s watching tools). Off unless
-    /// turned on.
-    pub assistant: AssistantConfig,
-    /// The assistant's voice. Per machine, because the right engine depends on
-    /// how much memory this Mac has.
-    pub voice: VoiceConfig,
-    /// Talking to an agent out loud (`ambient talk`).
-    pub talk: TalkConfig,
-    /// What a recording captures: the microphone and the system audio, or the
-    /// microphone alone. `ambient record --mic-only` overrides it once.
     pub capture: CaptureMode,
 }
 
-/// What a recording captures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMode {
-    /// The microphone (the `room` track) and the system audio (`call`).
     #[default]
     All,
-    /// The microphone only. No process tap is created, so there is no `call`
-    /// track.
     Mic,
 }
 
@@ -79,95 +52,20 @@ impl std::str::FromStr for CaptureMode {
     }
 }
 
-/// Where `ambient talk` sends what the user says. Only firstmate today, as an
-/// adapter, so another target can be added beside it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct TalkConfig {
-    /// The firstmate home whose `bin/fm-inbox.sh` takes the note and records
-    /// the reply. `None` means talking has nowhere to go and is refused.
-    pub firstmate_home: Option<PathBuf>,
-}
-
-/// Whether the live assistant may watch a meeting, and how often it may
-/// speak. What it says is the agent's own judgement.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AssistantConfig {
-    /// Off by default: an assistant that may speak in a meeting is something
-    /// a person turns on, never something they discover.
-    pub enabled: bool,
-    /// The name people address it by, and the name it answers to.
-    pub name: String,
-    /// Seconds of silence from the assistant after it speaks.
-    pub cooldown_s: u32,
-    /// The most times it speaks in one meeting.
-    pub max_per_meeting: u32,
-    /// Seconds of quiet that end a person's turn, so `wait_for_transcript`
-    /// hands their words over. A turn that trails off ("um", "so") is given
-    /// longer; saying the assistant's name ends it at once.
-    pub settle_s: u32,
-}
-
-impl Default for AssistantConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            name: "Claude".into(),
-            cooldown_s: 60,
-            max_per_meeting: 10,
-            settle_s: 5,
-        }
-    }
-}
-
-/// The voice helper: which local engine speaks, and how.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct VoiceConfig {
-    /// `None` picks by this Mac's memory (see `assist::voice::auto_engine`).
-    pub engine: Option<crate::assist::voice::Engine>,
-    /// The engine's speaker. `None` is the engine's own default voice.
-    pub speaker: Option<String>,
-    /// A standing delivery instruction, which only the Qwen3-TTS preset
-    /// speakers follow.
-    pub style: Option<String>,
-    /// A plain-English description of the voice to design, for Qwen3-TTS.
-    /// It is rendered once into a reference clip by the 1.7B VoiceDesign
-    /// model, and the 0.6B model clones that clip for every reply.
-    pub description: Option<String>,
-    /// A delivery cue appended to `description` when the reference is
-    /// designed, such as "He delivers this deadpan, with dry wit."
-    pub cue: Option<String>,
-    /// A designed voice folder (`reference.wav` + `voice.json`) to clone
-    /// instead of designing one. Wins over `description`. A relative path is
-    /// inside the helper folder, e.g. `voices/v1-gravel`.
-    pub reference: Option<PathBuf>,
-    /// The helper project to run. `None` is the `voice/` folder of the source
-    /// tree this binary was built from.
-    pub helper_dir: Option<PathBuf>,
-}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
             apps: Vec::new(),
             input_device: None,
             diarize: true,
-            threshold: crate::diarize::DEFAULT_THRESHOLD,
             sessions_dir: None,
             ask_before_recording: true,
             audio_retention_days: Some(7),
-            assistant: AssistantConfig::default(),
-            voice: VoiceConfig::default(),
-            talk: TalkConfig::default(),
             capture: CaptureMode::default(),
         }
     }
 }
 
-/// The config file, honouring `AMBIENT_CONFIG` so a test can point somewhere
-/// harmless without touching the real one.
 pub fn path() -> PathBuf {
     if let Ok(p) = std::env::var("AMBIENT_CONFIG") {
         return PathBuf::from(p);
@@ -181,9 +79,7 @@ pub fn path() -> PathBuf {
 }
 
 impl Config {
-    /// Never fails. A missing file is the ordinary first run; an unreadable one
-    /// says so on stderr and falls back, because losing a recording over a
-    /// malformed preference would be absurd.
+    /// Never fails: a malformed preference must not cost a recording.
     pub fn load() -> Self {
         Self::load_from(&path())
     }
@@ -225,9 +121,6 @@ impl Config {
         Ok(())
     }
 
-    /// Set one field from a string, for `ambient config <key> <value>`. Listing
-    /// the keys here rather than reflecting over the struct keeps the CLI and
-    /// the window honest about which settings actually exist.
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
             "apps" => {
@@ -243,14 +136,13 @@ impl Config {
                     (!value.is_empty() && value != "default").then(|| value.to_string())
             }
             "diarize" => self.diarize = flag(value)?,
-            "threshold" => self.threshold = value.parse()?,
             "sessions_dir" => {
                 self.sessions_dir =
                     (!value.is_empty() && value != "default").then(|| PathBuf::from(value))
             }
             "ask_before_recording" => self.ask_before_recording = flag(value)?,
-            // "forever" is spelled out rather than expressed as a large number,
-            // so that keeping audio indefinitely is a deliberate word.
+            // "forever", not a large number, so keeping audio indefinitely is
+            // a deliberate word.
             "audio_retention_days" => {
                 self.audio_retention_days = match value {
                     "forever" | "never" => None,
@@ -258,51 +150,18 @@ impl Config {
                 }
             }
             "capture" => self.capture = value.parse()?,
-            "assistant" => self.assistant.enabled = flag(value)?,
-            "assistant.name" => self.assistant.name = nonempty(key, value)?,
-            "assistant.cooldown_s" => self.assistant.cooldown_s = value.parse()?,
-            "assistant.max_per_meeting" => self.assistant.max_per_meeting = value.parse()?,
-            "assistant.settle_s" => {
-                let s: u32 = value.parse()?;
-                anyhow::ensure!(
-                    (1..=60).contains(&s),
-                    "assistant.settle_s must be 1 to 60 seconds"
-                );
-                self.assistant.settle_s = s;
-            }
-            "voice.engine" => {
-                self.voice.engine = match value {
-                    "auto" | "default" => None,
-                    v => Some(v.parse()?),
-                }
-            }
-            "voice.speaker" => self.voice.speaker = optional(value),
-            "voice.style" => self.voice.style = optional(value),
-            "voice.helper_dir" => self.voice.helper_dir = optional(value).map(PathBuf::from),
-            "voice.description" => self.voice.description = optional(value),
-            "voice.cue" => self.voice.cue = optional(value),
-            "voice.reference" => self.voice.reference = optional(value).map(PathBuf::from),
-            "talk.firstmate_home" => self.talk.firstmate_home = optional(value).map(PathBuf::from),
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
-                 threshold, sessions_dir, ask_before_recording, audio_retention_days, \
-                 capture, assistant, assistant.name, assistant.cooldown_s, \
-                 assistant.max_per_meeting, assistant.settle_s, \
-                 voice.engine, voice.speaker, voice.style, voice.helper_dir, \
-                 voice.description, voice.cue, voice.reference, talk.firstmate_home"
+                 sessions_dir, ask_before_recording, audio_retention_days, \
+                 capture"
             ),
         }
         Ok(())
     }
 }
 
-/// Refuse a setting change that a running capture would make incoherent.
-///
-/// Only `sessions_dir` is at stake, and only while something is recording:
-/// moving it then splits one conversation across two folders for nothing, since
-/// the capture keeps writing into the directory it claimed at the start. The
-/// window already said no; saying it here too means the CLI cannot walk past a
-/// rule the GUI enforces.
+/// A capture keeps writing into the folder it claimed at start, so moving
+/// `sessions_dir` mid-recording would split one conversation across two.
 pub fn refuse_while_live(key: &str, live: Option<&Path>) -> Result<()> {
     if key == "sessions_dir" {
         if let Some(dir) = live {
@@ -316,27 +175,8 @@ pub fn refuse_while_live(key: &str, live: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// A text setting that has no sensible empty value, such as a model id.
-fn nonempty(key: &str, value: &str) -> Result<String> {
-    let v = value.trim();
-    if v.is_empty() {
-        anyhow::bail!("{key} cannot be empty");
-    }
-    Ok(v.to_string())
-}
-
-/// A text setting whose absence means "the default", spelled `default`.
-fn optional(value: &str) -> Option<String> {
-    let v = value.trim();
-    (!v.is_empty() && v != "default").then(|| v.to_string())
-}
-
-/// Parse a boolean setting, refusing anything it does not recognise.
-///
-/// Treating every unrecognised word as `false` would mean `config diarize maybe`
-/// silently turns diarization off and reports success — the silent fallback this
-/// project keeps having to remove, reintroduced in the one layer that must not
-/// have it.
+/// Unknown words are refused: reading them as `false` would silently turn a
+/// setting off and report success.
 fn flag(value: &str) -> Result<bool> {
     match value {
         "true" | "yes" | "on" | "1" => Ok(true),
@@ -397,7 +237,7 @@ mod tests {
         std::fs::write(&p, r#"{"apps": ["com.apple.Safari"]}"#).unwrap();
         let c = Config::load_from(&p);
         assert_eq!(c.apps, ["com.apple.Safari"]);
-        assert_eq!(c.threshold, Config::default().threshold);
+        assert_eq!(c.diarize, Config::default().diarize);
         std::fs::remove_file(&p).ok();
     }
 
@@ -407,7 +247,6 @@ mod tests {
         let mut c = Config::default();
         c.set("apps", "com.apple.Safari, us.zoom.xos").unwrap();
         c.set("diarize", "false").unwrap();
-        c.set("threshold", "0.55").unwrap();
         c.set("input_device", "MacBook Pro Microphone").unwrap();
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);
@@ -436,72 +275,8 @@ mod tests {
     fn moving_the_sessions_folder_mid_recording_is_refused() {
         let e = refuse_while_live("sessions_dir", Some(Path::new("/x"))).unwrap_err();
         assert!(e.to_string().contains("/x"), "{e}");
-        // Nothing is recording, and every other setting is free to change
-        // either way: only the folder the capture is writing into is at stake.
         assert!(refuse_while_live("sessions_dir", None).is_ok());
         assert!(refuse_while_live("diarize", Some(Path::new("/x"))).is_ok());
-    }
-
-    #[test]
-    fn the_assistant_is_off_until_turned_on() {
-        let mut c = Config::default();
-        assert!(!c.assistant.enabled);
-        c.set("assistant", "on").unwrap();
-        assert!(c.assistant.enabled);
-        assert!(c.set("assistant", "maybe").is_err());
-    }
-
-    #[test]
-    fn assistant_settings_are_validated_and_round_trip() {
-        let p = temp("assistant");
-        let mut c = Config::default();
-        c.set("assistant.cooldown_s", "30").unwrap();
-        assert!(c.set("assistant.cooldown_s", "soon").is_err());
-        assert_eq!(
-            c.assistant.cooldown_s, 30,
-            "a refused value leaves it alone"
-        );
-        assert!(c.set("assistant.name", " ").is_err());
-        c.set("assistant.name", "Hamish").unwrap();
-        c.set("voice.engine", "qwen3-tts").unwrap();
-        c.set("voice.style", "Dry and understated.").unwrap();
-        c.set("voice.description", "An older Scottish man.")
-            .unwrap();
-        c.set("voice.cue", "Deadpan.").unwrap();
-        c.set("voice.reference", "/voices/gravel").unwrap();
-        assert!(c.set("voice.engine", "espeak").is_err());
-        c.save_to(&p).unwrap();
-        assert_eq!(Config::load_from(&p), c);
-        c.set("voice.engine", "auto").unwrap();
-        c.set("voice.style", "default").unwrap();
-        assert_eq!(c.voice.engine, None);
-        assert_eq!(c.voice.style, None);
-        c.set("voice.reference", "default").unwrap();
-        assert_eq!(c.voice.reference, None);
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn an_older_config_file_gets_the_assistant_defaults() {
-        let p = temp("older");
-        std::fs::write(&p, r#"{"diarize": false}"#).unwrap();
-        let c = Config::load_from(&p);
-        assert_eq!(c.assistant, AssistantConfig::default());
-        assert_eq!(c.voice, VoiceConfig::default());
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn the_firstmate_home_is_unset_until_given_and_round_trips() {
-        let p = temp("talk");
-        let mut c = Config::default();
-        assert_eq!(c.talk.firstmate_home, None);
-        c.set("talk.firstmate_home", "/Users/me/firstmate").unwrap();
-        c.save_to(&p).unwrap();
-        assert_eq!(Config::load_from(&p), c);
-        c.set("talk.firstmate_home", "default").unwrap();
-        assert_eq!(c.talk.firstmate_home, None);
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
@@ -536,23 +311,23 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_key_is_refused_by_name() {
-        let e = Config::default().set("keep_audio", "true").unwrap_err();
-        assert!(e.to_string().contains("keep_audio"), "{e}");
+    fn a_config_file_with_removed_keys_still_loads() {
+        let p = temp("removed-keys");
+        std::fs::write(
+            &p,
+            r#"{"diarize": false, "assistant": {"enabled": true, "name": "Hamish"},
+               "voice": {"engine": "qwen3-tts"}, "talk": {"firstmate_home": "/x"}}"#,
+        )
+        .unwrap();
+        let c = Config::load_from(&p);
+        assert!(!c.diarize, "known keys still apply");
+        assert_eq!(c.capture, CaptureMode::All);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
-    fn settle_is_five_seconds_by_default_and_bounded() {
-        let mut c = Config::default();
-        assert_eq!(c.assistant.settle_s, 5);
-        c.set("assistant.settle_s", "8").unwrap();
-        assert_eq!(c.assistant.settle_s, 8);
-        assert!(c.set("assistant.settle_s", "0").is_err());
-        assert!(c.set("assistant.settle_s", "61").is_err());
-        let old: Config = serde_json::from_str(r#"{"assistant":{"enabled":true}}"#).unwrap();
-        assert_eq!(
-            old.assistant.settle_s, 5,
-            "an old config file gets the default"
-        );
+    fn an_unknown_key_is_refused_by_name() {
+        let e = Config::default().set("keep_audio", "true").unwrap_err();
+        assert!(e.to_string().contains("keep_audio"), "{e}");
     }
 }
