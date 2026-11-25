@@ -41,10 +41,7 @@ impl Queue {
         std::thread::spawn(move || {
             // Background QoS so the capture's drain loop wins every contest
             // for a core; `drainbench` measures what it loses.
-            #[cfg(target_os = "macos")]
-            unsafe {
-                libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
-            }
+            background_qos();
             while let Ok(job) = rx.recv() {
                 let r = work(&job.dir, &job.meter);
                 if done_tx.send((job.dir, r)).is_err() {
@@ -114,6 +111,15 @@ impl Queue {
             1 => format!("{verb} {} · 1 waiting", front.id()),
             n => format!("{verb} {} · {n} waiting", front.id()),
         })
+    }
+}
+
+/// Put the calling thread at background QoS, as the transcription worker
+/// runs, so the capture threads keep the CPU they need.
+pub fn background_qos() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
     }
 }
 

@@ -144,8 +144,23 @@ pub fn home() -> PathBuf {
     if let Some(p) = crate::config::Config::load().sessions_dir {
         return p;
     }
+    default_home()
+}
+
+/// `~/Documents/Ambient`, where sessions live unless the settings say
+/// otherwise.
+pub fn default_home() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join("Documents").join("Ambient")
+}
+
+/// A session id names one directory directly inside the sessions folder, so
+/// it can never climb out of it.
+pub fn check_session_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id == "." || id == ".." || id.contains('/') {
+        return Err(format!("{id:?} is not a session id"));
+    }
+    Ok(())
 }
 
 /// Under `open -a` the working directory is `/`, and that bundle launch is
@@ -701,7 +716,7 @@ pub fn capture_into(
     // Cumulative peaks: the only guard against a capture that reports success
     // and contains silence.
     let mut warnings: Vec<String> = Vec::new();
-    if room_peak < 1e-4 {
+    if room_peak < crate::capture::SILENT_PEAK {
         eprintln!("  WARNING: the room track is silent — check the microphone grant.");
         warnings.push("the room track is silent — check the microphone grant.".into());
     }
@@ -1159,9 +1174,7 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
 /// and a live capture is never removed. The lock file goes with the
 /// directory; [`TranscribeLock`]'s `Drop` tolerates that.
 pub fn delete(root: &Path, id: &str, _lock: &TranscribeLock) -> Result<()> {
-    if id.is_empty() || id == "." || id == ".." || id.contains('/') {
-        bail!("{id:?} is not a session id");
-    }
+    check_session_id(id).map_err(|e| anyhow!(e))?;
     let dir = root.join(id);
     if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
         bail!("{} is not a session directory", dir.display());
@@ -3013,5 +3026,18 @@ mod delete_tests {
         .unwrap();
         assert_eq!(capture_mode(&dir), CaptureMode::Mic);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod session_id_tests {
+    use super::check_session_id;
+
+    #[test]
+    fn a_session_id_cannot_leave_the_sessions_folder() {
+        for bad in ["", ".", "..", "a/b", "../x", "/abs"] {
+            assert!(check_session_id(bad).is_err(), "{bad:?} was accepted");
+        }
+        assert!(check_session_id("2026-11-25-standup").is_ok());
     }
 }

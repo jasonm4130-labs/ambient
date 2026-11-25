@@ -32,6 +32,9 @@ use objc2_core_audio::{
 use objc2_core_audio_types::AudioStreamBasicDescription;
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 
+/// A peak below this is silence: no signal, or a tap macOS has denied.
+pub const SILENT_PEAK: f32 = 1e-4;
+
 /// Lock-free single-producer ring the realtime callback writes into.
 pub struct Ring {
     buf: Vec<std::cell::UnsafeCell<f32>>,
@@ -295,7 +298,7 @@ pub fn silent_tap_advice(
     max_rendering: usize,
     bundles: &[String],
 ) -> Option<String> {
-    if call_peak >= 1e-4 {
+    if call_peak >= SILENT_PEAK {
         return None;
     }
     // A filtered tap that caught nothing is the filter working, not a denial,

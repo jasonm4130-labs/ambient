@@ -562,7 +562,7 @@ fn main() -> Result<()> {
                     .map(|p| format!("{p:.4}"))
                     .collect::<Vec<_>>()
                     .join(" ");
-                let quiet = peaks.iter().all(|p| *p < 1e-4);
+                let quiet = peaks.iter().all(|p| *p < ambient::capture::SILENT_PEAK);
                 if quiet {
                     silent += 1;
                 }
@@ -573,7 +573,10 @@ fn main() -> Result<()> {
                 );
             }
             if silent == wavs.len() {
-                bail!("every wav was silent (peak < 1e-4)");
+                bail!(
+                    "every wav was silent (peak < {})",
+                    ambient::capture::SILENT_PEAK
+                );
             }
             Ok(())
         }

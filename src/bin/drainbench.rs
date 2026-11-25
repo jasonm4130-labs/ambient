@@ -52,10 +52,7 @@ fn main() -> anyhow::Result<()> {
         let passes = passes.clone();
         let scratch = scratch.clone();
         std::thread::spawn(move || -> anyhow::Result<()> {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
-            }
+            ambient::queue::background_qos();
             while !stop.load(Ordering::Relaxed) {
                 let _: TranscriptFile =
                     engine.once(Stage::Transcribe, &wav, &scratch.join("words.json"))?;
