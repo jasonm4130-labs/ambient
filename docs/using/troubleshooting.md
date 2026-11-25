@@ -31,7 +31,7 @@ recogniser or your microphone.
 ambient doctor
 ```
 
-It names which of ten things — model files, config, sessions directory
+It names which of nine things — model files, the model helper, config, sessions directory
 state — is actually missing, so it is cheaper than reading the rest of this
 page. See the [verb reference](commands.md) for what each check covers.
 

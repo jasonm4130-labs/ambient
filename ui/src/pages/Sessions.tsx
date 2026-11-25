@@ -276,10 +276,10 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
               <Transcript
                 key={`transcript-${selected}`}
                 unavailable={
-                  selectedSummary !== null && !selectedSummary.transcribed
-                    ? "Separate voices needs a finished transcript."
+                  selectedSummary?.transcribing === true
+                    ? "This session is being transcribed."
                     : selectedSummary?.audio_available === false
-                      ? "The audio is no longer available to separate voices."
+                      ? "The audio is no longer available to transcribe again."
                       : undefined
                 }
                 session={selected}

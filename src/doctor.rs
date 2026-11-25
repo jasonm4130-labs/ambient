@@ -1,8 +1,8 @@
 //! What a person whose Ambient will not record runs first.
 //!
-//! Ten checks, always in the same order, each pure with respect to the paths
-//! it is handed — no check calls `session::home()`, `config::path()` or
-//! `session::models_root()` itself, so the tests below never reach the real
+//! Nine checks, always in the same order, each pure with respect to the paths
+//! it is handed — no check calls `session::home()`, `config::path()`,
+//! `session::models_root()` or `engine::locate()` itself, so the tests below never reach the real
 //! `~/Documents/Ambient` or the real config file. The CLI arm passes the real
 //! roots in.
 
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::session;
+use crate::{pipeline, session};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Check {
@@ -47,13 +47,19 @@ fn model_check(name: &str, path: &Path, is_dir: bool) -> Check {
     }
 }
 
-/// Run the ten checks against the given roots. `models` is the already-resolved
-/// (or already-failed) `session::models_root()` result, taken by value so a
-/// test can hand in `Err` without touching a real filesystem location.
-pub fn run(models: anyhow::Result<PathBuf>, config_file: &Path, sessions: &Path) -> Vec<Check> {
-    let mut checks = Vec::with_capacity(10);
+/// Run the nine checks against the given roots. `models` and `engine` are the
+/// already-resolved (or already-failed) `session::models_root()` and
+/// `engine::locate()` results, taken by value so a test can hand in `Err`
+/// without touching a real filesystem location.
+pub fn run(
+    models: anyhow::Result<PathBuf>,
+    engine: anyhow::Result<PathBuf>,
+    config_file: &Path,
+    sessions: &Path,
+) -> Vec<Check> {
+    let mut checks = Vec::with_capacity(9);
 
-    // Collapse to `Option` here so the four model checks below have exactly
+    // Collapse to `Option` here so the model checks below have exactly
     // two code paths: a resolved root, or none.
     let root: Option<PathBuf> = match models {
         Ok(p) if p.is_dir() => {
@@ -76,27 +82,29 @@ pub fn run(models: anyhow::Result<PathBuf>, config_file: &Path, sessions: &Path)
 
     match &root {
         Some(root) => {
-            let files = session::model_files(root);
-            checks.push(model_check("models/asr", &files.asr_dir, true));
-            checks.push(model_check("models/vad", &files.vad, false));
             checks.push(model_check(
-                "models/segmentation",
-                &files.segmentation,
-                false,
+                "models/asr",
+                &root.join(pipeline::ASR_DIR),
+                true,
             ));
-            checks.push(model_check("models/embedding", &files.embedding, false));
+            checks.push(model_check(
+                "models/diarization",
+                &root.join(pipeline::DIAR_DIR),
+                true,
+            ));
         }
         None => {
-            for name in [
-                "models/asr",
-                "models/vad",
-                "models/segmentation",
-                "models/embedding",
-            ] {
+            for name in ["models/asr", "models/diarization"] {
                 checks.push(check(name, false, "no models directory"));
             }
         }
     }
+
+    checks.push(match engine {
+        Ok(p) if p.is_file() => check("engine", true, p.display().to_string()),
+        Ok(p) => check("engine", false, format!("{} is not a file", p.display())),
+        Err(e) => check("engine", false, e.to_string()),
+    });
 
     // Read and parse the file directly rather than going through
     // `Config::load`/`Config::load_from`, which swallow both a read failure
@@ -118,12 +126,29 @@ pub fn run(models: anyhow::Result<PathBuf>, config_file: &Path, sessions: &Path)
     checks.push(sessions_writable(sessions));
 
     let awaiting = session::captured_awaiting_transcript(sessions).len();
-    let awaiting_detail = match awaiting {
+    let mut awaiting_detail = match awaiting {
         0 => "none".to_string(),
         1 => "1 session".to_string(),
         n => format!("{n} sessions"),
     };
-    checks.push(check("sessions/awaiting-transcript", true, awaiting_detail));
+    // Sessions the app stopped re-queueing after two failures. They are not
+    // waiting for anything but a person, so they fail this check.
+    let parked = session::list(sessions)
+        .into_iter()
+        .filter(|d| {
+            !d.join("transcript.md").is_file() && pipeline::attempts(d) >= pipeline::RETRY_CAP
+        })
+        .count();
+    if parked > 0 {
+        awaiting_detail.push_str(&format!(
+            "; {parked} failed twice and wait for Retry (the window, or `ambient retry`)"
+        ));
+    }
+    checks.push(check(
+        "sessions/awaiting-transcript",
+        parked == 0,
+        awaiting_detail,
+    ));
 
     let live_detail = match session::live_session_in(sessions) {
         Some(dir) => dir.display().to_string(),
@@ -210,7 +235,9 @@ mod tests {
 
         let models = root.join("models");
         fs::create_dir_all(&models).unwrap();
-        fs::write(models.join("wespeaker_en_voxceleb_resnet34_LM.onnx"), "").unwrap();
+        fs::create_dir_all(models.join(pipeline::DIAR_DIR)).unwrap();
+        let engine = root.join("ambient-engine");
+        fs::write(&engine, "").unwrap();
 
         let config_file = root.join("config.json");
         fs::write(&config_file, "{}").unwrap();
@@ -221,7 +248,7 @@ mod tests {
         fs::write(session_dir.join("session.json"), "{}").unwrap();
         fs::write(session_dir.join("audio").join("room.wav"), "").unwrap();
 
-        let checks = run(Ok(models.clone()), &config_file, &sessions);
+        let checks = run(Ok(models.clone()), Ok(engine), &config_file, &sessions);
 
         let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
@@ -229,9 +256,8 @@ mod tests {
             vec![
                 "models/root",
                 "models/asr",
-                "models/vad",
-                "models/segmentation",
-                "models/embedding",
+                "models/diarization",
+                "engine",
                 "config",
                 "sessions/writable",
                 "sessions/awaiting-transcript",
@@ -242,9 +268,8 @@ mod tests {
 
         assert!(find(&checks, "models/root").ok);
         assert!(!find(&checks, "models/asr").ok);
-        assert!(!find(&checks, "models/vad").ok);
-        assert!(!find(&checks, "models/segmentation").ok);
-        assert!(find(&checks, "models/embedding").ok);
+        assert!(find(&checks, "models/diarization").ok);
+        assert!(find(&checks, "engine").ok);
         assert!(find(&checks, "config").ok);
         assert!(find(&checks, "sessions/writable").ok);
 
@@ -268,7 +293,12 @@ mod tests {
         let sessions = root.join("sessions");
         fs::create_dir_all(&sessions).unwrap();
 
-        let checks = run(Err(anyhow!("no models")), &config_file, &sessions);
+        let checks = run(
+            Err(anyhow!("no models")),
+            Err(anyhow!("no ambient-engine beside it")),
+            &config_file,
+            &sessions,
+        );
 
         let models_root = find(&checks, "models/root");
         assert!(!models_root.ok);
@@ -278,19 +308,21 @@ mod tests {
             models_root.detail
         );
 
-        for name in [
-            "models/asr",
-            "models/vad",
-            "models/segmentation",
-            "models/embedding",
-        ] {
+        for name in ["models/asr", "models/diarization"] {
             let c = find(&checks, name);
             assert!(!c.ok, "{name} should FAIL");
             assert_eq!(c.detail, "no models directory");
         }
 
         // Sessions checks still evaluated despite the models failure.
-        assert_eq!(checks.len(), 10);
+        let engine = find(&checks, "engine");
+        assert!(!engine.ok);
+        assert!(
+            engine.detail.contains("no ambient-engine"),
+            "{}",
+            engine.detail
+        );
+        assert_eq!(checks.len(), 9);
         assert!(find(&checks, "sessions/awaiting-transcript").ok);
         assert!(find(&checks, "sessions/live").ok);
         assert!(find(&checks, "sessions/stale-lock").ok);
@@ -308,7 +340,12 @@ mod tests {
         // Invalid JSON.
         let bad_config = root.join("bad-config.json");
         fs::write(&bad_config, "{\"diarize\":").unwrap();
-        let checks = run(Ok(models.clone()), &bad_config, &sessions);
+        let checks = run(
+            Ok(models.clone()),
+            Err(anyhow!("no helper")),
+            &bad_config,
+            &sessions,
+        );
         let config = find(&checks, "config");
         assert!(!config.ok);
         assert!(
@@ -319,7 +356,12 @@ mod tests {
 
         // Missing config file.
         let missing_config = root.join("does-not-exist.json");
-        let checks = run(Ok(models.clone()), &missing_config, &sessions);
+        let checks = run(
+            Ok(models.clone()),
+            Err(anyhow!("no helper")),
+            &missing_config,
+            &sessions,
+        );
         let config = find(&checks, "config");
         assert!(config.ok);
         assert_eq!(config.detail, "defaults");
@@ -327,7 +369,12 @@ mod tests {
         // Config path that is a directory.
         let dir_config = root.join("config-dir");
         fs::create_dir_all(&dir_config).unwrap();
-        let checks = run(Ok(models), &dir_config, &sessions);
+        let checks = run(
+            Ok(models),
+            Err(anyhow!("no helper")),
+            &dir_config,
+            &sessions,
+        );
         let config = find(&checks, "config");
         assert!(!config.ok);
         assert!(
@@ -345,7 +392,12 @@ mod tests {
         let config_file = root.join("config.json");
         let sessions = root.join("Documents").join("Ambient");
 
-        let checks = run(Ok(root.join("models")), &config_file, &sessions);
+        let checks = run(
+            Ok(root.join("models")),
+            Err(anyhow!("no helper")),
+            &config_file,
+            &sessions,
+        );
 
         let writable = find(&checks, "sessions/writable");
         assert!(writable.ok, "detail was: {}", writable.detail);
@@ -360,6 +412,7 @@ mod tests {
         fs::write(&blocked, "").unwrap();
         let checks = run(
             Ok(root.join("models")),
+            Err(anyhow!("no helper")),
             &config_file,
             &blocked.join("Ambient"),
         );

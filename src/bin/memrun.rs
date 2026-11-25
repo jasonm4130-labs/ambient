@@ -1,95 +1,50 @@
-//! Replay a public meeting WAV through the recording path, for the memory gate.
+//! Transcribe a public meeting the way the app does after Stop, for the
+//! memory gate.
 //!
-//! `memrun <native.wav> <16k.wav> [pace]`
+//! `memrun <16k.wav>`
 //!
-//! Streams `<native.wav>` from disk in 200 ms drains into a `LiveTranscriber`
-//! on both tracks, paced at `pace`× realtime (default 15), then stops it and
-//! finalizes the session with `session::transcribe_session`: the same work the
-//! app's `ambient finalize` child runs after Stop, but in this process.
-//! `<16k.wav>` is the same audio at 16 kHz: the capture path writes both, and
-//! finalization reads both.
+//! Puts `<16k.wav>` on both tracks of a fresh session and runs
+//! `session::transcribe_session`, which runs each stage in `ambient-engine`
+//! (ADR 0020). Nothing is transcribed while recording any more, so the
+//! capture half holds no model and is not replayed. Each helper stage prints
+//! `ENGINE_PEAK <stage> <bytes>` on stderr; `scripts/memory` gates on the
+//! largest of those and of this process's own peak.
 //!
-//! The input is read in drains, never whole, so the process holds what the app
-//! holds and nothing more: `livecheck` keeps the whole file in memory twice,
-//! which inflates its footprint by the file. `scripts/memory` runs this under
-//! `/usr/bin/time -l` and compares the peak footprint with a budget.
-//!
-//! Each phase prints `MARK <seconds> <phase>` so a sampler can attribute what
-//! it sees. Sessions, config and roster go to a temporary directory, removed
-//! on success, so real sessions are untouched.
-use ambient::{live::LiveTranscriber, session};
+//! Each phase prints `MARK <seconds> <phase>`. Sessions, config and roster go
+//! to a temporary directory, removed on success, so real sessions are
+//! untouched. The helper is `$AMBIENT_ENGINE` (scripts/memory builds it).
+use ambient::session;
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let usage = "usage: memrun <native.wav> <16k.wav> [pace]";
-    let native = PathBuf::from(args.next().context(usage)?);
-    let sixteen = PathBuf::from(args.next().context(usage)?);
-    let pace: f64 = match args.next() {
-        Some(p) => p.parse().context("pace is a number, e.g. 15")?,
-        None => 15.0,
+    let sixteen = PathBuf::from(args.next().context("usage: memrun <16k.wav>")?);
+    let seconds = {
+        let r = hound::WavReader::open(&sixteen)
+            .with_context(|| format!("reading {}", sixteen.display()))?;
+        let spec = r.spec();
+        if spec.channels != 1 || spec.sample_rate != 16_000 {
+            bail!("{} must be 16 kHz mono", sixteen.display());
+        }
+        r.duration() as f64 / 16_000.0
     };
-    if !pace.is_finite() || pace <= 0.0 {
-        bail!("pace must be positive");
-    }
 
     let root = std::env::temp_dir().join(format!("ambient-memrun-{}", std::process::id()));
     // Refuse a collision rather than removing any existing directory.
     std::fs::create_dir(&root)?;
     let dir = root.join("replay");
     std::fs::create_dir_all(dir.join("audio"))?;
-    // Isolate finalization's retention sweep and configuration from real sessions.
+    // Isolate the retention sweep and configuration from real sessions.
     std::env::set_var("AMBIENT_HOME", &root);
     std::env::set_var("AMBIENT_CONFIG", root.join("config.json"));
     std::env::set_var("AMBIENT_ROSTER", root.join("roster.json"));
 
-    let mut reader =
-        hound::WavReader::open(&native).with_context(|| format!("reading {}", native.display()))?;
-    let spec = reader.spec();
-    if spec.channels != 1
-        || spec.sample_format != hound::SampleFormat::Int
-        || spec.bits_per_sample != 16
-    {
-        bail!("{} must be mono 16-bit PCM", native.display());
-    }
-    let rate = spec.sample_rate;
-    let seconds = reader.duration() as f64 / rate as f64;
-
     let started = Instant::now();
     let mark = |phase: &str| println!("MARK {:.1} {phase}", started.elapsed().as_secs_f64());
-
-    let (asr, vad) = session::model_paths(None)?;
-    let mut worker = LiveTranscriber::start(&dir, [rate, rate], asr, vad)?;
-    mark("record");
-    let drain = rate as usize / 5;
-    let mut fed = 0usize;
-    let mut part = Vec::with_capacity(drain);
-    let mut samples = reader.samples::<i16>();
-    loop {
-        part.clear();
-        for s in samples.by_ref().take(drain) {
-            part.push(s? as f32 / 32768.0);
-        }
-        if part.is_empty() {
-            break;
-        }
-        worker.append(session::Track::Room, &part)?;
-        worker.append(session::Track::Call, &part)?;
-        fed += part.len();
-        let due = Duration::from_secs_f64(fed as f64 / rate as f64 / pace);
-        if let Some(wait) = due.checked_sub(started.elapsed()) {
-            std::thread::sleep(wait);
-        }
-    }
-    drop(reader);
-
-    mark("stop");
-    worker.finish()?;
     for track in ["room", "call"] {
-        std::fs::copy(&native, dir.join(format!("audio/{track}.source.wav")))?;
         std::fs::copy(&sixteen, dir.join(format!("audio/{track}.wav")))?;
     }
     std::fs::write(
@@ -97,18 +52,19 @@ fn main() -> Result<()> {
         serde_json::to_vec(&json!({
             "id":"replay","name":"Memory gate replay","started_at":"2026-09-21T00:00:00Z",
             "ended_at":"2026-09-21T00:30:00Z","duration_s":seconds,
-            "device_hz":rate,"mic_hz":rate,"channels":1,"mic_channels":1,"apps":[],"model":"parakeet"
+            "device_hz":16000,"mic_hz":16000,"channels":1,"mic_channels":1,"apps":[],
+            "model":"replay"
         }))?,
     )?;
-    mark("finalize");
-    session::transcribe_session(&dir, None, None)?;
+    mark("transcribe");
+    session::transcribe_session(&dir, None)?;
     mark("idle");
     if !dir.join("transcript.md").exists() {
-        bail!("finalization wrote no transcript.md in {}", dir.display());
+        bail!("transcription wrote no transcript.md in {}", dir.display());
     }
     std::fs::remove_dir_all(&root)?;
     println!(
-        "MEMRUN OK: {seconds:.1}s at {rate} Hz on both tracks, {pace}x realtime, {:.1}s wall",
+        "MEMRUN OK: {seconds:.1}s on both tracks, {:.1}s wall",
         started.elapsed().as_secs_f64()
     );
     Ok(())

@@ -130,6 +130,15 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
     });
   }, [bridge, session]);
 
+  // Only a finished session (Transcribe again) or a failed one (Retry) has
+  // something to do; one waiting its turn is the queue's, and a second job
+  // beside it would only collide.
+  const waiting =
+    reply !== undefined && reply.state !== "done" && reply.state !== "failed"
+      ? "This session is waiting its turn to be transcribed."
+      : undefined;
+  const blocked = unavailable ?? waiting;
+
   const separateVoices = useCallback(() => {
     setSeparating(true);
     void bridge.call("diarize.start", { session }).catch((e: unknown) => {
@@ -158,7 +167,7 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
         if (event.session !== session) return;
         setSeparating(false);
         if (event.state === "failed") {
-          setError(event.error ?? "separating voices failed");
+          setError(event.error ?? "transcription failed");
         } else {
           loadTranscript(session, verbatim)
             .then((next) => {
@@ -236,15 +245,15 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
             variant="outline"
             size="sm"
             data-testid="separate-voices"
-            disabled={separating || unavailable !== undefined}
-            title={unavailable}
+            disabled={separating || blocked !== undefined}
+            title={blocked}
             onClick={separateVoices}
           >
-            {separating ? "Separating voices…" : "Separate voices"}
+            {separating ? "Transcribing…" : reply?.state === "done" ? "Transcribe again" : "Retry"}
           </Button>
         </div>
       </div>
-      {unavailable !== undefined && <p className="text-muted-foreground text-xs">{unavailable}</p>}
+      {blocked !== undefined && <p className="text-muted-foreground text-xs">{blocked}</p>}
       {error !== undefined && (
         <p role="alert" data-testid="transcript-warning" className="text-destructive text-sm">
           {error}
@@ -263,7 +272,9 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
       )}
       {reply !== undefined && groups.length === 0 ? (
         <p className="text-muted-foreground text-sm" data-testid="transcript-empty">
-          No transcript yet — this session is {reply.state}.
+          {reply.state === "failed"
+            ? "Transcription failed. Retry runs it again from the last finished step."
+            : `No transcript yet — this session is ${reply.state}.`}
         </p>
       ) : (
         <div className="flex max-w-[68ch] flex-col gap-4" data-testid="transcript-lines">

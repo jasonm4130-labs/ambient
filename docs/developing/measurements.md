@@ -9,6 +9,61 @@ sidebar:
 Everything below was measured on the home machine — M5 Max, 128 GB,
 macOS 26.6.2 — on 2026-08-29. Any table measured differently says so.
 
+## The Core ML helper (ADR 0020)
+
+Measured 2026-11-25 on the home machine with `ambient-engine` at FluidAudio
+`e2ea498`: Parakeet Ultra for words and Nemotron 3 Diarization `fast32` for
+voices. Every section after this one measures the ONNX pipeline the helper
+replaced, and the commands they quote (`der --threshold`, `wer --pad`,
+`wer --chunk`, `record --model`) no longer exist.
+
+**Words.** `wer` on the default fixture: 2152 reference words, WER 0.0167
+(26 substitutions, 5 insertions, 5 deletions), 913.7 s of audio in 7.5 s
+including the model load, 122.6× realtime.
+
+**Voices, as DER.** `der` at the 0.25 s collar. Held-out sets: the 13 AMI test
+meetings other than the three in the default fixture, Mix-Headset against the
+`only_words` references, and the 64-file VoxConverse set. The ONNX row is the
+last main before the helper, on the same files.
+
+| Set | Audio | Pipeline | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| AMI fixture | 900 s | ONNX | 11 | 19 | 30.14 s | 14.97 s | 26.92 s | 0.1434 |
+| AMI fixture | 900 s | helper | 11 | 11 | 140.20 s | 4.51 s | 12.67 s | 0.3133 |
+| AMI holdout | 29230 s | ONNX | 51 | 88 | 2505.64 s | 437.44 s | 1098.28 s | 0.1871 |
+| AMI holdout | 29230 s | helper | 51 | 52 | 4990.55 s | 97.46 s | 66.94 s | 0.2387 |
+| VoxConverse | 28579 s | ONNX | 131 | 156 | 964.58 s | 312.02 s | 525.06 s | 0.0766 |
+| VoxConverse | 28579 s | helper | 131 | 147 | 258.77 s | 180.05 s | 44.42 s | 0.0206 |
+
+The helper confuses speakers a sixteenth as often on AMI and a twelfth as often
+on VoxConverse, and after the app's phantom filter (under 5 s of speech) it
+counts the speakers exactly in all 13 held-out AMI meetings; the one extra raw
+speaker, in ES2004b, is the filter's case. Its AMI DER is higher only through
+missed speech. Nemotron's turns are frames above 0.5 probability with nothing
+filled or padded, and AMI's word-level references count the gaps between words
+as speech.
+
+**Voices, as the transcript sees them.** Filling and padding the turns closes
+that gap in DER and makes the transcript worse, so the app keeps the raw turns.
+On the 13 held-out meetings, transcribed by the helper and each word given to
+a speaker the way `pipeline::assemble` does it (most overlap, else the nearest
+turn), scored on the 57465 words exactly one reference speaker overlaps, with
+hypothesis speakers mapped one-to-one to reference speakers:
+
+| Same-speaker gap filled | Padding | AMI holdout DER | VoxConverse DER | Words on the right speaker |
+| ---: | ---: | ---: | ---: | ---: |
+| none | none | 0.2387 | 0.0206 | **0.9924** |
+| 0.5 s | 0.1 s | 0.1283 | 0.0200 | 0.9918 |
+| 0.5 s | 0.2 s | 0.0932 | 0.0264 | 0.9876 |
+| 1.0 s | 0.1 s | 0.0841 | 0.0324 | 0.9893 |
+| 1.0 s | 0.2 s | 0.0806 | 0.0403 | 0.9824 |
+
+DER on AMI is therefore not the number to tune against for this app: a word
+between two turns already goes to the nearest one, and padding hands the edge
+words of a turn to whoever spoke next.
+
+**Memory.** See [Memory gate](#memory-gate).
+
 ## End to end: decode, realtime and peak RSS
 
 v3-int8, synthesised speech via `say`.
@@ -23,6 +78,21 @@ Peak memory on the 127 s file is flat at the 30 s-chunk level rather than the
 ~3.7 GB an unchunked 120 s run needed, which is the chunking working.
 
 ## Memory gate
+
+Measured 2026-11-25 with the models in `ambient-engine` (ADR 0020), two runs of
+`scripts/memory`: the same 1505.6 s of TS3003a on both tracks of a session,
+transcribed after Stop by one helper process per stage and track. Nothing is
+transcribed during capture any more, so there is no streaming replay.
+
+| Run | Transcribe peak (room, call) | Diarize peak (room, call) | App peak footprint |
+| ---: | ---: | ---: | ---: |
+| 1 | 301, 299 MiB | 409, 409 MiB | 4 MiB |
+| 2 | 300, 298 MiB | 409, 409 MiB | 3 MiB |
+
+The helper peaks are resident sets from `wait4`, and the stages run one after
+another, so 409 MiB is the most the models hold at once. `scripts/memory` now
+fails above 512 MiB, that peak plus a quarter. The figures below are the ONNX
+pipeline's, kept for the history.
 
 Measured 2026-10-08 on the M5 Max with `scripts/memory --budget 99999`, which
 runs `src/bin/memrun.rs` under `/usr/bin/time -l`: AMI TS3003a Mix-Headset, all

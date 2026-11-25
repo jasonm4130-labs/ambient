@@ -203,25 +203,22 @@ fn describe(dir: &Path) -> Detail {
     }
     let unnamed = session::unnamed_labels(dir).map(|v| v.len()).unwrap_or(0);
 
-    // Four things have to be true at once, and the first one is subtle.
-    // `raw.jsonl` is created the instant transcription begins and filled
-    // incrementally, so its *absence* is what marks a process killed
-    // mid-recording. Testing for transcript *lines* instead would mark every
-    // healthy session Interrupted for the whole of its own ASR pass — minutes,
-    // on the happy path. `is_growing` separates a recording still in flight
-    // from a killed one that left its scratch wav behind for ever; the missing
-    // `session.json` separates *that* from a capture that ran to its end,
-    // whose audio is safe and whose transcript is either queued or written.
+    // `is_growing` separates a recording still in flight from a killed one
+    // that left its scratch wav behind for ever; the missing `session.json`
+    // separates *that* from a capture that ran to its end, whose audio is
+    // safe and whose transcript is either queued or written. `raw.jsonl` is
+    // no longer a signal: the helper pipeline writes it at the end, with the
+    // transcript, so the transcription lock is what says a job is running.
     let captured = meta.is_some();
     // `transcript.md` is the last thing the transcriber writes, and the same
     // test `sweep_audio` uses for "finished".
     let completed = dir.join("transcript.md").is_file();
-    let interrupted = !dir.join("raw.jsonl").exists()
-        && !captured
+    let interrupted = !captured
         && audio_present(dir)
-        && !session::is_growing(&dir.join("audio").join("room.native.wav"));
+        && !session::is_growing(&dir.join("audio").join("room.native.wav"))
+        && session::live_transcriber(dir).is_none();
     // Captured and not yet claimed by a transcriber: waiting on the queue.
-    let queued = captured && !dir.join("raw.jsonl").exists() && !completed;
+    let queued = captured && !completed && session::live_transcriber(dir).is_none();
 
     let mut parts: Vec<String> = Vec::new();
     if let Some(t) = started_at(&id, meta.as_ref()) {
@@ -324,13 +321,11 @@ fn audio_without_a_transcript_reads_as_interrupted() {
 }
 
 /// Mid-transcription, which is the state every healthy session passes
-/// through for the minutes ASR and diarization take: audio, a `raw.jsonl`
-/// created the instant the transcriber claimed the session, no growing
-/// wav and not one transcript line. Keying `interrupted` off transcript
-/// lines rather than off `raw.jsonl` marked all of it Interrupted — in
-/// the very pane this step exists to make honest. Sessions from before
-/// capture and transcription were split have no `session.json` at this
-/// point either, which is the shape drawn here.
+/// through for the minutes the helper takes: audio, the transcription lock
+/// held by a live process, no growing wav and not one transcript line —
+/// `raw.jsonl` is written only at the end. Sessions from before capture and
+/// transcription were split have no `session.json` at this point either,
+/// which is the shape drawn here.
 #[test]
 fn a_session_still_transcribing_is_not_interrupted() {
     let root = scratch("transcribing");
@@ -339,9 +334,8 @@ fn a_session_still_transcribing_is_not_interrupted() {
     // The finished tracks survive; the native scratch wavs are already gone.
     std::fs::write(dir.join("audio").join("room.wav"), b"RIFF").unwrap();
     std::fs::write(dir.join("audio").join("call.wav"), b"RIFF").unwrap();
-    // Created the instant transcription begins, and empty until the first
-    // segment.
-    std::fs::write(dir.join("raw.jsonl"), b"").unwrap();
+    // Held for the whole job by the process running it; this one, here.
+    let _lock = session::claim_transcription(&dir).unwrap();
 
     let d = describe(&dir);
     assert!(

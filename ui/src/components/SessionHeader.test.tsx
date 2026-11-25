@@ -67,6 +67,11 @@ describe("SessionHeader", () => {
 
     const name = await screen.findByRole("textbox", { name: "Session name" });
     await userEvent.clear(name);
+    // On a slow runner the clear can land before React commits it; typing
+    // then appends to the old name ("StandupStandup v2", seen in CI).
+    await waitFor(() => {
+      expect(name).toHaveValue("");
+    });
     await userEvent.type(name, "Standup v2{Enter}");
 
     await waitFor(() => {

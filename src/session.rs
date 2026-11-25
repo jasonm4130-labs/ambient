@@ -21,7 +21,7 @@ use crate::resample;
 /// Which of the two captured tracks a line of speech came from. This is the
 /// only speaker attribution available before diarization, and for a one-to-one
 /// call it is already complete: the room track is you, the call track is them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Track {
     Room,
@@ -235,7 +235,8 @@ fn slugify(s: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
-fn write_wav_16k(path: &Path, samples: &[f32]) -> Result<()> {
+/// 16 kHz mono, 16-bit: what every track becomes before the helper reads it.
+pub fn write_wav_16k(path: &Path, samples: &[f32]) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: resample::TARGET_HZ,
@@ -534,12 +535,11 @@ pub fn claim_transcription(dir: &Path) -> Result<TranscribeLock> {
 pub fn record(
     name: Option<&str>,
     bundles: &[String],
-    model_dir: Option<&str>,
     seconds: Option<u64>,
     capture: Option<CaptureMode>,
 ) -> Result<PathBuf> {
     let dir = SessionDir::claim(&home(), name)?;
-    record_into(&dir, name, bundles, model_dir, seconds, capture, None)
+    record_into(&dir, name, bundles, seconds, capture, None)
 }
 
 /// Record into a directory that has already been claimed, then transcribe
@@ -555,21 +555,12 @@ pub fn record_into(
     dir: &SessionDir,
     name: Option<&str>,
     bundles: &[String],
-    model_dir: Option<&str>,
     seconds: Option<u64>,
     capture: Option<CaptureMode>,
     meter: Option<std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
-    let path = capture_into(
-        dir,
-        name,
-        bundles,
-        model_dir,
-        seconds,
-        capture,
-        meter.clone(),
-    )?;
-    transcribe_session(&path, model_dir, meter)
+    let path = capture_into(dir, name, bundles, seconds, capture, meter.clone())?;
+    transcribe_session(&path, meter)
 }
 
 /// The four files `./fetch-models.sh` fetches, joined onto a models root.
@@ -632,7 +623,6 @@ pub fn capture_into(
     dir: &SessionDir,
     name: Option<&str>,
     bundles: &[String],
-    model_dir: Option<&str>,
     seconds: Option<u64>,
     capture: Option<CaptureMode>,
     meter: Option<std::sync::Arc<Meter>>,
@@ -640,7 +630,6 @@ pub fn capture_into(
     let mut guard = ClaimGuard(Some(dir.path()));
     let id = dir.id();
     let dir = dir.path();
-    let (asr_dir, vad_path) = model_paths(model_dir)?;
 
     // A `--app` on the command line beats the stored setting; with no flag the
     // settings window decides.
@@ -702,8 +691,8 @@ pub fn capture_into(
         );
     }
 
-    // Native-rate scratch remains the recoverable source. The live worker
-    // resamples its disk queue; finalized 16 kHz tracks are written after Stop.
+    // Native-rate scratch is the recoverable source; the 16 kHz tracks the
+    // helper reads are written from it after Stop.
     let room_native = audio.join("room.native.wav");
     let call_native = audio.join("call.native.wav");
     let spec = |hz: u32| hound::WavSpec {
@@ -722,30 +711,22 @@ pub fn capture_into(
     // Everything after it may be sitting on audio, so the directory stays.
     guard.disarm();
 
-    // The worker owns no capture objects. Its disk spools are the queue, so
-    // model work can fall behind without retaining audio in memory or making
-    // the 200 ms drain wait for inference.
-    let mut live_error = None;
-    let mut live_spooling = true;
-    let mut live = match crate::live::LiveTranscriber::start(
-        dir,
-        // The call lane stays in the worker's state but never receives audio
-        // in mic mode, so its rate only has to be non-zero.
-        [mic_hz, if mic_only { mic_hz } else { call_hz }],
-        asr_dir.clone(),
-        vad_path,
-    ) {
-        Ok(worker) => Some(worker),
-        Err(e) => {
-            live_error = Some(format!("live transcription did not start: {e:#}"));
-            None
-        }
-    };
-
     STOP.store(false, Ordering::SeqCst);
     unsafe {
         libc::signal(libc::SIGINT, on_sigint as *const () as libc::sighandler_t);
     }
+    // Ctrl-C means stop only while capturing. Afterwards it is the default
+    // again, so one during `record`'s transcription ends the CLI and its
+    // helper together, which is an abandoned job and not a counted failure.
+    struct DefaultSigint;
+    impl Drop for DefaultSigint {
+        fn drop(&mut self) {
+            unsafe {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+            }
+        }
+    }
+    let _sigint = DefaultSigint;
 
     let stop_file = dir.join(STOP_FILE);
     let status_file = dir.join(STATUS_FILE);
@@ -824,27 +805,11 @@ pub fn capture_into(
             interval_room_peak = interval_room_peak.max(s.abs());
             room_w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
         }
-        if live_spooling {
-            if let Some(worker) = &mut live {
-                if let Err(e) = worker.append(Track::Room, &room) {
-                    live_error = Some(format!("live room spool failed: {e:#}"));
-                    live_spooling = false;
-                }
-            }
-        }
         for s in &call {
             call_peak = call_peak.max(s.abs());
             interval_call_peak = interval_call_peak.max(s.abs());
             if let Some(w) = call_w.as_mut() {
                 w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16)?;
-            }
-        }
-        if live_spooling && !call.is_empty() {
-            if let Some(worker) = &mut live {
-                if let Err(e) = worker.append(Track::Call, &call) {
-                    live_error = Some(format!("live call spool failed: {e:#}"));
-                    live_spooling = false;
-                }
             }
         }
     }
@@ -910,7 +875,8 @@ pub fn capture_into(
     }
 
     // Finalize one track at a time so both full native buffers are never
-    // retained together. Live recognition may still be processing its spool.
+    // retained together. The native scratch goes only once its 16 kHz copy
+    // is on disk.
     for (track, native, out) in [
         (Track::Room, &room_native, audio.join("room.wav")),
         (Track::Call, &call_native, audio.join("call.wav")),
@@ -919,38 +885,10 @@ pub fn capture_into(
             continue;
         }
         let (samples, rate) = resample::read_wav_any(native)?;
-        let spool_repaired = match crate::live::repair_spool(dir, track, &samples) {
-            Ok(()) => true,
-            Err(e) => {
-                live_error = Some(format!("live transcription spool recovery failed: {e:#}"));
-                false
-            }
-        };
         let sixteen = resample::to_16k(&samples, rate)?;
         drop(samples);
         write_wav_16k(&out, &sixteen)?;
-        if spool_repaired {
-            if dir.join("live-asr.json").exists() {
-                let source = audio.join(match track {
-                    Track::Room => "room.source.wav",
-                    Track::Call => "call.source.wav",
-                });
-                std::fs::rename(native, source)?;
-            } else {
-                std::fs::remove_file(native).ok();
-            }
-        }
-    }
-    if let Some(worker) = live.take() {
-        if let Err(e) = worker.finish() {
-            live_error = Some(format!(
-                "live transcription will retry after capture: {e:#}"
-            ));
-        }
-    }
-    if let Some(error) = live_error {
-        eprintln!("  WARNING: {error}");
-        warnings.push(error);
+        std::fs::remove_file(native).ok();
     }
 
     // Written here, at the end of the capture, rather than after ASR: the
@@ -967,10 +905,7 @@ pub fn capture_into(
         channels: call_ch,
         mic_channels: mic_ch,
         apps: bundles.to_vec(),
-        model: asr_dir
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default(),
+        model: crate::pipeline::ASR_MODEL.to_string(),
         warnings,
         tags: Vec::new(),
         notes: String::new(),
@@ -988,154 +923,159 @@ pub fn capture_into(
     Ok(dir.to_path_buf())
 }
 
-/// Transcribe a session whose audio [`capture_into`] has already written:
-/// ASR over both tracks into `raw.jsonl`, diarisation if configured, and
-/// `transcript.md`. Runs on whichever thread calls it — the CLI's, or the
-/// menu bar app's serial transcription queue. Model inference is serialized
-/// with the live worker; capture can continue independently.
-pub fn transcribe_session(
-    dir: &Path,
-    model_dir: Option<&str>,
-    meter: Option<std::sync::Arc<Meter>>,
-) -> Result<PathBuf> {
-    let r = transcribe_inner(dir, model_dir, meter.as_ref());
-    if let Err(e) = &r {
-        // The session's own record of what went wrong. The menu bar app may
-        // be recording something else when this lands and have nowhere to
-        // draw it yet; the file is there whenever the session is opened.
-        std::fs::write(dir.join(STATUS_FILE), format!("failed: {e:#}\n")).ok();
-        if let Some(m) = &meter {
-            m.set_phase(MeterPhase::Failed);
+/// Transcribe a session whose audio [`capture_into`] has already written,
+/// with the model helper (ADR 0020): words and speakers for each track into
+/// `raw.jsonl` and `edits.jsonl`, then `transcript.md`. Runs on whichever
+/// thread calls it — the CLI's, or the menu bar app's transcription queue —
+/// and the models run in the helper's process, not this one.
+pub fn transcribe_session(dir: &Path, meter: Option<std::sync::Arc<Meter>>) -> Result<PathBuf> {
+    // A missing helper or model is this machine's fault, not the session's:
+    // it is reported, and not counted toward the retry cap, or two launches
+    // without the models would park every session waiting for a transcript.
+    let engine = match crate::pipeline::Engine::locate().and_then(|e| e.check().map(|()| e)) {
+        Ok(engine) => engine,
+        Err(e) => {
+            std::fs::write(dir.join(STATUS_FILE), format!("failed: {e:#}\n")).ok();
+            if let Some(m) = &meter {
+                m.set_phase(MeterPhase::Failed);
+            }
+            return Err(e);
         }
+    };
+    let diarize = crate::config::Config::load().diarize;
+    let done = transcribe_with(dir, &engine, diarize, meter.as_ref())?;
+    // Only now that the text exists is the audio safe to age out. This covers
+    // the session just recorded as well as every older one, which is why there
+    // is no launchd agent: the app runs whenever a recording happens.
+    match sweep_audio(&home(), crate::config::Config::load().audio_retention_days) {
+        0 => {}
+        n => eprintln!("  {n} track(s) of aged-out audio removed"),
     }
-    r
+    Ok(done)
 }
 
-fn transcribe_inner(
+/// [`transcribe_session`] with the helper given, and no audio sweep.
+pub fn transcribe_with(
     dir: &Path,
-    model_dir: Option<&str>,
+    engine: &crate::pipeline::Engine,
+    diarize: bool,
     meter: Option<&std::sync::Arc<Meter>>,
 ) -> Result<PathBuf> {
     // Taken before anything is written, held until the transcript is. A
     // second transcriber — the CLI and the app on the same session — is
-    // refused here rather than racing it for `raw.jsonl`.
+    // refused here rather than racing it, and that refusal is not a failure
+    // of this session's job.
     let _lock = claim_transcription(dir)?;
-    let (asr_dir, vad_path) = model_paths(model_dir)?;
-    let cfg = crate::config::Config::load();
-    let audio = dir.join("audio");
-    let status_file = dir.join(STATUS_FILE);
-    std::fs::write(&status_file, "transcribing\n").ok();
-    if let Some(m) = &meter {
-        m.set_phase(MeterPhase::Transcribing);
+    // Finished while this waited (the queue, the window and the CLI can each
+    // ask): there is nothing to do, and running again would re-transcribe it.
+    if dir.join("transcript.md").is_file() {
+        return Ok(dir.to_path_buf());
     }
+    run_locked(dir, engine, diarize, meter)
+}
 
-    // Created before the models load, not after: its existence is what
-    // separates a session being transcribed from one killed mid-capture in
-    // the window's "Interrupted" test, and a model load takes seconds.
-    let raw_path = dir.join("raw.jsonl");
-    let live_session = dir.join("live-asr.json").exists();
-    let mut lines = 0usize;
+/// Transcribe a finished session again from its audio. The transcript it
+/// has now is archived under `previous/`, never deleted, and the names a
+/// person typed carry over (see [`crate::pipeline::carry_names`]).
+pub fn rerun_with(
+    dir: &Path,
+    engine: &crate::pipeline::Engine,
+    diarize: bool,
+    meter: Option<&std::sync::Arc<Meter>>,
+) -> Result<PathBuf> {
+    let _lock = claim_transcription(dir)?;
+    crate::pipeline::prepare_rerun(dir)?;
+    run_locked(dir, engine, diarize, meter)
+}
 
-    if live_session {
-        crate::live::repair_from_native(dir)?;
-        crate::live::finish_existing(dir, &asr_dir, &vad_path)?;
-        lines = complete_jsonl(&raw_path)?.len();
-    } else {
-        // Created before the models load, not after: its existence is what
-        // separates a session being transcribed from one killed mid-capture.
-        let mut raw = std::fs::File::create(&raw_path)?;
-        let (mut vad, mut rec) = {
-            let _serial = crate::live::decoder();
-            (
-                crate::vad::Vad::load(utf8_path(&vad_path)?)?,
-                crate::asr::Recognizer::load(
-                    asr_dir
-                        .to_str()
-                        .ok_or_else(|| anyhow!("model path is not valid UTF-8"))?,
-                )?,
-            )
-        };
+/// [`rerun_with`] with the helper beside this executable and the saved
+/// diarize setting.
+pub fn rerun_session(dir: &Path, meter: Option<std::sync::Arc<Meter>>) -> Result<PathBuf> {
+    let engine = crate::pipeline::Engine::locate()?;
+    rerun_with(
+        dir,
+        &engine,
+        crate::config::Config::load().diarize,
+        meter.as_ref(),
+    )
+}
 
-        for (track, wav) in [
-            (Track::Room, audio.join("room.wav")),
-            (Track::Call, audio.join("call.wav")),
-        ] {
-            // A mic-only session has no call track at all.
-            if !wav.exists() {
-                continue;
-            }
-            let (samples, _) = resample::read_wav_any(&wav)?;
-            if samples.is_empty() {
-                continue;
-            }
-            let chunks = {
-                let _serial = crate::live::decoder();
-                vad.turns(&samples, 30)?
-            };
-            for chunk in &chunks {
-                let segs = {
-                    let _serial = crate::live::decoder();
-                    rec.transcribe_segments(&samples, std::slice::from_ref(chunk))?
-                };
-                for (seg, text, confidence) in segs {
-                    let r = RawRecord {
-                        track,
-                        start_ms: (seg.start as u64 * 1000) / resample::TARGET_HZ as u64,
-                        end_ms: (seg.end as u64 * 1000) / resample::TARGET_HZ as u64,
-                        text,
-                        confidence,
-                    };
-                    writeln!(raw, "{}", serde_json::to_string(&r)?)?;
-                    lines += 1;
-                }
-            }
-            eprintln!("  {} — {} segment(s)", track.as_str(), chunks.len());
+fn run_locked(
+    dir: &Path,
+    engine: &crate::pipeline::Engine,
+    diarize: bool,
+    meter: Option<&std::sync::Arc<Meter>>,
+) -> Result<PathBuf> {
+    match crate::pipeline::run(dir, engine, diarize, meter) {
+        Ok(md) => {
+            eprintln!("  {}", md.display());
+            Ok(dir.to_path_buf())
         }
-        raw.flush()?;
-    }
-
-    // Created empty so the append-only layer always exists to append to.
-    let edits_path = dir.join("edits.jsonl");
-    if !edits_path.exists() {
-        std::fs::File::create(&edits_path)?;
-    }
-
-    if cfg.diarize && lines > 0 {
-        std::fs::write(dir.join(STATUS_FILE), "separating voices\n").ok();
-        if let Some(m) = &meter {
-            m.set_phase(MeterPhase::Diarizing);
-        }
-        // Diarization is a nicety; a transcript without speakers still beats
-        // losing the recording to a model that failed to load.
-        match diarize_session(dir, cfg.threshold) {
-            Ok(n) => eprintln!("  {n} speaker label(s)"),
-            Err(e) => eprintln!(
-                "  WARNING: could not separate voices ({e}) — \
-                                 the transcript is complete but unlabelled"
-            ),
+        Err(e) => {
+            fail(dir, &e, meter);
+            Err(e)
         }
     }
+}
 
+/// The session's own record of what went wrong, and one more observed
+/// failure toward [`crate::pipeline::RETRY_CAP`]. The menu bar app may be
+/// recording something else when this lands and have nowhere to draw it yet;
+/// the file is there whenever the session is opened.
+fn fail(dir: &Path, e: &anyhow::Error, meter: Option<&std::sync::Arc<Meter>>) {
+    std::fs::write(dir.join(STATUS_FILE), format!("failed: {e:#}\n")).ok();
+    crate::pipeline::note_failure(dir);
+    if let Some(m) = meter {
+        m.set_phase(MeterPhase::Failed);
+    }
+}
+
+/// Rewrite `transcript.md` after an edit, but only on a finished session: on
+/// one still waiting for its transcript, writing it would mark the session
+/// finished and take it off the queue.
+fn refresh_transcript(dir: &Path) -> Result<()> {
     let md = dir.join("transcript.md");
-    std::fs::write(&md, markdown(dir)?)?;
-    if live_session {
-        crate::live::cleanup(dir);
+    if md.is_file() {
+        std::fs::write(md, markdown(dir)?)?;
     }
-    std::fs::write(dir.join(STATUS_FILE), "done\n").ok();
-    if let Some(m) = &meter {
-        m.set_phase(MeterPhase::Done);
-    }
+    Ok(())
+}
 
-    // Only now that the text exists is the audio safe to age out. This covers
-    // the session just recorded as well as every older one, which is why there
-    // is no launchd agent: the app runs whenever a recording happens.
-    match sweep_audio(&home(), cfg.audio_retention_days) {
-        0 => {}
-        n => eprintln!("  {n} track(s) of aged-out audio removed"),
+/// Remove the warnings that begin with `prefix` from the session's metadata.
+pub fn clear_warnings(dir: &Path, prefix: &str) -> Result<()> {
+    let path = dir.join("session.json");
+    let text = std::fs::read_to_string(&path)?;
+    let mut meta: SessionMeta = serde_json::from_str(&text)?;
+    let before = meta.warnings.len();
+    meta.warnings.retain(|w| !w.starts_with(prefix));
+    if meta.warnings.len() != before {
+        let tmp = dir.join(format!(".session.json.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_string_pretty(&meta)?)?;
+        std::fs::rename(&tmp, &path)?;
     }
+    Ok(())
+}
 
-    eprintln!("  {lines} line(s) written\n  {}", md.display());
-    Ok(dir.to_path_buf())
+/// Whether the session carries a warning that begins with `prefix`.
+fn has_warning(dir: &Path, prefix: &str) -> bool {
+    std::fs::read_to_string(dir.join("session.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<SessionMeta>(&t).ok())
+        .is_some_and(|m| m.warnings.iter().any(|w| w.starts_with(prefix)))
+}
+
+/// Append a warning to the session's metadata, where the window shows it.
+pub fn add_warning(dir: &Path, warning: &str) -> Result<()> {
+    let path = dir.join("session.json");
+    let text = std::fs::read_to_string(&path)?;
+    let mut meta: SessionMeta = serde_json::from_str(&text)?;
+    if !meta.warnings.iter().any(|w| w == warning) {
+        meta.warnings.push(warning.to_string());
+        let tmp = dir.join(format!(".session.json.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_string_pretty(&meta)?)?;
+        std::fs::rename(&tmp, &path)?;
+    }
+    Ok(())
 }
 
 /// Every session directory under `root`, oldest first. Session ids are
@@ -1386,6 +1326,7 @@ pub fn captured_awaiting_transcript(root: &Path) -> Vec<PathBuf> {
                 && (audio.join("room.wav").is_file() || audio.join("call.wav").is_file())
                 && !is_growing(&audio.join("room.native.wav"))
                 && live_transcriber(dir).is_none()
+                && crate::pipeline::attempts(dir) < crate::pipeline::RETRY_CAP
         })
         .collect()
 }
@@ -1438,7 +1379,12 @@ pub fn sweep_audio_at(root: &Path, keep_days: Option<u32>, now: SystemTime) -> u
         // - a `transcript.md` with no words behind it means ASR found nothing,
         //   which is exactly when the audio is still the only record. `markdown`
         //   writes a transcript saying so, so the file alone proves nothing.
-        if !session.join("transcript.md").is_file() || !has_transcribed_words(&session) {
+        // - a transcript written without speakers after the diariser failed
+        //   is one a person is likely to transcribe again, which needs it.
+        if !session.join("transcript.md").is_file()
+            || !has_transcribed_words(&session)
+            || has_warning(&session, crate::pipeline::UNLABELLED_WARNING)
+        {
             continue;
         }
         let Ok(tracks) = std::fs::read_dir(&audio) else {
@@ -1720,170 +1666,12 @@ pub fn show(dir: &Path, verbatim: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Who an automatic speaker edit is attributed to. Load-bearing: re-running
-/// `diarize` finds its own previous edits by this name and reverts them, and
-/// must not touch a name a person typed.
+/// Who an automatic speaker edit is attributed to. Load-bearing: a re-run
+/// carries over every speaker edit *not* by this name, because those are
+/// names a person typed. Labels are track-prefixed (`room-1`, `call-2`)
+/// because speaker 1 in the room and speaker 1 on the call are different
+/// people, and nothing downstream should be able to assume otherwise.
 pub const DIARIZE_BY: &str = "diarize";
-
-/// Assign speakers to an already-recorded session.
-///
-/// Deliberately not part of `record`. It roughly doubles processing time for
-/// something not always wanted, the threshold wants tuning against real room
-/// audio, and re-running it is exactly what an append-only format is for — a
-/// bad threshold costs an appended revert, not a lost recording.
-///
-/// Labels are track-prefixed (`room-1`, `call-2`) because speaker 1 in the
-/// room and speaker 1 on the call are different people, and nothing downstream
-/// should be able to assume otherwise.
-pub fn diarize_session(dir: &Path, threshold: f32) -> Result<usize> {
-    // Diarization loads and runs its own ONNX models. It shares the same
-    // inference lane as live VAD/ASR and queued transcription so capture's
-    // measured one-model-workload assumption remains true.
-    let _serial = crate::live::decoder();
-    let raw_text = std::fs::read_to_string(dir.join("raw.jsonl"))
-        .with_context(|| format!("reading {}", dir.join("raw.jsonl").display()))?;
-    let records: Vec<RawRecord> = raw_text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).context("parsing raw.jsonl"))
-        .collect::<Result<_>>()?;
-    if records.is_empty() {
-        bail!("{} has no transcript to attribute", dir.display());
-    }
-
-    // Checked before anything is reverted below. Once retention has swept the
-    // audio, a re-run would undo the labels it wrote last time and then find
-    // nothing to replace them with — silently unlabelling every speaker that
-    // nobody had named by hand.
-    let audio = dir.join("audio");
-    if !audio.join("room.wav").exists() && !audio.join("call.wav").exists() {
-        bail!(
-            "{} has no audio left to attribute — the retention setting removed it, \
-             and the labels it already carries are all there will be",
-            dir.display()
-        );
-    }
-
-    let root = models_root()?;
-    let files = model_files(&root);
-    let seg = files.segmentation;
-    let emb = files.embedding;
-    for p in [&seg, &emb] {
-        if !p.exists() {
-            bail!("missing {} — run ./fetch-models.sh", p.display());
-        }
-    }
-    let mut diar = crate::diarize::Diarizer::load(utf8_path(&seg)?, utf8_path(&emb)?)?;
-
-    let now = crate::clock::now_rfc3339();
-    let mut appended: Vec<Edit> = Vec::new();
-    let mut protected: std::collections::HashSet<(&str, u64)> = std::collections::HashSet::new();
-
-    // Undo the previous run before writing this one, so history survives and
-    // `transcript` does not have to guess which of two labels is current.
-    let edits_path = dir.join("edits.jsonl");
-    if edits_path.exists() {
-        let text = std::fs::read_to_string(&edits_path)?;
-        let existing: Vec<Edit> = text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| serde_json::from_str(l).context("parsing edits.jsonl"))
-            .collect::<Result<_>>()?;
-        let already: std::collections::HashSet<usize> = existing
-            .iter()
-            .filter_map(|e| match e {
-                Edit::Revert { target_seq, .. } => Some(*target_seq),
-                _ => None,
-            })
-            .collect();
-        for (seq, e) in existing.iter().enumerate() {
-            if already.contains(&seq) {
-                continue;
-            }
-            if let Edit::Speaker { by, target, .. } = e {
-                if by == DIARIZE_BY {
-                    appended.push(Edit::Revert {
-                        target_seq: seq,
-                        by: DIARIZE_BY.into(),
-                        at: now.clone(),
-                    });
-                } else {
-                    // Somebody typed this name. Re-running diarization must not
-                    // quietly turn Priya back into call-1.
-                    protected.insert((target.track.as_str(), target.start_ms));
-                }
-            }
-        }
-    }
-
-    for (track, wav) in [
-        (Track::Room, audio.join("room.wav")),
-        (Track::Call, audio.join("call.wav")),
-    ] {
-        if !wav.exists() {
-            continue;
-        }
-        let (samples, rate) = resample::read_wav_any(&wav)?;
-        let samples = resample::to_16k(&samples, rate)?;
-        if samples.is_empty() {
-            continue;
-        }
-        let spans = diar.diarize(&samples, threshold)?;
-        let speakers = spans
-            .iter()
-            .map(|s| s.speaker)
-            .max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
-        eprintln!("  {} — {speakers} speaker(s)", track.as_str());
-        if spans.is_empty() {
-            continue;
-        }
-
-        for r in records.iter().filter(|r| r.track == track) {
-            if protected.contains(&(track.as_str(), r.start_ms)) {
-                continue;
-            }
-            let a = r.start_ms * resample::TARGET_HZ as u64 / 1000;
-            let b = r.end_ms * resample::TARGET_HZ as u64 / 1000;
-            // Whoever holds the most of the segment owns the line. A segment
-            // is one VAD-bounded utterance, so a clear majority is the norm
-            // and a tie means the cut landed mid-turn.
-            let mut overlap: std::collections::HashMap<usize, u64> =
-                std::collections::HashMap::new();
-            for s in &spans {
-                let lo = a.max(s.start as u64);
-                let hi = b.min(s.end as u64);
-                if hi > lo {
-                    *overlap.entry(s.speaker).or_default() += hi - lo;
-                }
-            }
-            if let Some((&spk, _)) = overlap.iter().max_by_key(|(_, &v)| v) {
-                appended.push(Edit::Speaker {
-                    target: Target {
-                        track,
-                        start_ms: r.start_ms,
-                    },
-                    name: format!("{}-{}", track.as_str(), spk + 1),
-                    by: DIARIZE_BY.into(),
-                    at: now.clone(),
-                });
-            }
-        }
-    }
-
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&edits_path)?;
-    for e in &appended {
-        writeln!(f, "{}", serde_json::to_string(e)?)?;
-    }
-    f.flush()?;
-    drop(f);
-    std::fs::write(dir.join("transcript.md"), markdown(dir)?)?;
-    Ok(appended.len())
-}
 
 /// Attribution for a name a person typed, as opposed to a cluster id.
 pub const USER_BY: &str = "user";
@@ -1928,7 +1716,7 @@ pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
         seen.sort_unstable();
         seen.dedup();
         let known = if seen.is_empty() {
-            "none — run `ambient diarize` first".to_string()
+            "none — voices were not separated; run `ambient rerun` with diarize on".to_string()
         } else {
             seen.join(", ")
         };
@@ -1954,7 +1742,7 @@ pub fn name_speaker(dir: &Path, label: &str, name: &str) -> Result<usize> {
     }
     f.flush()?;
     drop(f);
-    std::fs::write(dir.join("transcript.md"), markdown(dir)?)?;
+    refresh_transcript(dir)?;
     Ok(targets.len())
 }
 
@@ -2004,7 +1792,7 @@ fn append_reverts(dir: &Path, seqs: &[usize]) -> Result<()> {
     }
     f.flush()?;
     drop(f);
-    std::fs::write(dir.join("transcript.md"), markdown(dir)?)?;
+    refresh_transcript(dir)?;
     Ok(())
 }
 
@@ -2623,23 +2411,29 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// Retention and diarization interact badly if this is not guarded: the
-    /// re-run reverts last time's labels before it discovers there is nothing
-    /// left to read, which would unlabel everyone nobody had named by hand.
+    /// Retention and re-running interact badly if this is not guarded: the
+    /// re-run would archive and remove the transcript before discovering
+    /// there is no audio left to make a new one from.
     #[test]
-    fn diarizing_a_session_whose_audio_was_swept_refuses_rather_than_unlabelling() {
+    fn rerunning_a_session_whose_audio_was_swept_refuses_and_keeps_the_transcript() {
         let root = sweep_root("swept");
         let dir = session_with(&root, &[spoken_by(Track::Call, 0, "call-1", DIARIZE_BY)]);
         std::fs::write(dir.join("transcript.md"), "# t\n").unwrap();
         let before = std::fs::read_to_string(dir.join("edits.jsonl")).unwrap();
 
-        let e = diarize_session(&dir, 0.5).unwrap_err();
+        let engine = crate::pipeline::Engine {
+            binary: "/nonexistent/ambient-engine".into(),
+            models: "/nonexistent/models".into(),
+        };
+        let e = rerun_with(&dir, &engine, true, None).unwrap_err();
         assert!(e.to_string().contains("no audio left"), "{e}");
-        // The important half: it must not have appended a revert on its way out.
+        // The important half: nothing was archived or removed on the way out.
         assert_eq!(
             std::fs::read_to_string(dir.join("edits.jsonl")).unwrap(),
             before
         );
+        assert!(dir.join("transcript.md").is_file());
+        assert!(!dir.join(crate::pipeline::PREVIOUS_DIR).exists());
         std::fs::remove_dir_all(&root).ok();
     }
 

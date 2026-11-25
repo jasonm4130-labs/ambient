@@ -1,11 +1,41 @@
 #!/usr/bin/env bash
-# Download every ONNX model ambient needs. ~670 MB on disk for the default set,
-# dominated by the recogniser at 640 MB; diarization adds 32 MB and VAD under a
-# megabyte. Passing a different ASR model as $1 fetches that one instead, and
-# they accumulate — a models/ directory holding several is much larger.
+# Fetch the models the app runs (ADR 0020): Parakeet Ultra for words and
+# Nemotron 3 Diarization fast32 for voices, ~0.8 GB, through `ambient-engine
+# fetch`, which builds the helper first if needed. Every file is then checked
+# against licenses/model-sha256.txt, so a change upstream stops here rather
+# than reaching a bundle.
+#
+#   ./fetch-models.sh          the app's models
+#   ./fetch-models.sh --onnx   also the ONNX set the older benchmarks use
+#                              (wer, der, asrbench); not bundled. An extra
+#                              argument names a different ONNX recogniser.
 set -euo pipefail
 cd "$(dirname "$0")"
-mkdir -p models && cd models
+
+onnx=0
+if [ "${1:-}" = "--onnx" ]; then
+  onnx=1
+  shift
+fi
+
+engine="${AMBIENT_ENGINE:-}"
+if [ -z "$engine" ]; then
+  echo "building ambient-engine ..."
+  engine="$(scripts/build-engine)"
+fi
+mkdir -p models
+echo "fetching the app's models ..."
+# A closed stdin is fine: `fetch` does not watch it.
+"$engine" fetch --models models </dev/null
+# An `if`, not `&&`: set -e does not stop a script at a failed `a && b`.
+if ! grep -v '^#' licenses/model-sha256.txt | shasum -a 256 -c --quiet -; then
+  echo "a model file does not match licenses/model-sha256.txt" >&2
+  exit 1
+fi
+echo "ready: models/parakeet-ultra, models/nemotron-3-diarization (checksums verified)"
+
+[ "$onnx" = 1 ] || exit 0
+cd models
 
 ASR_BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models
 SEG_BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models
