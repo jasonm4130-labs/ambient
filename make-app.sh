@@ -99,7 +99,7 @@ if [ "${AMBIENT_BUNDLE_MODELS:-0}" = "1" ]; then
   }
   # The checksum list is the bundle's inventory: exactly the files the two
   # models load (ADR 0020), and nothing else that has accumulated in models/
-  # (other Core ML presets, the ONNX set for the old benchmarks).
+  # (other Core ML presets, models an older version fetched).
   echo "copying models into the bundle ..."
   while read -r _ m; do
     [ -e "$m" ] || { echo "  missing $m — run ./fetch-models.sh" >&2; exit 1; }

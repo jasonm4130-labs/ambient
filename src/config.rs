@@ -22,8 +22,6 @@ pub struct Config {
     pub input_device: Option<String>,
     /// Separate voices once the transcript exists.
     pub diarize: bool,
-    /// How readily two utterances are called different people.
-    pub threshold: f32,
     /// Where sessions are written. `None` means `~/Documents/Ambient`.
     pub sessions_dir: Option<PathBuf>,
     /// Wait to be told before recording a call this app noticed. Defaults on:
@@ -77,7 +75,6 @@ impl Default for Config {
             apps: Vec::new(),
             input_device: None,
             diarize: true,
-            threshold: crate::diarize::DEFAULT_THRESHOLD,
             sessions_dir: None,
             ask_before_recording: true,
             audio_retention_days: Some(7),
@@ -163,7 +160,6 @@ impl Config {
                     (!value.is_empty() && value != "default").then(|| value.to_string())
             }
             "diarize" => self.diarize = flag(value)?,
-            "threshold" => self.threshold = value.parse()?,
             "sessions_dir" => {
                 self.sessions_dir =
                     (!value.is_empty() && value != "default").then(|| PathBuf::from(value))
@@ -180,7 +176,7 @@ impl Config {
             "capture" => self.capture = value.parse()?,
             other => anyhow::bail!(
                 "unknown setting {other:?}. Known: apps, input_device, diarize, \
-                 threshold, sessions_dir, ask_before_recording, audio_retention_days, \
+                 sessions_dir, ask_before_recording, audio_retention_days, \
                  capture"
             ),
         }
@@ -274,7 +270,7 @@ mod tests {
         std::fs::write(&p, r#"{"apps": ["com.apple.Safari"]}"#).unwrap();
         let c = Config::load_from(&p);
         assert_eq!(c.apps, ["com.apple.Safari"]);
-        assert_eq!(c.threshold, Config::default().threshold);
+        assert_eq!(c.diarize, Config::default().diarize);
         std::fs::remove_file(&p).ok();
     }
 
@@ -284,7 +280,6 @@ mod tests {
         let mut c = Config::default();
         c.set("apps", "com.apple.Safari, us.zoom.xos").unwrap();
         c.set("diarize", "false").unwrap();
-        c.set("threshold", "0.55").unwrap();
         c.set("input_device", "MacBook Pro Microphone").unwrap();
         c.save_to(&p).unwrap();
         assert_eq!(Config::load_from(&p), c);

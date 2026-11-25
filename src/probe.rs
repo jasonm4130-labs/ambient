@@ -1,11 +1,6 @@
-//! Phase 0 probe: prove the two risky assumptions before building on them.
-//! Kept because it is also the fastest way to confirm a new machine is viable.
-//!
-//!   1. The Core Audio process-tap API is reachable from Rust with no C shim.
-//!   2. ONNX Runtime's CoreML execution provider is available from a prebuilt
-//!      binary, and can be asked for the Neural Engine specifically.
-//!
-//! Neither is a substitute for measuring the real model — see `docs/phase-0.md`.
+//! Phase 0 probe: prove the Core Audio process-tap API is reachable from Rust
+//! with no C shim. Kept because it is also the fastest way to confirm a new
+//! machine can be tapped.
 
 use anyhow::{bail, Result};
 use std::ffi::c_void;
@@ -104,22 +99,6 @@ unsafe fn get_bundle_id(object: AudioObjectID) -> Option<String> {
     Some(s.to_string())
 }
 
-pub fn probe_ort() {
-    use ort::ep::coreml::ComputeUnits;
-    use ort::ep::{CoreML, ExecutionProvider};
-
-    println!("\n── inference ──────────────────────────────────────────");
-    ort::init().commit();
-    let ane = CoreML::default().with_compute_units(ComputeUnits::CPUAndNeuralEngine);
-    match ane.is_available() {
-        Ok(true) => println!("CoreML EP        available (CPUAndNeuralEngine requestable)"),
-        Ok(false) => println!("CoreML EP        NOT available — inference would fall back to CPU"),
-        Err(e) => println!("CoreML EP        probe failed: {e}"),
-    }
-    println!("note             availability is not placement; a graph can still");
-    println!("                 partition onto CPU. Measure with the real model.");
-}
-
 /// How many processes are rendering output right now.
 ///
 /// Used to tell two identical-looking failures apart: a tap that is silent
@@ -207,6 +186,5 @@ pub fn run() -> Result<()> {
 
     println!("\n{tappable} process(es) currently rendering output — these are tappable.");
 
-    probe_ort();
     Ok(())
 }

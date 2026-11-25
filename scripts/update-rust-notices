@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Bring licenses/Rust-Dependencies.txt and the count in THIRD_PARTY_NOTICES.md
+in line with Cargo.lock, then run scripts/check-rust-notices.
+
+Removed packages leave their sections; a version bump keeps its section only
+if the cached crate's licence files are byte-identical to the old version's;
+a new package gets a section copied verbatim from its cached licence files,
+grouped with other new packages whose files match. Anything it cannot place
+(no licence file in the cargo cache, a bump whose licence changed) stops it,
+naming the package, for a person to research.
+"""
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(ROOT)
+INVENTORY = "licenses/Rust-Dependencies.txt"
+NOTICES = "THIRD_PARTY_NOTICES.md"
+LIST_HEAD = "## Resolved packages"
+VERBATIM = "## Verbatim upstream notices"
+WITHOUT = "## Packages without an exact cached or retrieved notice file"
+LICENCE_FILE = re.compile(r"(?i)^(licen[cs]e|copying|unlicense|notice)")
+
+meta = json.loads(subprocess.check_output(
+    ["cargo", "metadata", "--format-version", "1",
+     "--filter-platform", "aarch64-apple-darwin", "--locked"]))
+ids = {n["id"] for n in meta["resolve"]["nodes"]}
+pkgs = sorted(
+    ((p["name"], p["version"], p["license"]) for p in meta["packages"]
+     if p["id"] in ids and p["source"]),
+    key=lambda p: (p[0], p[1]))
+graph = {f"{n} {v}" for n, v, _ in pkgs}
+by_name = {}
+for n, v, _ in pkgs:
+    by_name.setdefault(n, []).append(v)
+
+registries = glob.glob(os.path.expanduser("~/.cargo/registry/src/*"))
+
+
+def licence_files(pkg):
+    for reg in registries:
+        d = os.path.join(reg, pkg.replace(" ", "-"))
+        if os.path.isdir(d):
+            return {f: open(os.path.join(d, f), "rb").read()
+                    for f in sorted(os.listdir(d)) if LICENCE_FILE.match(f)}
+    return None
+
+
+text = open(INVENTORY).read()
+head, rest = text.split(f"\n{VERBATIM}\n", 1)
+notices, tail = rest.split(f"\n{WITHOUT}\n", 1)
+sections = [s for s in re.split(r"\n(?=### )", notices.strip("\n")) if s]
+
+problems = []
+bumped = {}
+covered_before = set()
+for s in sections:
+    first = s.split("\n", 1)[0]
+    m = re.search(r"^Resolved packages: (.*)\.$", s, re.M)
+    names = m.group(1).split(",") if m else first[4:].split(",")
+    covered_before |= {x.strip() for x in names}
+for old in sorted(covered_before - graph):
+    name, version = old.split(" ")
+    new = [v for v in by_name.get(name, []) if f"{name} {v}" not in covered_before]
+    if len(new) != 1:
+        continue
+    candidate = f"{name} {new[0]}"
+    a, b = licence_files(old), licence_files(candidate)
+    if a is None and b is None:
+        bumped[old] = candidate  # a recorded upstream notice, as for objc2
+    elif a is not None and a == b:
+        bumped[old] = candidate
+    else:
+        problems.append(f"{old} -> {candidate}: licence files differ or are not cached")
+
+
+def rewrite(names):
+    return [bumped.get(x.strip(), x.strip()) for x in names]
+
+
+out = []
+covered = set()
+for s in sections:
+    first, body = s.split("\n", 1)
+    m = re.search(r"^Resolved packages: (.*)\.$", body, re.M)
+    if m:
+        kept = [x for x in rewrite(m.group(1).split(",")) if x in graph]
+        if kept:
+            body = body.replace(m.group(0), "Resolved packages: " + ", ".join(kept) + ".")
+            out.append(first + "\n" + body)
+            covered |= set(kept)
+        continue
+    kept = [x for x in rewrite(first[4:].split(",")) if x in graph]
+    if kept:
+        out.append("### " + ", ".join(kept) + "\n" + body)
+        covered |= set(kept)
+
+tail_pkgs = set(re.findall(r"^- (\S+ \S+) — ", tail, re.M))
+groups = {}
+for pkg in sorted(graph - covered - tail_pkgs):
+    files = licence_files(pkg)
+    if not files:
+        problems.append(f"{pkg}: no licence file in the cargo cache — find its notice by hand")
+        continue
+    groups.setdefault(tuple(sorted(files.items())), []).append(pkg)
+for files, members in groups.items():
+    body = "".join(
+        f"\n#### {name}\n\n```text\n{content.decode().rstrip()}\n```\n" for name, content in files)
+    out.append("### " + ", ".join(members) + "\n" + body)
+
+if problems:
+    sys.exit("update-rust-notices: nothing written\n  " + "\n  ".join(problems))
+
+recorded = [s for s in out if re.search(r"^Resolved packages: ", s, re.M)]
+plain = sorted((s for s in out if s not in recorded), key=lambda s: s.split("\n", 1)[0].lower())
+listing = "\n".join(f"- {n} {v} — {lic} — https://crates.io/crates/{n}/{v}" for n, v, lic in pkgs)
+head = re.sub(r"covers the \d+ external packages", f"covers the {len(pkgs)} external packages", head)
+head = re.sub(rf"({LIST_HEAD}\n\n)(?:- .*\n?)+", lambda m: m.group(1) + listing + "\n", head)
+open(INVENTORY, "w").write(
+    head.rstrip("\n") + f"\n\n{VERBATIM}\n\n"
+    + "\n\n".join(s.strip("\n") for s in plain + recorded)
+    + f"\n\n{WITHOUT}\n" + tail)
+
+notices_md = open(NOTICES).read()
+open(NOTICES, "w").write(re.sub(
+    r"covers \d+ external packages", f"covers {len(pkgs)} external packages", notices_md))
+
+print(f"{len(pkgs)} packages; bumped {len(bumped)}, new {sum(map(len, groups.values()))}")
+sys.exit(subprocess.call(["scripts/check-rust-notices"]))

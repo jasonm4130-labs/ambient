@@ -152,12 +152,7 @@ jobs:
         with:
           toolchain: ${{ steps.pin.outputs.channel }}
           components: rustfmt, clippy
-      # ort-sys downloads ONNX Runtime to its own cache directory, NOT to
-      # $OUT_DIR under target/. Without this line every run re-downloads 80 MB
-      # from cdn.pyke.io, warm cache included.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          cache-directories: ~/Library/Caches/ort.pyke.io
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets

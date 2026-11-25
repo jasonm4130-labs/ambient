@@ -145,8 +145,8 @@ struct Ivars {
     events: RefCell<Events>,
     /// The session currently being diarized on a worker thread, and the
     /// channel its result arrives on. One job at a time, exactly like the
-    /// native pane's `diarizing` ivar — two diarizers at once would double
-    /// the ONNX memory for no reason, and the two are kept safely apart by
+    /// native pane's `diarizing` ivar — two at once would double the model
+    /// helper's memory for no reason, and the two are kept safely apart by
     /// `session::claim_transcription`, which the worker below claims first.
     diarizing: RefCell<Option<(String, Receiver<anyhow::Result<usize>>)>>,
 }

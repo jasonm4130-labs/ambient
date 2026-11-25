@@ -173,15 +173,14 @@ test("check-bundle --models rejects a payload with no models", () => {
 });
 
 
-test("build path check allows only the exact precompiled ONNX runner prefix", () => {
-  const dir = tempDir("upstream-paths");
+test("build path check refuses the build user's home path", () => {
+  const dir = tempDir("home-paths");
   try {
     const binary = join(dir, "binary");
-    const upstream = "/Users/runner/work/ort-artifacts/ort-artifacts/onnxruntime/core.cc";
-    writeFileSync(binary, `${upstream}\0`);
+    writeFileSync(binary, "/opt/elsewhere/core.cc\0");
     assert.equal(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
-    for (const leaked of ["/Users/runner/_work/ambient/src/main.rs", "/Users/runner/.cargo/registry/crate.rs"]) {
-      writeFileSync(binary, `${upstream} ${leaked}\0`);
+    for (const leaked of ["/Users/runner/_work/ambient/src/main.rs", "/Users/runner/work/ort-artifacts/ort-artifacts/core.cc"]) {
+      writeFileSync(binary, `${leaked}\0`);
       assert.notEqual(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
     }
   } finally {

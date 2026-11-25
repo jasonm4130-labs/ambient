@@ -10,7 +10,6 @@ const baseConfig: SettingsConfig = {
   apps: [],
   input_device: null,
   diarize: true,
-  threshold: 0.5,
   sessions_dir: null,
   devices: ["MacBook Pro Microphone"],
   default_dir: "/Users/x/Documents/Ambient",

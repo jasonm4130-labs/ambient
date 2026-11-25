@@ -7,8 +7,8 @@ sidebar:
 # Sessions and the edit layer
 
 A session is what `ambient record` leaves on disk: the audio, what the
-recogniser heard, every subsequent repair, and a markdown export derived from
-the two. This chapter covers recording one, stopping it, editing it, and
+recogniser heard, every later repair, and a markdown export derived from the
+two. This chapter covers recording one, stopping it, editing it, and
 exporting it.
 
 `ambient record [--name <s>] [--app <bundle-id>]… [--seconds <n>]` captures
@@ -19,13 +19,18 @@ until stopped, then resamples, transcribes and writes a session under
 2026-08-29T1101-smoke/
   session.json     metadata, written when the capture ends
   started_at       when capture began, written as it starts
-  raw.jsonl        what the recogniser heard — never rewritten
-  edits.jsonl      repairs, speaker names, reverts — append-only
+  raw.jsonl        what the recogniser heard — written once per run
+  edits.jsonl      speaker labels, then repairs, names, reverts — appended
   transcript.md    the export, regenerated on every change
   status           live level meter while recording, then the stage
   audio/room.wav   mono 16 kHz, mic
   audio/call.wav   mono 16 kHz, tap
+  stages/          the helper's output per track and stage (checkpoints)
+  previous/        earlier transcripts, archived by a re-run
 ```
+
+While a job is pending or has failed, `attempts` counts its failures and
+`transcribing.lock` names the pid of a running transcriber.
 
 `ambient record --mic-only`, the menu's **Record microphone only** and the
 `capture` setting set to `mic` record the microphone alone: no tap is created,
@@ -34,37 +39,32 @@ until stopped, then resamples, transcribes and writes a session under
 recording is live, before `session.json` exists, a `capture` file in the session
 directory holds the same word.
 
-`capture_into` owns the tap and preserves native audio while a background worker
-publishes completed turns to `raw.jsonl`. Recognition processes bounded blocks;
-the capture drain does not wait for it. After Stop, the capture half writes the
-16 kHz WAVs and `session.json`, and `transcribe_session` completes the remaining
-transcription, speaker labels and `transcript.md` without replacing published
-lines. The CLI runs finalization after capture; the menu bar app uses its serial
-queue, so another recording can start while the previous session finishes.
-The queue runs each job as `ambient finalize <session-dir>`, a child process of
-the same signed executable, because macOS's allocator keeps the pages a
-finalize frees and a menu bar app that runs all day would hold them between
-meetings. The child reports its stage on stdout and exits when its stdin
-closes, so it never outlives the app. The live pass and the child still take
-one decoder lane, a `flock` beside the in-process mutex, so only one
-recogniser runs at a time.
+`capture_into` owns the tap and writes native-rate scratch audio. Nothing is
+transcribed while recording. After Stop, the capture half resamples each track
+to a 16 kHz wav and writes `session.json`, and `transcribe_session` then
+transcribes, separates voices and writes `transcript.md`. The CLI does this
+straight after capture. The menu bar app hands it to its serial queue, so
+another recording can start while the previous session is transcribed. Either
+way the models run in `ambient-engine`, one helper process per stage and
+track, so the memory they use is returned when each stage ends. See
+[transcription](asr.md).
 
 `status` records the stage: `recording …` with the level meter, then `finishing`,
 `captured`, `transcribing`, `separating voices`, `done` — or `failed: …`.
-The [implementation plan](../plans/2026-09-21-realtime-transcription.md) describes
-the live transcript's cursor and recovery requirements.
 A session with `session.json` and no `transcript.md` when the app is not
 running is waiting on a queue that no longer exists; the app re-queues it at
-its next launch. While a transcriber is working it holds `transcribing.lock`,
+its next launch, unless it has already failed twice (see
+[retries](asr.md#retries)). While a transcriber is working it holds `transcribing.lock`,
 a file naming its pid, so the CLI and the app cannot both transcribe one
 session; a lock whose pid is dead is a crash's leftovers and is taken over.
 
-Two append-only logs and one derived file, folded on read:
+Two logs and one derived file, folded on read. Between runs both logs only
+grow; a re-run archives them to `previous/` and starts new ones:
 
 ```mermaid
 flowchart LR
-    raw[("raw.jsonl<br/>append-only<br/>what the recogniser heard")]
-    edits[("edits.jsonl<br/>append-only<br/>repairs, names, reverts")]
+    raw[("raw.jsonl<br/>written once per run<br/>what the recogniser heard")]
+    edits[("edits.jsonl<br/>appended<br/>labels, repairs, names, reverts")]
     fold{{fold}}
     md["transcript.md<br/>derived and disposable"]
 
@@ -142,15 +142,16 @@ the fold. Reverts append a record naming an earlier line rather than deleting
 it, so the raw transcript is always recoverable byte-for-byte — verified by
 hashing `raw.jsonl` either side of applying an edit layer.
 
-Track is the attribution `record` writes on its own, and for a one-to-one call
-it is already complete: room is you, call is them. Several people round a table
-or on the same call need `ambient diarize`.
+Track is attribution on its own, and for a one-to-one call it is already
+complete: room is you, call is them. Several people round a table or on the
+same call need the `diarize` setting on, which labels speakers within each
+track; see [speaker separation](diarization.md).
 
-`record` writes one record per turn rather than per recogniser call; why that
-matters, and how `Vad::turns` differs from `Vad::chunks`, is in
-[VAD and chunking](vad-and-chunking.md). The capture layer runs at the device
-rate and everything downstream demands 16 kHz — see
-[Resampling](asr.md) for how that gap is closed.
+Each line of `raw.jsonl` is one speaker's run of words, broken at a speaker
+change, a pause of a second or more, or length; a line spanning two people
+could not carry a speaker. The capture layer runs at the device rate and the
+helper takes 16 kHz — see [resampling](asr.md#resampling) for how that gap is
+closed.
 
 Measured on one 19.8 s two-track recording — the same sentence reaching the tap
 directly and the microphone acoustically:
@@ -166,15 +167,15 @@ speaker, in one line.
 ## Naming speakers
 
 `ambient name <dir> call-1 Priya` renames every line currently carrying that
-label. It appends `speaker` edits like anything else, so it is undoable, and
-re-running `diarize` afterwards leaves the name alone — diarization reverts its
-own labels but skips any record a person has since named. Without that guard
-the later edit would win the fold and quietly turn Priya back into `call-1`.
+label. It appends `speaker` edits like anything else, so it is undoable. A
+later `ambient rerun` archives the session first and carries the name to the
+new speaker whose lines overlap Priya's most in time, so a re-run does not turn
+Priya back into `call-1`. See [re-running](asr.md#re-running).
 
 ## Export
 
 `ambient export <dir> [--out <path>]` writes `transcript.md`, and `record`,
-`diarize` and `name` each regenerate it, so the file on disk is never stale.
+`rerun` and `name` each regenerate it, so the file on disk is never stale.
 It is derived — `raw.jsonl` plus `edits.jsonl` stay the only source of truth,
 and deleting the markdown loses nothing. YAML front matter carries the session
 metadata, which is what a downstream Confluence pipeline would read — that
@@ -186,7 +187,7 @@ id: "2026-08-29T1223-standup"
 name: "standup"
 started_at: "2026-08-29T12:23:47.913732+10:00"
 duration_s: 20.0
-model: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+model: "parakeet-ultra/fluidaudio-e2ea498"
 speakers: ["Priya", "call-2"]
 ---
 
@@ -218,46 +219,14 @@ storm` against `retry-storm`, `Transcoda` against `Transcoder`) without eating
 genuine cross-talk, which is the failure that would matter. Both cases are unit
 tests, and the fixture strings are real ones the two tracks produced.
 
-### Room noise does not merely add junk — it derails the decode
+### Confidence
 
-Silero reports 0.6–0.9 on quiet room noise, confidently enough that no
-probability threshold separates it from real speech at 0.92–1.00. So a VAD turn
-would open in noise and run into the speech, and Parakeet given that prefix did
-not transcribe the speech plus some junk — it invented a different sentence
-outright. The same audio, measured:
-
-| Fed to the recogniser | Out |
-| --- | --- |
-| 2.6 s of room noise + the utterance | "The gap had not closed. If anything, it had wide." |
-| the utterance alone | "The migration is scheduled for Thursday morning." |
-
-Level separates a turn's quiet EDGES from its speech, and trimming them matters
-because a noise prefix does not merely add junk — it derails the decode. So each
-turn is trimmed on level before the recogniser sees it.
-
-The floor is **relative to the track's own loudest content, and only that**. An
-absolute floor was tried and removed after it threw away a real recording whole:
-quiet speech captured across a room measured −42 dB p90 while a genuinely silent
-room measured −44 dB. **Two decibels apart.** Any absolute threshold that rejects
-the empty room also rejects real speech.
-
-Three signals were measured and none of them separates quiet speech from an
-empty room:
-
-| Signal | Real quiet speech | Hallucination from silence |
-| --- | --- | --- |
-| level (p90) | −42 dB | −44 dB |
-| Silero probability | 0.6–0.9 | 0.6–0.9 |
-| decoder confidence | 0.959 | 0.917 |
-
-Decoder confidence does catch the *derailment* case — 0.992 for the trimmed
-utterance against 0.613 for the same one with noise in front — which is why the
-trim is worth having. But Parakeet is confidently wrong on pure noise, so a
-room track that is nothing but noise still reaches the recogniser and can still
-produce an invented line.
-
-That is a semantic problem, not a threshold problem: it needs something that can
-read the words. `confidence` is recorded per line in `raw.jsonl` to give a
-downstream cleanup pass something to weigh.
+Each line in `raw.jsonl` carries `confidence`, the mean of the recogniser's
+confidence over its words. The ONNX build of Parakeet that came before produced
+fluent, confident sentences from room noise alone, and no level or probability
+threshold measured then separated quiet speech from an empty room (see
+[measurements](measurements.md#three-signals-none-of-which-separates-quiet-speech-from-an-empty-room)).
+That needs something that can read the words, so the number is recorded to
+give a downstream cleanup pass something to weigh.
 
 See [ADR-0008](../adr/0008-append-only-raw.md).

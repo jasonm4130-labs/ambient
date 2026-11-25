@@ -33,9 +33,7 @@ USAGE
   ambient roster [add|rm <name>]       the people you record with
   ambient doctor [--json]              say which of nine things is missing
   ambient probe                        check this machine is viable
-  ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
-  ambient vad <a.wav>                  show detected speech segments
   ambient peak <a.wav>...              per-channel peak level of a wav
 
 Sessions are written to ~/Documents/Ambient (override with AMBIENT_HOME).
@@ -427,68 +425,6 @@ fn main() -> Result<()> {
             ambient::probe::run()?;
             Ok(())
         }
-        Some("transcribe") => {
-            let model = args.next().unwrap_or_default();
-            let wav = args.next().unwrap_or_default();
-            if model.is_empty() || wav.is_empty() {
-                bail!("{USAGE}");
-            }
-            // Accept any sample rate: features::read_wav insists on 16 kHz and
-            // tells you to resample first, which until now nothing could do.
-            let (raw, rate) = ambient::resample::read_wav_any(std::path::Path::new(&wav))?;
-            let samples = ambient::resample::to_16k(&raw, rate)?;
-            let secs = samples.len() as f64 / 16_000.0;
-            let t = std::time::Instant::now();
-            let mut rec = ambient::asr::Recognizer::load(&model)?;
-            // Prefer VAD chunking when the model is present; it cuts in silence
-            // and skips it entirely.
-            let silero = ambient::session::models_root()
-                .map(|m| m.join("silero_vad.onnx"))
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "models/silero_vad.onnx".into());
-            let text = match ambient::vad::Vad::load(&silero) {
-                Ok(mut vad) => {
-                    let chunks = vad.chunks(&samples, 30)?;
-                    let speech = chunks.iter().map(|c| c.seconds()).sum::<f64>().max(0.0);
-                    eprintln!(
-                        "vad: {} chunk(s), {speech:.1}s speech of {secs:.1}s",
-                        chunks.len()
-                    );
-                    rec.transcribe_chunked(&samples, &chunks)?
-                }
-                Err(_) => rec.transcribe_long(&samples)?,
-            };
-            let el = t.elapsed().as_secs_f64();
-            eprintln!("{secs:.1}s audio in {el:.2}s ({:.0}x realtime)", secs / el);
-            println!("{text}");
-            Ok(())
-        }
-        Some("vad") => {
-            let wav = args.next().unwrap_or_default();
-            if wav.is_empty() {
-                bail!("{USAGE}");
-            }
-            let samples = ambient::features::read_wav(&wav)?;
-            let silero = ambient::session::models_root()?.join("silero_vad.onnx");
-            let mut vad = ambient::vad::Vad::load(&silero.display().to_string())?;
-            let segs = vad.segments(&samples)?;
-            let total = segs.iter().map(|s| s.seconds()).sum::<f64>().max(0.0);
-            let dur = samples.len() as f64 / 16_000.0;
-            for (i, s) in segs.iter().enumerate() {
-                println!(
-                    "{i:3}  {:7.2}s -> {:7.2}s  ({:.2}s)",
-                    s.start as f64 / 16_000.0,
-                    s.end as f64 / 16_000.0,
-                    s.seconds()
-                );
-            }
-            println!(
-                "\n{} segments, {total:.1}s speech of {dur:.1}s ({:.0}% skipped)",
-                segs.len(),
-                100.0 * (1.0 - total / dur)
-            );
-            Ok(())
-        }
         Some("tap") => {
             let out = args.next().unwrap_or_default();
             let secs: u64 = args.next().unwrap_or_default().parse().unwrap_or(10);
@@ -703,7 +639,6 @@ fn main() -> Result<()> {
                             Some(n) => format!("{n}"),
                         }
                     );
-                    println!("{:<14} {}", "threshold", cfg.threshold);
                     println!(
                         "{:<14} {}",
                         "sessions_dir",
