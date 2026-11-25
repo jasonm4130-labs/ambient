@@ -109,6 +109,9 @@ function makeBundle(dir, executable = "synthetic executable") {
   const binary = join(app, "Contents", "MacOS", "ambient");
   writeFileSync(binary, executable);
   chmodSync(binary, 0o755);
+  const engine = join(app, "Contents", "MacOS", "ambient-engine");
+  writeFileSync(engine, "synthetic helper");
+  chmodSync(engine, 0o755);
   cpSync(join(repoRoot, "LICENSE"), join(resources, "LICENSE"));
   cpSync(join(repoRoot, "THIRD_PARTY_NOTICES.md"), join(resources, "THIRD_PARTY_NOTICES.md"));
   cpSync(join(repoRoot, "licenses"), join(resources, "licenses"), { recursive: true });

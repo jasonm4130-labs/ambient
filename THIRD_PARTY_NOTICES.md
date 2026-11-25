@@ -125,6 +125,15 @@ The settings UI and documentation styles compile npm package
 The app and documentation dependencies retain their upstream license notices;
 the files above cover the identified runtime packages and generated assets.
 
+## Model helper (`ambient-engine`)
+
+`Contents/MacOS/ambient-engine` is built from `engine/` and statically links
+[FluidAudio](https://github.com/FluidInference/FluidAudio) at revision
+`e2ea498dafd6db9b3f18f0f644bc35312b3a7679`, licensed under the
+[Apache License 2.0](licenses/FluidAudio-Apache-2.0.txt). FluidAudio's own
+third-party notices, including fastcluster and NeMo text processing, are
+reproduced verbatim in [licenses/FluidAudio-ThirdParty.txt](licenses/FluidAudio-ThirdParty.txt).
+
 ## Rust dependencies
 
 The native dependency inventory covers 94 external packages in Cargo's resolved

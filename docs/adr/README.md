@@ -79,3 +79,4 @@ the record lands unplaced in the nav, which is nearly as good as unwritten.
 | 0017 | [The window is one web page; Rust keeps the menu bar, the bridge and the state](0017-one-web-page-for-the-window.md) |
 | 0018 | [The live assistant's judgement runs in the user's own agent; Ambient serves the tools](0018-live-assistant-runs-in-the-users-agent.md) |
 | 0019 | [Narrow Ambient to the core recorder](0019-narrow-to-core-recorder.md) |
+| 0020 | [Transcribe after Stop in a Core ML helper process](0020-models-run-in-a-core-ml-helper.md) |

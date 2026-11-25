@@ -23,8 +23,14 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ambient"
 
+# The model helper the app runs after Stop (docs/adr/0020). Beside the main
+# executable so the app finds it next to its own path.
+ENGINE=$(./scripts/build-engine)
+cp "$ENGINE" "$APP/Contents/MacOS/ambient-engine"
+
 # Do not silently ship an owner path from a dependency or a stale Cargo cache.
 ./scripts/check-build-paths "$APP/Contents/MacOS/ambient"
+./scripts/check-build-paths "$APP/Contents/MacOS/ambient-engine"
 
 # Licenses are part of the signed payload, even for a model-free dev bundle.
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
@@ -147,17 +153,23 @@ SIGN_ARGS=(--force --identifier uk.ambient.cli
 # and only works for a real Apple-issued certificate, so it is off for the
 # self-signed fallback.
 case "$SIGN_ID" in
-  "Developer ID Application"*) SIGN_ARGS+=(--timestamp) ;;
-  *)                           SIGN_ARGS+=(--timestamp=none) ;;
+  "Developer ID Application"*) TIMESTAMP=--timestamp ;;
+  *)                           TIMESTAMP=--timestamp=none ;;
 esac
+SIGN_ARGS+=("$TIMESTAMP")
 
 # stderr is NOT discarded. It used to be, which meant a signing failure aborted
 # the build with a nonzero status and no explanation whatsoever — the single
 # worst thing to be missing while debugging a notarization rejection.
+# The helper is signed first, with its own identifier and no entitlements: it
+# reads files and runs models, and never touches a microphone.
+ENGINE_ARGS=(--force --identifier uk.ambient.engine --options runtime "$TIMESTAMP")
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+  codesign "${ENGINE_ARGS[@]}" --sign "$SIGN_ID" "$APP/Contents/MacOS/ambient-engine"
   codesign "${SIGN_ARGS[@]}" --sign "$SIGN_ID" "$APP"
   echo "built $APP (signed: $SIGN_ID)"
 else
+  codesign "${ENGINE_ARGS[@]}" --sign - "$APP/Contents/MacOS/ambient-engine"
   codesign "${SIGN_ARGS[@]}" --sign - "$APP"
   echo "built $APP (AD-HOC signed)"
   echo

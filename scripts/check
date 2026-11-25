@@ -31,4 +31,5 @@ run cargo fmt --check
 run cargo clippy --all-targets -- -D warnings
 run cargo test --all-targets
 run cargo run --bin symbolcheck
+run scripts/test-engine
 echo "CHECK OK"
