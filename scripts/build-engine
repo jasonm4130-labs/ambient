@@ -11,8 +11,10 @@ for pair in "$HOME=/home/build" "$repo_root=/ambient"; do
 done
 # SwiftPM writes the absolute path of a resource bundle into the binary, and
 # no prefix map reaches it (FluidAudio's unused TTS resources), so the build
-# directory itself must sit outside the home folder.
-scratch="${AMBIENT_ENGINE_BUILD:-${TMPDIR:-/tmp}/ambient-engine-build}"
+# directory itself must sit outside the home folder. Not $TMPDIR: a GitHub
+# runner's is under its home.
+scratch="${AMBIENT_ENGINE_BUILD:-/tmp/ambient-engine-build-$(id -u)}"
+case "$scratch" in "$HOME"/*) echo "AMBIENT_ENGINE_BUILD must be outside $HOME" >&2; exit 1 ;; esac
 swift build -c release --package-path engine --scratch-path "$scratch" \
   --product ambient-engine "${maps[@]}" "$@" >&2
 echo "$(swift build -c release --package-path engine --scratch-path "$scratch" --show-bin-path)/ambient-engine"
