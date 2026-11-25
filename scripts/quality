@@ -67,6 +67,15 @@ run() {
 }
 
 run scripts/fetch-fixtures
+# wer and der run the models through the helper (ADR 0020), like the app.
+if ! AMBIENT_ENGINE=$(scripts/build-engine 2>"$log"); then
+  echo "ERROR scripts/build-engine"
+  cat "$log"
+  exit 1
+fi
+echo "✓ scripts/build-engine"
+export AMBIENT_ENGINE
+export AMBIENT_MODELS="${AMBIENT_MODELS:-$PWD/models}"
 run cargo run --release --bin wer -- --json "$rows"
 run cargo run --release --bin wer -- --manifest "$HOME/.cache/ambient/fixtures/calls/manifest.json" --json "$calls_rows"
 run cargo run --release --bin der -- --json "$der_rows"
