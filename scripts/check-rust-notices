@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# licenses/Rust-Dependencies.txt must list exactly the external packages in
+# Cargo's resolved aarch64-apple-darwin graph, and give each one a notice
+# section (or name it among those without one). A dependency added, bumped or
+# removed without the inventory following fails here, not at release.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo metadata --format-version 1 --filter-platform aarch64-apple-darwin --locked |
+  python3 -I -c '
+import json, re, sys
+meta = json.load(sys.stdin)
+ids = {n["id"] for n in meta["resolve"]["nodes"]}
+graph = {p["name"] + " " + p["version"] for p in meta["packages"] if p["id"] in ids and p["source"]}
+text = open("licenses/Rust-Dependencies.txt").read()
+listed = set(re.findall(r"^- (\S+ \S+) — ", text.split("## Verbatim upstream notices")[0], re.M))
+notices, tail = text.split("## Verbatim upstream notices")[1].split("## Packages without an exact cached or retrieved notice file")
+covered = set()
+for head in re.findall(r"^### (.*)$", notices, re.M):
+    covered |= {x.strip() for x in head.split(",")}
+for fam in re.findall(r"^Resolved packages: (.*)\.$", notices, re.M):
+    covered |= {x.strip() for x in fam.split(",")}
+covered |= set(re.findall(r"^- (\S+ \S+) — ", tail, re.M))
+problems = []
+if listed != graph:
+    problems.append(f"listed but not in the graph: {sorted(listed - graph)}; in the graph but not listed: {sorted(graph - listed)}")
+if graph - covered:
+    problems.append(f"no notice section: {sorted(graph - covered)}")
+m = re.search(r"covers the (\d+) external packages", text)
+if not m or int(m.group(1)) != len(graph):
+    problems.append(f"the header count should be {len(graph)}")
+if problems:
+    sys.exit("licenses/Rust-Dependencies.txt is out of date with Cargo.lock:\n  " + "\n  ".join(problems))
+'

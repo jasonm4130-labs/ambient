@@ -5,7 +5,6 @@ export interface SettingsConfig {
   apps: string[];
   input_device: string | null;
   diarize: boolean;
-  threshold: number;
   sessions_dir: string | null;
   devices: string[];
   default_dir: string;
@@ -22,9 +21,3 @@ export interface UnnamedSpeaker {
   label: string;
   sample: string;
 }
-
-/// The threshold merges clusters, so a HIGHER value yields FEWER speakers; the
-/// slider reads left-to-right as fewer-to-more, hence the inversion.
-const SPAN = 1.1;
-export const toSlider = (t: number): number => Math.round((SPAN - t) * 100);
-export const fromSlider = (v: number): number => Number((SPAN - v / 100).toFixed(2));

@@ -7,9 +7,7 @@ texts are included under `licenses/`.
 
 ## Model artifacts
 
-The app runs the first two models below, through `ambient-engine` (ADR 0020).
-The ONNX models after them are fetched only by `./fetch-models.sh --onnx`, for
-the older benchmarks, and are not bundled.
+The app runs the two models below, through `ambient-engine` (ADR 0020).
 
 ### Parakeet Ultra (Core ML)
 
@@ -35,64 +33,10 @@ OpenMDW-1.1 requires a copy of the agreement with any distribution of the model
 materials, which is `licenses/OpenMDW-1.1.txt` in the bundle. Digests are in
 [licenses/model-sha256.txt](licenses/model-sha256.txt).
 
-### NVIDIA Parakeet TDT 0.6B v3
+## Measurement fixtures
 
-- Bundle path: `models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/`
-- Source artifact: `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2` from [sherpa-onnx's ASR model release](https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2).
-- Upstream model: [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
-- License: [CC BY 4.0](licenses/CC-BY-4.0.txt)
-- Attribution: NVIDIA Corporation, “Parakeet TDT 0.6B v3”, [upstream model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), licensed under CC BY 4.0.
-
-The release artifact is a sherpa-onnx converted, int8-quantized ONNX model.
-Ambient's fetch script extracts it without changing its model files. The
-source release URL is recorded; the conversion revision is not recorded.
-The measured files and their digests are in
-[licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt).
-
-### pyannote segmentation 3.0
-
-- Bundle path: `models/pyannote-segmentation-3.0/model.onnx`
-- Source artifact: `sherpa-onnx-pyannote-segmentation-3-0.tar.bz2` from [sherpa-onnx's speaker-segmentation release](https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2).
-- Upstream model: [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
-- License: MIT; the exact upstream text is [licenses/Pyannote-Segmentation-MIT.txt](licenses/Pyannote-Segmentation-MIT.txt), copyright © 2023 CNRS.
-
-Ambient extracts the converted `model.onnx` and places it under the expected
-directory name. The model page gates downloads behind user acceptance of its
-access conditions; its published LICENSE grants the MIT rights to use, copy,
-modify, merge, publish, distribute, sublicense, and sell the licensed model.
-The measured converted file digest is in
-[licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt). The conversion
-revision is not recorded in this repository.
-
-### WeSpeaker ResNet34-LM
-
-- Bundle path: `models/wespeaker_en_voxceleb_resnet34_LM.onnx`
-- Source artifact: [sherpa-onnx's speaker-recognition release asset](https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx).
-- Upstream model: [Wespeaker/wespeaker-voxceleb-resnet34-LM](https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM)
-- License: [CC BY 4.0](licenses/CC-BY-4.0.txt)
-- Attribution: WeSpeaker project, “wespeaker-voxceleb-resnet34-LM”, [upstream model card](https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM), licensed under CC BY 4.0.
-
-The upstream model card says the model was trained on VoxCeleb2 Dev. That is
-dataset provenance, not a replacement for the model's CC BY 4.0 grant; any
-separate dataset rights remain with the dataset's licensors. The downloaded
-file is the sherpa-onnx ONNX asset and its measured digest is in
-[licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt).
-
-### Silero VAD v4.0
-
-- Bundle path: `models/silero_vad.onnx`
-- Source artifact: [silero_vad.onnx at tag v4.0](https://github.com/snakers4/silero-vad/blob/v4.0/files/silero_vad.onnx)
-- License: MIT; the exact upstream text is [licenses/Silero-VAD-MIT.txt](licenses/Silero-VAD-MIT.txt), copyright © 2020-present Silero Team.
-
-Ambient downloads this ONNX artifact without modifying it. Its measured digest
-is in [licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt).
-
-## Test audio in model archives
-
-The Parakeet model archive contains `test_wavs/` files. They are not needed at
-runtime and their individual source and redistribution terms are not recorded
-here. The release bundle omits them. Measurement fixtures fetched by
-`scripts/fetch-fixtures` are cached outside the repository and are not shipped.
+Measurement fixtures fetched by `scripts/fetch-fixtures` are cached outside
+the repository and are not shipped.
 
 ## Documentation assets
 
@@ -164,16 +108,12 @@ reproduced verbatim in [licenses/FluidAudio-ThirdParty.txt](licenses/FluidAudio-
 
 ## Rust dependencies
 
-The native dependency inventory covers 94 external packages in Cargo's resolved
+The native dependency inventory covers 56 external packages in Cargo's resolved
 `aarch64-apple-darwin` graph, including build dependencies; it is not an exact
 list of code linked into the executable. Package names, versions, SPDX expressions,
 crates.io source links, and verbatim cached upstream notices are in
-[licenses/Rust-Dependencies.txt](licenses/Rust-Dependencies.txt). The
-inventory includes the `ort` and `ort-sys` package notices used to integrate
-ONNX Runtime. The cached `ort-sys` distribution identifies the native archive
-as ONNX Runtime 1.28.0; its upstream notices are included in
-[licenses/ONNXRuntime-LICENSE.txt](licenses/ONNXRuntime-LICENSE.txt) and
-[licenses/ONNXRuntime-ThirdPartyNotices.txt](licenses/ONNXRuntime-ThirdPartyNotices.txt).
+[licenses/Rust-Dependencies.txt](licenses/Rust-Dependencies.txt).
+`scripts/check-rust-notices` checks it against `Cargo.lock`.
 
 The exact objc2 repository notice is included in the Rust inventory, including
 its Apple SDK/Xcode licensing caveat. The recorded realfft source commit has
@@ -185,6 +125,3 @@ before claiming complete native coverage.
 
 - [CC BY 4.0 legal code](https://creativecommons.org/licenses/by/4.0/legalcode)
 - [NVIDIA Parakeet model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
-- [pyannote segmentation 3.0 model](https://huggingface.co/pyannote/segmentation-3.0)
-- [WeSpeaker model card](https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM)
-- [Silero VAD v4.0](https://github.com/snakers4/silero-vad/tree/v4.0)

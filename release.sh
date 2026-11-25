@@ -144,6 +144,9 @@ if [ "$PUBLISH_ONLY" = 1 ]; then
 fi
 
 # --- build ------------------------------------------------------------------
+# A release ships licenses/Rust-Dependencies.txt; it must match Cargo.lock.
+# Not a per-PR check: every routine dependency bump would fail it.
+./scripts/check-rust-notices
 # The models are what make this a usable download rather than a binary that
 # errors on first launch.
 AMBIENT_BUNDLE_MODELS=1 AMBIENT_SIGN_ID="$SIGN_ID" ./make-app.sh

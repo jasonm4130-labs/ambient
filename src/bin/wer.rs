@@ -12,8 +12,7 @@
 //! `--via <rate>` transcodes each fixture wav to `<rate>` Hz with ffmpeg first,
 //! then reads it back through `resample::read_wav_any` and `resample::to_16k`
 //! — the same downsample path Core Audio's 48 kHz (or an interface's 44.1 kHz)
-//! delivery takes before `features::read_wav`'s hard 16 kHz requirement could
-//! ever see it. Transcodes are cached under
+//! delivery takes. Transcodes are cached under
 //! `~/.cache/ambient/fixtures/via/<rate>/<speaker>.wav` and reused only when
 //! `ffprobe` confirms the cached file is still at `<rate>`.
 //!
@@ -27,7 +26,6 @@
 
 use ambient::{
     engine::{Stage, TranscriptFile},
-    features,
     pipeline::Engine,
     resample,
     resample::TARGET_HZ,
@@ -194,8 +192,9 @@ fn main() -> Result<()> {
             resample::to_16k(&raw, actual_rate)
                 .with_context(|| format!("resampling {} to 16 kHz", transcoded.display()))?
         } else {
-            features::read_wav(wav)
-                .with_context(|| format!("reading {} — run scripts/fetch-fixtures", wav))?
+            let (raw, rate) = resample::read_wav_any(&entry.wav)
+                .with_context(|| format!("reading {} — run scripts/fetch-fixtures", wav))?;
+            resample::to_16k(&raw, rate)?
         };
         let reference = std::fs::read_to_string(&entry.reference).with_context(|| {
             format!(

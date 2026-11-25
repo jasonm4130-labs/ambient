@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Reject builder home paths while allowing the exact generic upstream CI path
-# embedded in the precompiled ONNX Runtime archive. Rust remapping cannot alter
-# that archive. An optional prefix supports focused tests without changing HOME.
+# Reject builder home paths. An optional prefix supports focused tests without
+# changing HOME.
 #
 # --helper is for ambient-engine alone. FluidAudio links a precompiled Rust
 # archive (NemoTextProcessing.xcframework) whose panic locations name its own
@@ -22,7 +21,6 @@ if [ -z "$home_prefix" ] || [ "$home_prefix" = / ]; then
 fi
 if ! LC_ALL=C strings -a "$binary" | LC_ALL=C awk -v home="$home_prefix/" -v helper="$helper" '
   {
-    gsub("/Users/runner/work/ort-artifacts/ort-artifacts/", "/upstream/ort-artifacts/")
     if (helper) gsub("/Users/runner/.cargo/registry/src/", "/upstream/cargo-registry/")
     if (index($0, home)) leak = 1
   }

@@ -37,7 +37,7 @@ impl Track {
     }
 }
 
-/// One VAD segment as the recogniser transcribed it. Immutable once written.
+/// One segment as the recogniser transcribed it. Immutable once written.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawRecord {
     pub track: Track,
@@ -53,7 +53,7 @@ pub struct RawRecord {
     pub confidence: f32,
 }
 
-/// What an edit points at. VAD segments never overlap within a track, so the
+/// What an edit points at. Segments never overlap within a track, so the
 /// pair is a stable identity without needing ids in `raw.jsonl`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
@@ -205,19 +205,6 @@ pub fn models_root() -> Result<PathBuf> {
             .collect::<Vec<_>>()
             .join(", ")
     )
-}
-
-/// A model path as this crate's loaders want it. `Vad::load` and
-/// `Diarizer::load` take `&str` — a narrowing this crate chose, since the `ort`
-/// session builder underneath accepts any `AsRef<Path>` — so until those
-/// signatures widen, a path whose bytes are not UTF-8 cannot reach them. The
-/// error names the path because the reader cannot otherwise tell which one it
-/// is: `models_root` derives candidates from `AMBIENT_MODELS` and from the
-/// executable's own parents, so the offending bytes need not be anything the
-/// user typed.
-pub fn utf8_path(p: &Path) -> Result<&str> {
-    p.to_str()
-        .ok_or_else(|| anyhow!("path is not UTF-8: {}", p.display()))
 }
 
 fn slugify(s: &str) -> String {
@@ -561,52 +548,6 @@ pub fn record_into(
 ) -> Result<PathBuf> {
     let path = capture_into(dir, name, bundles, seconds, capture, meter.clone())?;
     transcribe_session(&path, meter)
-}
-
-/// The four files `./fetch-models.sh` fetches, joined onto a models root.
-/// Holding them in one place is what lets `doctor` check the same paths the
-/// verbs use.
-pub struct ModelFiles {
-    pub asr_dir: PathBuf,
-    pub vad: PathBuf,
-    pub segmentation: PathBuf,
-    pub embedding: PathBuf,
-}
-
-/// Plain joins onto `root`; no filesystem access, no existence checks.
-pub fn model_files(root: &Path) -> ModelFiles {
-    ModelFiles {
-        asr_dir: root.join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"),
-        vad: root.join("silero_vad.onnx"),
-        segmentation: root.join("pyannote-segmentation-3.0").join("model.onnx"),
-        embedding: root.join("wespeaker_en_voxceleb_resnet34_LM.onnx"),
-    }
-}
-
-/// Where the ASR and VAD models are, checked to exist. Called by both halves:
-/// the capture half so a missing model fails before the tap starts, and the
-/// transcription half because it is the one that loads them — and by the `wer`
-/// harness, so what it scores is the model a recording would have used.
-pub fn model_paths(model_dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
-    let files = model_files(&models_root()?);
-    let asr_dir = match model_dir {
-        Some(d) => PathBuf::from(d),
-        None => files.asr_dir,
-    };
-    let vad_path = files.vad;
-    if !asr_dir.is_dir() {
-        bail!(
-            "no ASR model at {} — run ./fetch-models.sh",
-            asr_dir.display()
-        );
-    }
-    if !vad_path.is_file() {
-        bail!(
-            "no VAD model at {} — run ./fetch-models.sh",
-            vad_path.display()
-        );
-    }
-    Ok((asr_dir, vad_path))
 }
 
 /// Capture into a claimed directory until stopped, and leave the audio on
@@ -2057,21 +1998,6 @@ pub fn markdown(dir: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn model_files_holds_the_four_paths() {
-        let files = model_files(Path::new("/tmp/ambient-not-real"));
-        assert!(files
-            .asr_dir
-            .ends_with("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"));
-        assert!(files.vad.ends_with("silero_vad.onnx"));
-        assert!(files
-            .segmentation
-            .ends_with("pyannote-segmentation-3.0/model.onnx"));
-        assert!(files
-            .embedding
-            .ends_with("wespeaker_en_voxceleb_resnet34_LM.onnx"));
-    }
-
     /// A session directory as `record()` leaves one: a transcript, some raw
     /// lines, and the two track wavs. Built in a temp dir — the sweep deletes
     /// files, so it must never be pointed at the real sessions folder.
@@ -2726,22 +2652,6 @@ mod tests {
         );
         drop(taken);
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn utf8_path_names_the_offending_path() {
-        assert_eq!(utf8_path(Path::new("/a/b")).unwrap(), "/a/b");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let bad = Path::new(std::ffi::OsStr::from_bytes(b"/a/\xff"));
-            let err = utf8_path(bad).expect_err("a non-UTF-8 path has no &str form");
-            assert!(
-                err.to_string().contains("not UTF-8"),
-                "the error must say what is wrong with the path, got: {err}"
-            );
-        }
     }
 
     /// `sessions` answers with what is on disk, which includes the sessions

@@ -1,9 +1,8 @@
 //! Sample-rate conversion to the 16 kHz everything downstream expects.
 //!
 //! The capture layer hands back audio at whatever rate the device runs — 48 kHz
-//! on this Mac, 44.1 kHz on some interfaces — while `features::read_wav` refuses
-//! anything but 16 kHz. This is the piece that was missing between them, so the
-//! tap and the transcriber had never actually met.
+//! on this Mac, 44.1 kHz on some interfaces — and the model helper is handed
+//! 16 kHz mono. This is the piece between them.
 //!
 //! Resampling belongs to the *replayable* half of the pipeline. Recording
 //! happens once and cannot be redone; transcription can be rerun as often as we

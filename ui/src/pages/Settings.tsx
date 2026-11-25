@@ -100,12 +100,16 @@ export function Settings() {
             onAdd={(name) => {
               void bridge
                 .call<string[]>("roster.add", { name })
-                .then((roster) => setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })));
+                .then((roster) =>
+                  setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })),
+                );
             }}
             onRemove={(name) => {
               void bridge
                 .call<string[]>("roster.remove", { name })
-                .then((roster) => setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })));
+                .then((roster) =>
+                  setConfig((prev) => (prev === undefined ? prev : { ...prev, roster })),
+                );
             }}
           />
           <NamingSection
@@ -125,12 +129,8 @@ export function Settings() {
           />
           <DiarizeSection
             diarize={config.diarize}
-            threshold={config.threshold}
             onDiarizeChange={(value) => {
               void setKey("diarize", value ? "true" : "false");
-            }}
-            onThresholdChange={(value) => {
-              void setKey("threshold", String(value));
             }}
           />
           <StorageSection

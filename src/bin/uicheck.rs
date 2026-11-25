@@ -56,7 +56,6 @@ fn config_payload() -> Value {
         "apps": ["us.zoom.xos"],
         "input_device": "MacBook Pro Microphone",
         "diarize": true,
-        "threshold": 0.5,
         "sessions_dir": null,
         "devices": ["MacBook Pro Microphone", "Iriun Webcam Audio"],
         "default_dir": "/Users/x/Documents/Ambient",
