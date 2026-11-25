@@ -70,12 +70,16 @@ fn main() -> Result<()> {
     let mut json = None;
     let mut threshold = DEFAULT_THRESHOLD;
     let mut collar = 0.25f64;
+    let mut rttm_out: Option<PathBuf> = None;
+    let mut hyp_dir: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |flag: &str| args.next().with_context(|| format!("{flag} needs a value"));
         match a.as_str() {
             "--manifest" => manifest = Some(PathBuf::from(value("--manifest")?)),
             "--json" => json = Some(PathBuf::from(value("--json")?)),
+            "--rttm-out" => rttm_out = Some(PathBuf::from(value("--rttm-out")?)),
+            "--hyp-dir" => hyp_dir = Some(PathBuf::from(value("--hyp-dir")?)),
             "--threshold" => {
                 let raw = value("--threshold")?;
                 threshold = raw
@@ -90,7 +94,7 @@ fn main() -> Result<()> {
             }
             _ => bail!(
                 "usage: der [--manifest <path>] [--threshold <f32>] \
-                 [--collar <f64>] [--json <path>]"
+                 [--collar <f64>] [--json <path>] [--rttm-out <dir>] [--hyp-dir <dir>]"
             ),
         }
     }
@@ -156,9 +160,37 @@ fn main() -> Result<()> {
         // The clock starts after the models load: a load is a fixed cost per
         // session, and what this column is about is seconds of audio.
         let t0 = Instant::now();
-        let spans = diar.diarize(&samples, threshold)?;
+        // `--hyp-dir` scores another diariser's RTTM with this same scorer, so
+        // candidates and the shipped path are compared on one ruler.
+        let hypothesis = match &hyp_dir {
+            Some(dir) => {
+                let path = dir.join(format!("{}.rttm", entry.meeting));
+                let text = std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?;
+                parse_rttm(&text).with_context(|| format!("parsing {}", path.display()))?
+            }
+            None => {
+                let spans = diar.diarize(&samples, threshold)?;
+                spans_to_turns(&spans, TARGET_HZ as usize)
+            }
+        };
         let run = t0.elapsed().as_secs_f64();
-        let hypothesis = spans_to_turns(&spans, TARGET_HZ as usize);
+        if let Some(dir) = &rttm_out {
+            std::fs::create_dir_all(dir)?;
+            let lines: String = hypothesis
+                .iter()
+                .map(|t| {
+                    format!(
+                        "SPEAKER {} 1 {:.3} {:.3} <NA> <NA> {} <NA> <NA>\n",
+                        entry.meeting,
+                        t.start_s,
+                        t.end_s - t.start_s,
+                        t.speaker
+                    )
+                })
+                .collect();
+            std::fs::write(dir.join(format!("{}.rttm", entry.meeting)), lines)?;
+        }
 
         let scored = score(&reference, &hypothesis, collar)
             .with_context(|| format!("scoring {}", entry.meeting))?;
