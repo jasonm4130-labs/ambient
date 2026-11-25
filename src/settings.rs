@@ -380,11 +380,7 @@ impl Bridge {
         let target = match session {
             None => root,
             Some(id) => {
-                if id.is_empty() || id == "." || id == ".." || id.contains('/') {
-                    return Err(ApiError::InvalidParams(format!(
-                        "{id:?} is not a session id"
-                    )));
-                }
+                session::check_session_id(id).map_err(ApiError::InvalidParams)?;
                 root.join(id)
             }
         };

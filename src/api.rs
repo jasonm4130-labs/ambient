@@ -72,8 +72,7 @@ impl Paths {
         if let Some(dir) = Config::load_from(&self.config_file).sessions_dir {
             return dir;
         }
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join("Documents").join("Ambient")
+        session::default_home()
     }
 }
 
@@ -289,7 +288,6 @@ fn input_device_names() -> Vec<String> {
 /// `session::home` reach the user's real files.
 fn config_get(paths: &Paths) -> Value {
     let cfg = Config::load_from(&paths.config_file);
-    let home = std::env::var("HOME").unwrap_or_default();
     let latest = session::latest(&paths.root());
     json!({
         "apps": cfg.apps,
@@ -297,7 +295,7 @@ fn config_get(paths: &Paths) -> Value {
         "diarize": cfg.diarize,
         "sessions_dir": cfg.sessions_dir,
         "devices": input_device_names(),
-        "default_dir": format!("{home}/Documents/Ambient"),
+        "default_dir": session::default_home(),
         "ask_before_recording": cfg.ask_before_recording,
         "audio_retention": match cfg.audio_retention_days {
             None => "forever".to_string(),
@@ -431,9 +429,7 @@ fn speakers_unnamed(paths: &Paths, params: &Value) -> Result<Value, ApiError> {
 /// An id must be one path segment, checked before anything is opened, and a
 /// link in the folder is not a session.
 fn session_dir(root: &Path, id: &str) -> Result<PathBuf, String> {
-    if id.is_empty() || id == "." || id == ".." || id.contains('/') {
-        return Err(format!("{id:?} is not a session id"));
-    }
+    session::check_session_id(id)?;
     let dir = root.join(id);
     if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir()) {
         return Err(format!("no session {id}"));

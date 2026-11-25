@@ -95,15 +95,16 @@ unsafe fn get_bundle_id(object: AudioObjectID) -> Option<String> {
     Some(s.to_string())
 }
 
-pub fn bundles_rendering_output() -> Vec<String> {
-    let processes: Vec<AudioObjectID> = match unsafe {
-        get_array(
+/// The Core Audio process objects rendering output now; empty if the list
+/// cannot be read.
+fn rendering_output() -> Vec<AudioObjectID> {
+    let Ok(processes) = (unsafe {
+        get_array::<AudioObjectID>(
             kAudioObjectSystemObject as AudioObjectID,
             kAudioHardwarePropertyProcessObjectList,
         )
-    } {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
+    }) else {
+        return Vec::new();
     };
     processes
         .into_iter()
@@ -112,6 +113,12 @@ pub fn bundles_rendering_output() -> Vec<String> {
                 unsafe { get_scalar(p, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) };
             on != 0
         })
+        .collect()
+}
+
+pub fn bundles_rendering_output() -> Vec<String> {
+    rendering_output()
+        .into_iter()
         .filter_map(|p| unsafe { get_bundle_id(p) })
         .collect()
 }
@@ -119,23 +126,7 @@ pub fn bundles_rendering_output() -> Vec<String> {
 /// A denied tap looks like an idle one: Core Audio reports success and fills
 /// the buffers with zeros. This count tells the two apart.
 pub fn processes_rendering_output() -> usize {
-    let processes: Vec<AudioObjectID> = match unsafe {
-        get_array(
-            kAudioObjectSystemObject as AudioObjectID,
-            kAudioHardwarePropertyProcessObjectList,
-        )
-    } {
-        Ok(p) => p,
-        Err(_) => return 0,
-    };
-    processes
-        .into_iter()
-        .filter(|&p| {
-            let on: u32 =
-                unsafe { get_scalar(p, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) };
-            on != 0
-        })
-        .count()
+    rendering_output().len()
 }
 
 pub fn run() -> Result<()> {
