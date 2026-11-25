@@ -48,7 +48,10 @@ loads: unknown keys are ignored, and the next save drops them. `ambient config
 assistant on` and its siblings are now refused as unknown settings. An
 agent registered against `ambient mcp` that called `watch_meeting`, `speak`,
 `wait_for_transcript` or `stop_watching`, or fetched the `watch` prompt, gets
-an error. The design behind the removed features is kept in
+an error, and `ambient mcp --no-play` or `--save-audio` now exits with a usage
+error rather than serving, so a client registered with either flag must drop
+it. Sessions recorded with the assistant keep their `assistant.jsonl`; nothing
+reads it any more, and deleting the session removes it. The design behind the removed features is kept in
 [ADR 0018](0018-live-assistant-runs-in-the-users-agent.md) and the git history,
 so reviving it means writing a new record.
 

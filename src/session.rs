@@ -663,8 +663,8 @@ pub fn capture_into(
     let started = crate::clock::now();
     let audio = dir.join("audio");
     std::fs::create_dir_all(&audio).with_context(|| format!("creating {}", audio.display()))?;
-    // `session.json` is written only once capture ends; the live assistant
-    // needs the start now, to place its own speech on the transcript's clock.
+    // `session.json` is written only once capture ends; this records the start
+    // now, so a session that crashes mid-capture still knows when it began.
     std::fs::write(dir.join(STARTED_FILE), crate::clock::rfc3339(&started))
         .with_context(|| format!("writing {}", dir.join(STARTED_FILE).display()))?;
 
