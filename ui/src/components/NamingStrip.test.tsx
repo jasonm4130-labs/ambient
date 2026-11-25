@@ -21,8 +21,7 @@ describe("NamingStrip", () => {
     fake.answer("speakers.name", { renamed: 3 });
     renderStrip(fake);
 
-    // An `<input list=…>` (the naming combobox) has an implicit ARIA role of
-    // `combobox`, not `textbox`, because of the `list` attribute.
+    // The `list` attribute makes an `<input>`'s implicit ARIA role `combobox`.
     const input = await screen.findByRole("combobox", { name: "Name for call-1" });
     await userEvent.type(input, "Marcus");
     await userEvent.click(screen.getByRole("button", { name: "Name" }));

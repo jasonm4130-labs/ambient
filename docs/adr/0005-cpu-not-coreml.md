@@ -6,7 +6,7 @@ sidebar:
 
 # 5. Run ASR on CPU only, with no CoreML execution provider
 
-**Status:** accepted · **Date:** 2026-08-29 · **Supersedes:** —
+**Status:** superseded by [ADR-0020](0020-models-run-in-a-core-ml-helper.md) · **Date:** 2026-08-29 · **Supersedes:** —
 
 ## Context and Problem Statement
 

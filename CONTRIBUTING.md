@@ -14,7 +14,7 @@ are easy to miss, including signed-bundle launch and separate audio clocks.
 
 Use macOS with Xcode Command Line Tools and `rustup`. The repository pins Rust
 in `rust-toolchain.toml`. UI changes use Node 24 and pnpm 11; docs use Node 24
-and npm. Follow [Getting started](docs/using/getting-started.md) for models and
+and pnpm. Follow [Getting started](docs/using/getting-started.md) for models and
 local signing. Tests that use synthetic fixtures do not require recording audio.
 
 ```sh
@@ -45,11 +45,11 @@ that generated file so users can build without Node.
 For docs changes, from the repository root:
 
 ```sh
-npm ci --prefix docs-site
-npm run typecheck --prefix docs-site
-npm run build --prefix docs-site
-npm run lint:docs --prefix docs-site
-npm ci --prefix .github/scripts
+pnpm --dir docs-site install --frozen-lockfile
+pnpm --dir docs-site run typecheck
+pnpm --dir docs-site run build
+pnpm --dir docs-site run lint:docs
+pnpm --dir .github/scripts install --frozen-lockfile
 node .github/scripts/check-links.mjs
 node .github/scripts/check-mermaid.mjs
 node .github/scripts/check-routes.mjs
@@ -58,18 +58,6 @@ node .github/scripts/check-routes.mjs
 Edit canonical Markdown in `docs/`. Keep its relative links working on both
 GitHub and the built site. [Building these docs](docs/developing/docs.md) explains
 the renderer and link checks.
-
-For voice helper changes, in `voice/`:
-
-```sh
-uv run ruff format --check .
-uv run ruff check .
-uv run pytest
-```
-
-The tests use a fake engine; a change to an engine itself needs a run with the
-real model, as [the live assistant design note](docs/developing/live-assistant.md)
-describes.
 
 For packaging changes, run `node --test scripts/packaging.test.mjs`, then build
 a local bundle and verify its signature, notices and model layout. Do not run

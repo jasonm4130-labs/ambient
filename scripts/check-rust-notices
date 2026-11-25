@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# licenses/Rust-Dependencies.txt must list exactly the external packages in
+# Cargo's resolved aarch64-apple-darwin graph, with Cargo's licence expression
+# for each, give each a notice section (or name it among those without one),
+# keep no section for a package that has left, and agree with the count in
+# THIRD_PARTY_NOTICES.md. release.sh runs this; scripts/update-rust-notices
+# repairs what it can.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+cargo metadata --format-version 1 --filter-platform aarch64-apple-darwin --locked |
+  python3 -I -c '
+import json, re, sys
+meta = json.load(sys.stdin)
+ids = {n["id"] for n in meta["resolve"]["nodes"]}
+graph = {p["name"] + " " + p["version"]: p["license"] for p in meta["packages"] if p["id"] in ids and p["source"]}
+text = open("licenses/Rust-Dependencies.txt").read()
+heads = ["## Resolved packages", "## Verbatim upstream notices", "## Packages without an exact cached or retrieved notice file"]
+missing = [h for h in heads if h not in text]
+if missing:
+    sys.exit(f"licenses/Rust-Dependencies.txt has lost its {missing} heading(s)")
+listing = text.split(heads[1])[0]
+notices, tail = text.split(heads[1])[1].split(heads[2])
+listed = dict(re.findall(r"^- (\S+ \S+) — (.+?) — https://", listing, re.M))
+covered = set()
+for head in re.findall(r"^### (.*)$", notices, re.M):
+    covered |= {x.strip() for x in head.split(",")}
+for fam in re.findall(r"^Resolved packages: (.*)\.$", notices, re.M):
+    covered |= {x.strip() for x in fam.split(",")}
+covered.discard("objc2 family and dispatch2")
+covered |= set(re.findall(r"^- (\S+ \S+) — ", tail, re.M))
+problems = []
+if set(listed) != set(graph):
+    problems.append(f"listed but not in the graph: {sorted(set(listed) - set(graph))}; in the graph but not listed: {sorted(set(graph) - set(listed))}")
+wrong = sorted(p for p in set(listed) & set(graph) if listed[p] != graph[p])
+if wrong:
+    problems.append(f"licence differs from Cargo metadata: {wrong}")
+if set(graph) - covered:
+    problems.append(f"no notice section: {sorted(set(graph) - covered)}")
+if covered - set(graph):
+    problems.append(f"a section for a package not in the graph: {sorted(covered - set(graph))}")
+n = len(graph)
+if not re.search(rf"covers the {n} external packages", text):
+    problems.append(f"the inventory header count should be {n}")
+if not re.search(rf"covers {n} external packages", open("THIRD_PARTY_NOTICES.md").read()):
+    problems.append(f"THIRD_PARTY_NOTICES.md should say it covers {n} external packages")
+if problems:
+    sys.exit("licenses/Rust-Dependencies.txt is out of date with Cargo.lock — run scripts/update-rust-notices:\n  " + "\n  ".join(problems))
+'

@@ -25,8 +25,7 @@ export function StorageSection({
   onChangeDir,
   onRetentionChange,
 }: StorageSectionProps) {
-  // A value set from the CLI need not be one of the offered periods; showing
-  // the select blank would misreport the setting behind it.
+  // A CLI-set value may not be an offered period; a blank select would misreport it.
   const known = RETENTION_OPTIONS.some((o) => o.value === audioRetention);
 
   return (
@@ -54,8 +53,8 @@ export function StorageSection({
         <div className="flex flex-col">
           <span className="text-sm">Keep the audio</span>
           <span className="text-muted-foreground text-xs">
-            Transcripts are always kept. The recording itself is the sensitive part,
-            and the least useful once it is written down.
+            Transcripts are always kept. The recording itself is the sensitive part, and the least
+            useful once it is written down.
           </span>
         </div>
         <Select

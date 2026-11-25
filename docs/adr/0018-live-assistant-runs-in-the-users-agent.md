@@ -6,7 +6,7 @@ sidebar:
 
 # 18. The live assistant's judgement runs in the user's own agent; Ambient serves the tools
 
-**Status:** accepted · **Date:** 2026-10-09 · **Supersedes:** —
+**Status:** superseded by [ADR-0019](0019-narrow-to-core-recorder.md) · **Date:** 2026-10-09 · **Supersedes:** —
 
 ## Context and Problem Statement
 

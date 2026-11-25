@@ -93,7 +93,6 @@ describe("ExportMenu", () => {
 
     await screen.findByText("Export failed: no such session");
 
-    // The menu is still usable: reopening it shows its entries again.
     await openMenu();
     await screen.findByTestId("export-copy-assistant");
   });

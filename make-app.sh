@@ -5,9 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# The settings page is TypeScript built by Vite into assets/settings.html,
-# which src/settings.rs embeds. The built file is committed so `cargo build`
-# never needs node; this only refreshes it when the toolchain is present.
+# assets/settings.html is committed so `cargo build` never needs node; it is
+# refreshed only when the toolchain is present.
 if [ -d ui/node_modules ]; then
   (cd ui && pnpm run --silent build >/dev/null) && echo "rebuilt assets/settings.html"
 fi
@@ -23,15 +22,17 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ambient"
 
-# Do not silently ship an owner path from a dependency or a stale Cargo cache.
+ENGINE=$(./scripts/build-engine)
+cp "$ENGINE" "$APP/Contents/MacOS/ambient-engine"
+
 ./scripts/check-build-paths "$APP/Contents/MacOS/ambient"
+./scripts/check-build-paths --helper "$APP/Contents/MacOS/ambient-engine"
 
 # Licenses are part of the signed payload, even for a model-free dev bundle.
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"
 ditto licenses "$APP/Contents/Resources/licenses"
 
-# Use the committed icon for reproducible builds. Regeneration is an explicit
-# authoring step, not a side effect of having Inkscape installed.
+# The committed icon keeps builds reproducible; regeneration is opt-in.
 if [ "${AMBIENT_REBUILD_ICON:-0}" = "1" ]; then
   command -v inkscape >/dev/null 2>&1 || {
     echo "AMBIENT_REBUILD_ICON=1 requires Inkscape" >&2
@@ -70,67 +71,45 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-# Substituted after the fact because the heredoc is quoted — nothing expands
-# inside it, which is what keeps the plist readable. CFBundleVersion did not
-# exist before and Gatekeeper expects it; both now come from Cargo.toml rather
-# than a literal that drifts the moment someone bumps one and not the other.
+# Substituted afterwards because the quoted heredoc expands nothing. Gatekeeper
+# expects CFBundleVersion; both versions come from Cargo.toml.
 VERSION=$(cargo metadata --format-version 1 --no-deps \
           | sed -n 's/.*"name":"ambient","version":"\([^"]*\)".*/\1/p')
 [ -n "$VERSION" ] || VERSION=0.0.0
 sed -i '' "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
 
-# Models, when asked for. A release bundle carries them so a downloaded .app
-# works with no repo anywhere on the machine; a dev build does not, because the
-# copy is ~672 MB. Must happen BEFORE signing — the signature covers Resources.
-#
-# The `-d models` guard is load-bearing for CI: the rust job runs this script on
-# a runner that has no models/ (it is gitignored and never fetched), so an
-# unconditional copy would fail the build.
+# Release bundles carry the models (~0.8 GB) so a downloaded .app needs no
+# repo; dev builds do not. Must happen BEFORE signing: the signature covers
+# Resources.
 if [ "${AMBIENT_BUNDLE_MODELS:-0}" = "1" ]; then
   [ -d models ] || {
     echo "AMBIENT_BUNDLE_MODELS=1 but no models/ directory — run ./fetch-models.sh" >&2
     exit 1
   }
-  # Explicitly enumerated, NOT a copy of models/. Only ~671 MB of that directory
-  # is ever loaded, but it accumulates: a second ASR model, and any archive
-  # fetched by hand rather than by fetch-models.sh (which does delete its own,
-  # at fetch-models.sh:23 and :37). It measured 3.3 GB on the machine this was
-  # written on. Copying the lot would multiply the download for no benefit.
-  #
-  # The ASR model must match session.rs's default, which is the int8 build.
-  ASR_MODEL="${AMBIENT_ASR_MODEL:-sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8}"
+  # The checksum list is the bundle's inventory: exactly the files the models
+  # load, nothing else that has accumulated in models/.
   echo "copying models into the bundle ..."
-  mkdir -p "$APP/Contents/Resources/models"
-  case "$ASR_MODEL" in
-    sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8) ;;
-    *) echo "release notices cover only the default ASR model; update them before bundling $ASR_MODEL" >&2; exit 1 ;;
-  esac
-  # Copy only runtime files. Upstream test audio is neither needed by the app
-  # nor covered by our model attribution, and must not enter a release ZIP.
-  for m in "$ASR_MODEL/encoder.int8.onnx" "$ASR_MODEL/decoder.int8.onnx" \
-           "$ASR_MODEL/joiner.int8.onnx" "$ASR_MODEL/tokens.txt" \
-           pyannote-segmentation-3.0/model.onnx \
-           wespeaker_en_voxceleb_resnet34_LM.onnx silero_vad.onnx; do
-    [ -e "models/$m" ] || { echo "  missing models/$m — run ./fetch-models.sh" >&2; exit 1; }
-    mkdir -p "$APP/Contents/Resources/models/$(dirname "$m")"
+  while read -r _ m; do
+    [ -e "$m" ] || { echo "  missing $m — run ./fetch-models.sh" >&2; exit 1; }
+    mkdir -p "$APP/Contents/Resources/$(dirname "$m")"
     # ditto rather than cp -R: correct metadata for a bundle about to be signed.
-    ditto "models/$m" "$APP/Contents/Resources/models/$m"
-  done
+    ditto "$m" "$APP/Contents/Resources/$m"
+  done < <(grep -v '^#' licenses/model-sha256.txt)
   echo "  bundled $(du -sh "$APP/Contents/Resources/models" | cut -f1)"
-  (cd "$APP/Contents/Resources" && shasum -a 256 -c licenses/model-sha256.txt)
+  # An `if`, not `&&`: set -e does not stop a script at a failed `a && b`.
+  if ! (cd "$APP/Contents/Resources" && shasum -a 256 -c --quiet licenses/model-sha256.txt); then
+    echo "  a bundled model does not match licenses/model-sha256.txt" >&2
+    exit 1
+  fi
+  echo "  model checksums: verified"
 fi
 
-# Signing identity is load-bearing, not cosmetic. An ad-hoc signature's
-# designated requirement IS the binary's cdhash, so every rebuild produces a new
-# identity and orphans the TCC grant — leaving the row in place still reading
-# "allowed" while the system-audio tap silently returns zeros. A stable identity
-# keeps the requirement as identifier + certificate leaf, which survives rebuilds.
+# A stable identity is load-bearing: an ad-hoc signature's designated
+# requirement is the cdhash, so each rebuild orphans the TCC grant and the
+# system-audio tap silently returns zeros while the row still reads "allowed".
 #
-# Preference order: an explicit AMBIENT_SIGN_ID, then a Developer ID Application
-# certificate, then the local self-signed 'Ambient Dev'. Developer ID is what a
-# downloaded build needs — it is the only one Gatekeeper accepts after
-# notarization — but a contributor without an Apple account still gets a working
-# local build from the fallback.
+# Order: AMBIENT_SIGN_ID, then Developer ID Application (the only one
+# Gatekeeper accepts after notarization), then the self-signed 'Ambient Dev'.
 SIGN_ID="${AMBIENT_SIGN_ID:-}"
 if [ -z "$SIGN_ID" ]; then
   SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
@@ -147,17 +126,20 @@ SIGN_ARGS=(--force --identifier uk.ambient.cli
 # and only works for a real Apple-issued certificate, so it is off for the
 # self-signed fallback.
 case "$SIGN_ID" in
-  "Developer ID Application"*) SIGN_ARGS+=(--timestamp) ;;
-  *)                           SIGN_ARGS+=(--timestamp=none) ;;
+  "Developer ID Application"*) TIMESTAMP=--timestamp ;;
+  *)                           TIMESTAMP=--timestamp=none ;;
 esac
+SIGN_ARGS+=("$TIMESTAMP")
 
-# stderr is NOT discarded. It used to be, which meant a signing failure aborted
-# the build with a nonzero status and no explanation whatsoever — the single
-# worst thing to be missing while debugging a notarization rejection.
+# Sign the helper first, with its own identifier and no entitlements: it never
+# touches a microphone.
+ENGINE_ARGS=(--force --identifier uk.ambient.engine --options runtime "$TIMESTAMP")
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+  codesign "${ENGINE_ARGS[@]}" --sign "$SIGN_ID" "$APP/Contents/MacOS/ambient-engine"
   codesign "${SIGN_ARGS[@]}" --sign "$SIGN_ID" "$APP"
   echo "built $APP (signed: $SIGN_ID)"
 else
+  codesign "${ENGINE_ARGS[@]}" --sign - "$APP/Contents/MacOS/ambient-engine"
   codesign "${SIGN_ARGS[@]}" --sign - "$APP"
   echo "built $APP (AD-HOC signed)"
   echo
@@ -166,6 +148,5 @@ else
   echo "  once to fix that permanently."
 fi
 
-# An existing app instance ignores new --args. Quit it first rather than
-# suggesting a second recorder instance with `open -n`.
+# A running instance ignores new --args; quit it rather than suggest `open -n`.
 echo "run: open -a \"$APP\"   (quit an existing instance before passing --args)"

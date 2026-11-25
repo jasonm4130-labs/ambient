@@ -1,14 +1,5 @@
-//! Sample-rate conversion to the 16 kHz everything downstream expects.
-//!
-//! The capture layer hands back audio at whatever rate the device runs — 48 kHz
-//! on this Mac, 44.1 kHz on some interfaces — while `features::read_wav` refuses
-//! anything but 16 kHz. This is the piece that was missing between them, so the
-//! tap and the transcriber had never actually met.
-//!
-//! Resampling belongs to the *replayable* half of the pipeline. Recording
-//! happens once and cannot be redone; transcription can be rerun as often as we
-//! like. So capture writes native-rate bytes and this runs afterwards, which
-//! means a bug here costs a rerun rather than the conversation.
+//! Resampling to the 16 kHz mono the model helper expects. It runs after
+//! capture, on native-rate files, so a bug here costs a rerun, not a recording.
 
 use anyhow::{anyhow, Result};
 use rubato::audioadapter_buffers::owned::InterleavedOwned;
@@ -16,15 +7,12 @@ use rubato::{Fft, FixedSync, Resampler};
 
 pub const TARGET_HZ: u32 = 16_000;
 
-/// Chunk size handed to the FFT resampler. Only affects internal blocking.
+/// FFT block size; affects internal blocking only, not the output.
 const CHUNK: usize = 1024;
 
-/// Resample mono `samples` from `from_hz` to 16 kHz.
-///
-/// Uses rubato's synchronous FFT resampler, which is band-limited — a plain
-/// "take every third sample" decimation would alias everything above 8 kHz back
-/// down into the speech band, and Parakeet would transcribe the result fluently
-/// and wrongly rather than fail.
+/// Band-limited, because plain decimation would alias everything above 8 kHz
+/// into the speech band and the recogniser would transcribe it fluently and
+/// wrongly.
 pub fn to_16k(samples: &[f32], from_hz: u32) -> Result<Vec<f32>> {
     if from_hz == TARGET_HZ {
         return Ok(samples.to_vec());
@@ -62,9 +50,7 @@ pub fn to_16k(samples: &[f32], from_hz: u32) -> Result<Vec<f32>> {
     Ok(out)
 }
 
-/// Read a WAV at whatever rate and channel count it happens to be, downmixed to
-/// mono. The companion to [`to_16k`]: together they let anything on disk reach
-/// the recogniser, which accepts 16 kHz mono and nothing else.
+/// Any WAV, downmixed to mono; returns the samples and their rate.
 pub fn read_wav_any(path: &std::path::Path) -> Result<(Vec<f32>, u32)> {
     let mut r =
         hound::WavReader::open(path).map_err(|e| anyhow!("opening {}: {e}", path.display()))?;
@@ -86,9 +72,8 @@ pub fn read_wav_any(path: &std::path::Path) -> Result<(Vec<f32>, u32)> {
     Ok((mono, spec.sample_rate))
 }
 
-/// Reduce an interleaved frame to one mono channel by averaging the channels in
-/// `range`. Averaging rather than summing keeps the result inside [-1, 1] when
-/// two correlated channels carry the same voice.
+/// Averages the channels in `range`; summing would push correlated channels
+/// outside [-1, 1].
 pub fn downmix(interleaved: &[f32], channels: usize, range: std::ops::Range<usize>) -> Vec<f32> {
     if channels == 0 || range.is_empty() {
         return Vec::new();
@@ -111,9 +96,7 @@ pub fn downmix(interleaved: &[f32], channels: usize, range: std::ops::Range<usiz
 mod tests {
     use super::*;
 
-    /// A 1 kHz tone must survive 48 -> 16 kHz: same duration, same amplitude,
-    /// still periodic. This catches a resampler that silently outputs silence
-    /// or garbage, which is the failure mode that would otherwise reach the ASR
+    /// A resampler that outputs silence or garbage would reach the recogniser
     /// as fluent nonsense.
     #[test]
     fn tone_survives_downsampling() {
@@ -139,7 +122,6 @@ mod tests {
 
     #[test]
     fn downmix_averages_the_named_channels() {
-        // two frames, three channels
         let inter = vec![1.0, 0.0, 9.0, 0.5, 0.5, 9.0];
         assert_eq!(downmix(&inter, 3, 0..2), vec![0.5, 0.5]);
         assert_eq!(downmix(&inter, 3, 2..3), vec![9.0, 9.0]);

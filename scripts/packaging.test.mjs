@@ -109,6 +109,9 @@ function makeBundle(dir, executable = "synthetic executable") {
   const binary = join(app, "Contents", "MacOS", "ambient");
   writeFileSync(binary, executable);
   chmodSync(binary, 0o755);
+  const engine = join(app, "Contents", "MacOS", "ambient-engine");
+  writeFileSync(engine, "synthetic helper");
+  chmodSync(engine, 0o755);
   cpSync(join(repoRoot, "LICENSE"), join(resources, "LICENSE"));
   cpSync(join(repoRoot, "THIRD_PARTY_NOTICES.md"), join(resources, "THIRD_PARTY_NOTICES.md"));
   cpSync(join(repoRoot, "licenses"), join(resources, "licenses"), { recursive: true });
@@ -170,17 +173,30 @@ test("check-bundle --models rejects a payload with no models", () => {
 });
 
 
-test("build path check allows only the exact precompiled ONNX runner prefix", () => {
-  const dir = tempDir("upstream-paths");
+test("build path check refuses the build user's home path", () => {
+  const dir = tempDir("home-paths");
   try {
     const binary = join(dir, "binary");
-    const upstream = "/Users/runner/work/ort-artifacts/ort-artifacts/onnxruntime/core.cc";
-    writeFileSync(binary, `${upstream}\0`);
+    writeFileSync(binary, "/opt/elsewhere/core.cc\0");
     assert.equal(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
-    for (const leaked of ["/Users/runner/_work/ambient/src/main.rs", "/Users/runner/.cargo/registry/crate.rs"]) {
-      writeFileSync(binary, `${upstream} ${leaked}\0`);
+    for (const leaked of ["/Users/runner/_work/ambient/src/main.rs", "/Users/runner/work/ort-artifacts/ort-artifacts/core.cc"]) {
+      writeFileSync(binary, `${leaked}\0`);
       assert.notEqual(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("only the helper may carry upstream's precompiled cargo registry paths", () => {
+  const dir = tempDir("helper-paths");
+  try {
+    const binary = join(dir, "binary");
+    writeFileSync(binary, "/Users/runner/.cargo/registry/src/index.crates.io-1/regex-1.0/src/lib.rs\0");
+    assert.equal(runScript("check-build-paths", ["--helper", binary, "/Users/runner"]).status, 0);
+    assert.notEqual(runScript("check-build-paths", [binary, "/Users/runner"]).status, 0);
+    writeFileSync(binary, "/Users/runner/_work/ambient/ambient/engine/main.swift\0");
+    assert.notEqual(runScript("check-build-paths", ["--helper", binary, "/Users/runner"]).status, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

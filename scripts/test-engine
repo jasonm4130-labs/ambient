@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Run the helper's unit tests. With only the Command Line Tools installed,
+# swift-testing lives outside the default search paths, so point at it.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+extra=()
+clt=/Library/Developer/CommandLineTools/Library/Developer
+if [ "$(xcode-select -p)" = /Library/Developer/CommandLineTools ] && [ -d "$clt/Frameworks/Testing.framework" ]; then
+  extra=(-Xswiftc "-F$clt/Frameworks" -Xlinker "-F$clt/Frameworks"
+         -Xlinker -rpath -Xlinker "$clt/Frameworks" -Xlinker -rpath -Xlinker "$clt/usr/lib")
+fi
+exec swift test --package-path engine ${extra[@]+"${extra[@]}"}

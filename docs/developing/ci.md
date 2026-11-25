@@ -20,7 +20,6 @@ microphone permissions or record live audio.
 | `changes` | Always | Selects Rust, UI and docs work from changed paths |
 | `hygiene` | Always | Existing hook tests, spelling and dependency licenses/advisories |
 | `ui` | UI, generated bundle or workflow changes | TypeScript, lint, all UI tests, build and generated-bundle drift |
-| `voice` | Voice helper (`voice/`) or workflow changes | The helper's ruff format and lint checks and its pytest suite, with a fake engine |
 | `rust` | Rust, UI, packaging, license or workflow changes | Formatting, Clippy, all-target tests, SF Symbols and signed bundle assembly |
 | `docs` | Docs, contributor/security guidance, licenses or workflow changes | Typecheck, static build, Markdown links, built routes, Mermaid and ADR navigation |
 | `gate` | Always | Fails if a required job failed or was cancelled |
@@ -70,9 +69,6 @@ third-party license notices.
 
 `assets/settings.html` is committed and embedded by Rust. The UI job rebuilds it
 and fails if Git detects a difference, preventing a stale UI from shipping.
-
-The Rust cache includes `~/Library/Caches/ort.pyke.io`. ONNX Runtime downloads
-live outside Cargo's target directory, so a target-only cache misses them.
 
 The docs checkout includes Git history so page timestamps reflect their source
 commits. The source-link and built-route checks test different things: a Markdown

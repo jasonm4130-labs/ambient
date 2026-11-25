@@ -11,9 +11,7 @@ interface WebKitWindow {
   };
 }
 
-// The module keeps a monotonic id counter in its own scope, so `id: 1` is
-// only true for the first call ever made against a fresh copy of it — reset
-// modules and re-import per test rather than relying on file-wide ordering.
+// The id counter is module-scoped: re-import per test so `id: 1` holds.
 function freshBridge(): Promise<typeof import("./bridge")> {
   vi.resetModules();
   return import("./bridge");
@@ -74,8 +72,6 @@ function Harness({ call }: { call: (...args: unknown[]) => Promise<unknown> }) {
 
 let capture: ((...args: unknown[]) => Promise<unknown>) | undefined;
 
-// A dropped (stale) reply resolves to `undefined`; a caller applies it only
-// when it is not, exactly as a real screen would.
 function applyIfLive(seen: { current: unknown }, from: string, value: unknown): void {
   if (value !== undefined) seen.current = { from, value };
 }
@@ -110,7 +106,6 @@ describe("useLatest", () => {
     a.then((value) => applyIfLive(seen, "A", value));
     b.then((value) => applyIfLive(seen, "B", value));
 
-    // B's reply arrives first, then A's late reply must not overwrite it.
     await act(async () => {
       resolveB("b-result");
       await b;

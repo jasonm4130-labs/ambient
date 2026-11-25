@@ -57,7 +57,7 @@ that is not built. Nothing in `Cargo.toml` is an HTTP client or an Anthropic
 SDK, and `src/` mentions neither Anthropic nor Confluence. So the claim is two
 sources in and one session directory out: everything past `transcript.md` is
 something you do yourself. The dash means something else in the diagram below,
-where it marks a built path that can be missing at runtime.
+where it marks a checkpoint written along the way.
 
 ## What happens to the audio
 
@@ -67,40 +67,41 @@ flowchart TB
         direction TB
         mic["mic IOProc"] --> pad["realign on wall clock<br/>pad the short track"]
         tap["tap IOProc"] --> pad
-        pad --> rs["resample 48k to 16k<br/>band-limited FFT"]
+        pad --> rs["after Stop: resample<br/>48k to 16k"]
         rs --> wav["audio/room.wav<br/>audio/call.wav"]
-        wav --> vad["Silero VAD<br/>find turns, trim edges"]
-        vad --> asr["Parakeet TDT<br/>30 s windows"]
-        asr --> raw[("raw.jsonl")]
     end
 
-    subgraph dia["ambient diarize, a separate run"]
+    subgraph job["transcription job, one per session"]
         direction TB
-        seg["pyannote segmentation"] --> emb["WeSpeaker embeddings"]
-        emb --> clus["agglomerative clustering"]
+        asr["ambient-engine transcribe<br/>Parakeet Ultra, per track"] --> dia["ambient-engine diarize<br/>Nemotron 3, per track"]
+        dia --> asm["drop phantom speakers<br/>words to speakers, lines"]
     end
 
-    subgraph out["ambient export"]
+    subgraph out["export"]
         direction TB
         fold["fold edits over raw"] --> dedup["drop room lines the tap<br/>already carries"]
         dedup --> md["transcript.md"]
     end
 
-    raw --> dia
-    wav -.-> seg
-    clus --> edits[("edits.jsonl")]
+    wav --> asr
+    asr -.-> ckpt[("stages/<br/>checkpoints")]
+    dia -.-> ckpt
+    asm --> raw[("raw.jsonl")]
+    asm --> edits[("edits.jsonl")]
     raw --> fold
     edits --> fold
 ```
 
-Diarization is a separate run rather than a stage of `record`, and the dotted
-arrow is why it can fail: it needs the wav files, which the
-[retention sweep](../using/what-is-kept.md) may have deleted. It refuses rather
-than reverting labels it then cannot replace.
+Nothing is transcribed while recording. After Stop, the app's queue runs one
+job at a time, and each model stage runs in its own `ambient-engine` process.
+The dotted arrows are the checkpoints: a job that dies resumes at the first
+stage it had not finished. Diarize is skipped when the `diarize` setting is off.
+See [transcription](asr.md) and [speaker separation](diarization.md).
 
-`record` writes `raw.jsonl` and never touches it again. Everything after that —
-diarization's labels, a name you type, a revert — is a line appended to
-`edits.jsonl`, and `transcript.md` is recomputed from the two. See
+The job writes `raw.jsonl` and the speaker labels in `edits.jsonl` once, and
+`transcript.md` last. After that, a name you type or a revert is a line
+appended to `edits.jsonl`, and `transcript.md` is recomputed from the two. A
+re-run copies all three to `previous/` before it writes new ones. See
 [sessions and the edit layer](sessions.md).
 
 ## Where the hard parts are
@@ -109,9 +110,8 @@ diarization's labels, a name you type, a revert — is a line appended to
 | --- | --- |
 | [Capture](capture.md) | A terminal-launched binary gets a working tap that returns silence, with no error and no prompt |
 | [Two tracks, two clocks](two-tracks.md) | A process tap gates its aggregate's clock, so a mic sharing it is starved by a quiet room |
-| [Voice activity detection](vad-and-chunking.md) | VAD is not there to skip silence — it is there to decide where to cut |
-| [Speech recognition](asr.md) | The CoreML provider reports available, places nothing on the ANE, and makes int8 worse |
-| [Diarization](diarization.md) | A near-miss filterbank does not error, it mislabels people |
+| [Transcription](asr.md) | A job can die at any stage, so each stage's output is a checkpoint keyed to the audio and the model |
+| [Speaker separation](diarization.md) | The speaker model sometimes splits one voice in two, so a speaker with under 5 s of speech is dropped |
 | [Sessions](sessions.md) | The microphone transcribes the far side badly, so a naive merge reads as broken |
 | [Settings and the UI](settings-and-ui.md) | Compiling proves the page says the right thing, not that it does anything |
 | [What is kept](../using/what-is-kept.md) | A transcript file exists even when nothing was recognised, so it cannot gate a deletion |
