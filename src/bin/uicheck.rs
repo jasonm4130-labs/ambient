@@ -322,7 +322,6 @@ fn main() {
                           mic: t("mic-select").value,
                           chips: chip(t("app-chips") ?? document.createElement("div")),
                           diarize: t("diarize-switch").getAttribute("aria-checked"),
-                          sensitivity: t("sensitivity-slider").value,
                           folder: t("sessions-dir").textContent,
                           retention: t("retention-select").value,
                           people: chip(t("roster-chips")),

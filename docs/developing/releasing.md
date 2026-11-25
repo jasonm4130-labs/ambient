@@ -53,7 +53,9 @@ do not refresh it merely to make the check pass.
 1. Choose the version and update `Cargo.toml` and `Cargo.lock`.
 2. Review model provenance, licenses and hashes. `scripts/check-rust-notices`
    says whether `licenses/Rust-Dependencies.txt` still matches `Cargo.lock`;
-   `release.sh` refuses to build until it does.
+   `release.sh` refuses to build until it does. `scripts/update-rust-notices`
+   brings it up to date from the cargo cache and names any package whose
+   notice must be found by hand.
 3. Run local checks and the required hosted CI jobs.
 4. Commit and review the exact release source.
 5. Obtain authorization to notarize and publish that version.
