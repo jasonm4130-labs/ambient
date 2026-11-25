@@ -42,6 +42,7 @@ jobs:
           filters: |
             code:
               - 'src/**'
+              - 'engine/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -132,7 +133,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || 'blacksmith-6vcpu-macos-latest' }}
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      # Outside the runner's home, where the release build must sit; see
+      # scripts/build-engine. Fixed so the cache below can name it.
+      AMBIENT_ENGINE_BUILD: /tmp/ambient-engine-build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -160,6 +165,15 @@ jobs:
       # so the app would claim to be recording while merely armed. Silent, and
       # only catchable by asking the OS.
       - run: cargo run --bin symbolcheck
+      # The model helper (docs/adr/0020). Its unit tests need no model and no
+      # Neural Engine; the models themselves are exercised by hand, see the ADR.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            engine/.build
+            /tmp/ambient-engine-build
+          key: engine-${{ runner.os }}-${{ hashFiles('engine/Package.resolved') }}
+      - run: scripts/test-engine
       # Assembles the .app. Capture, transcription and diarization cannot be
       # exercised on any hosted runner — no audio device, no way to grant TCC —
       # so CI verifies that the bundle builds, not that it records.

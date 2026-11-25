@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Build ambient-engine, the Swift model helper (docs/adr/0020), and print the
+# path of the binary. Paths are remapped the way scripts/build-release remaps
+# Rust's, so check-build-paths passes on the helper too.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+repo_root=$(pwd -P)
+maps=()
+for pair in "$HOME=/home/build" "$repo_root=/ambient"; do
+  maps+=(-Xswiftc -file-prefix-map -Xswiftc "$pair" -Xcc "-ffile-prefix-map=$pair")
+done
+# SwiftPM writes the absolute path of a resource bundle into the binary, and
+# no prefix map reaches it (FluidAudio's unused TTS resources), so the build
+# directory itself must sit outside the home folder. Not $TMPDIR: a GitHub
+# runner's is under its home.
+scratch="${AMBIENT_ENGINE_BUILD:-/tmp/ambient-engine-build-$(id -u)}"
+case "$scratch" in "$HOME"/*) echo "AMBIENT_ENGINE_BUILD must be outside $HOME" >&2; exit 1 ;; esac
+swift build -c release --package-path engine --scratch-path "$scratch" \
+  --product ambient-engine "${maps[@]}" "$@" >&2
+echo "$(swift build -c release --package-path engine --scratch-path "$scratch" --show-bin-path)/ambient-engine"
