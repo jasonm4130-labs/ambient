@@ -165,19 +165,9 @@ fn phase_payload(phase: &Phase, queue: Option<&str>) -> Value {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Activation policy
-// ---------------------------------------------------------------------------
-
-/// A visible window that is not `except` and is a window a person could be
-/// looking at.
-///
-/// The filter is not cosmetic. `NSApp.windows()` carries AppKit's own
-/// furniture — the status item's bar window, the carrier window behind an open
-/// `NSMenu` — and every one of those is `isVisible`. Counting them would mean
-/// the app never demoted at all. `canBecomeKeyWindow` is what separates them:
-/// they are borderless and refuse key, while a panel, an alert and the
-/// standard About window all accept it.
+/// `NSApp.windows()` includes AppKit furniture (the status item's bar window,
+/// the carrier behind an open `NSMenu`), all visible; counting them would block
+/// demotion. They refuse key, so `canBecomeKeyWindow` filters them out.
 fn other_visible_window(
     app: &NSApplication,
     except: Option<&NSWindow>,
@@ -188,30 +178,16 @@ fn other_visible_window(
     })
 }
 
-/// Give the Dock icon and the menu bar back, if nothing on screen still needs
-/// them.
-///
-/// Two guards, both of which have to hold:
-///
-/// * **Another window is up.** Demoting takes the main menu away from whatever
-///   is still open — the About panel, an alert — which reads as a broken app.
-/// * **A modal session is running.** `NSOpenPanel::runModal`, which the
-///   settings page's Choose… buttons use, spins its own run loop; changing the
-///   activation policy underneath it is the standard way this pattern
-///   deadlocks.
-///
-/// Nothing here is called on a background event. The only caller is
-/// `windowWillClose:`, and minimising does not close.
+/// Back to Accessory, unless another window is up (demoting strips its main
+/// menu) or a modal session is running (changing the activation policy under
+/// `runModal` deadlocks).
 pub fn demote_to_accessory(mtm: MainThreadMarker, closing: Option<&NSWindow>) {
     let app = NSApplication::sharedApplication(mtm);
     if app.activationPolicy() != NSApplicationActivationPolicy::Regular {
         return;
     }
-    // A refusal is worth a log line when it explains a close that did not
-    // demote, and pure noise on the retry tick, which asks the same question
-    // twice a second for the whole time the window is open. `closing` is
-    // exactly that distinction: `windowWillClose:` passes the window, the
-    // retry passes None.
+    // Log a refusal only from `windowWillClose:`; the retry tick passes `None`
+    // twice a second.
     let announce = closing.is_some();
     if app.modalWindow().is_some() {
         if announce {
@@ -229,7 +205,6 @@ pub fn demote_to_accessory(mtm: MainThreadMarker, closing: Option<&NSWindow>) {
     eprintln!("window: closed — back to Accessory");
 }
 
-/// What the activation policy is, for a log line a bundle launch can show.
 pub fn policy_name(mtm: MainThreadMarker) -> &'static str {
     match NSApplication::sharedApplication(mtm).activationPolicy() {
         NSApplicationActivationPolicy::Regular => "Regular",
@@ -237,10 +212,6 @@ pub fn policy_name(mtm: MainThreadMarker) -> &'static str {
         _ => "Prohibited",
     }
 }
-
-// ---------------------------------------------------------------------------
-// The application main menu
-// ---------------------------------------------------------------------------
 
 fn menu_item(
     mtm: MainThreadMarker,
@@ -275,18 +246,8 @@ fn submenu(
     m
 }
 
-/// Install a real application main menu.
-///
-/// Every item is **nil-targeted**, so each one is dispatched down the
-/// responder chain: `openSettings:` reaches the app delegate, Copy Markdown
-/// and Reveal in Finder reach the main window's delegate, and the Edit menu's
-/// standard selectors reach whatever text is being edited — the transcript
-/// view, the combo boxes step 6 adds, and the settings `WKWebView`.
-///
-/// Inert under Accessory, mandatory under Regular: promoting the activation
-/// policy without this yields a menu bar holding only the Apple menu, which
-/// reads as a broken app. That is why it is installed from this step, before
-/// step 8 makes the flip.
+/// Items are nil-targeted so they dispatch down the responder chain. Required
+/// under Regular: without it the menu bar holds only the Apple menu.
 pub fn install_main_menu(mtm: MainThreadMarker) {
     let app = NSApplication::sharedApplication(mtm);
     let cmd_shift = NSEventModifierFlags::Command | NSEventModifierFlags::Shift;

@@ -1,0 +1,42 @@
+#!/bin/bash
+# A stand-in for ambient-engine that loads no model. It speaks the helper's
+# protocol and writes fixed words and turns. Files in the session directory
+# steer it: stub-fail-<stage> makes that stage report an error and exit 1,
+# stub-crash-<stage> makes it kill itself, and every call is appended to
+# stub-calls so a test can see which stages ran.
+set -u
+stage=$1
+shift
+while [ $# -gt 1 ]; do
+  case $1 in
+    --out) out=$2 ;;
+    --key) key=$2 ;;
+    --audio) audio=$2 ;;
+  esac
+  shift 2
+done
+dir=$(dirname "$(dirname "$out")")
+echo "$stage $(basename "$audio")" >> "$dir/stub-calls"
+echo "progress 0.000"
+if [ -f "$dir/stub-fail-$stage" ]; then
+  echo "error the stub was told to fail at $stage"
+  exit 1
+fi
+if [ -f "$dir/stub-crash-$stage" ]; then
+  kill -9 $$
+fi
+case $stage in
+  transcribe)
+    body='"model":"stub","durationSeconds":12,"words":[
+      {"text":"Hello","start":0.0,"end":0.4,"confidence":0.9},
+      {"text":"there.","start":0.5,"end":0.9,"confidence":0.9},
+      {"text":"Reply","start":6.0,"end":6.4,"confidence":0.8},
+      {"text":"here.","start":6.5,"end":7.0,"confidence":0.8}]' ;;
+  diarize)
+    body='"model":"stub","turns":[
+      {"speaker":0,"start":0.0,"end":5.5},
+      {"speaker":1,"start":5.5,"end":12.0}]' ;;
+esac
+printf '{"key":"%s",%s}\n' "$key" "$body" > "$out.tmp"
+mv "$out.tmp" "$out"
+echo "progress 1.000"

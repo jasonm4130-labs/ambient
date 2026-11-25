@@ -5,10 +5,6 @@ import { Settings } from "@/pages/Settings";
 import type { HealthCheck } from "@/pages/Welcome";
 import { useLatest } from "@/lib/latest";
 
-// Light/dark comes from `prefers-color-scheme` alone — no toggle. The
-// listener lives here, in the page, rather than being hoisted out to dodge
-// jsdom: `ui/src/test/setup.ts` stubs `matchMedia` so this still mounts under
-// vitest.
 function useDarkClass(): void {
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -32,10 +28,6 @@ interface NavigatePayload {
   page: Route;
 }
 
-// `App` re-requests `init`'s answer once, on mount, and otherwise only
-// switches route on a `navigate` event: it keeps no state the bridge did not
-// just hand it. Switching to Settings from the sidebar is a local route
-// change — there is no bridge round trip for a click the page originated.
 export function App() {
   useDarkClass();
   const bridge = useBridge();

@@ -9,6 +9,69 @@ sidebar:
 Everything below was measured on the home machine — M5 Max, 128 GB,
 macOS 26.6.2 — on 2026-08-29. Any table measured differently says so.
 
+## The Core ML helper (ADR 0020)
+
+Measured 2026-11-25 on the home machine with `ambient-engine` at FluidAudio
+`e2ea498`: Parakeet Ultra for words and Nemotron 3 Diarization `fast32` for
+voices. Every section after this one measures the ONNX pipeline the helper
+replaced and is kept as history. The ONNX stack was removed on 2026-11-25, and
+much of what those sections quote went with it: the `bench`, `asrbench`,
+`embtest` and `diartest` binaries, the `ambient transcribe` and `ambient vad`
+verbs, `der --threshold`, `wer --model`, `wer --pad`, `wer --chunk`,
+`record --model`, `AMBIENT_DEBUG_DIAR`, and the `src/asr.rs`, `src/vad.rs` and
+`src/diarize.rs` code they tuned. Sections that depend on one are marked. The
+harnesses that remain — `wer` (`--manifest`, `--json`, `--via`), `der`
+(`--manifest`, `--json`, `--collar`), `drainbench`, `memrun` through
+`scripts/memory`, and `scripts/fetch-fixtures` — now run the helper, so they
+measure it and will not reproduce the ONNX figures below.
+
+**Words.** `wer` on the default fixture: 2152 reference words, WER 0.0167
+(26 substitutions, 5 insertions, 5 deletions), 913.7 s of audio in 7.5 s
+including the model load, 122.6× realtime.
+
+**Voices, as DER.** `der` at the 0.25 s collar. Held-out sets: the 13 AMI test
+meetings other than the three in the default fixture, Mix-Headset against the
+`only_words` references, and the 64-file VoxConverse set. The ONNX row is the
+last main before the helper, on the same files.
+
+| Set | Audio | Pipeline | Ref spk | Hyp spk | Missed | False alarm | Confusion | DER |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| AMI fixture | 900 s | ONNX | 11 | 19 | 30.14 s | 14.97 s | 26.92 s | 0.1434 |
+| AMI fixture | 900 s | helper | 11 | 11 | 140.20 s | 4.51 s | 12.67 s | 0.3133 |
+| AMI holdout | 29230 s | ONNX | 51 | 88 | 2505.64 s | 437.44 s | 1098.28 s | 0.1871 |
+| AMI holdout | 29230 s | helper | 51 | 52 | 4990.55 s | 97.46 s | 66.94 s | 0.2387 |
+| VoxConverse | 28579 s | ONNX | 131 | 156 | 964.58 s | 312.02 s | 525.06 s | 0.0766 |
+| VoxConverse | 28579 s | helper | 131 | 147 | 258.77 s | 180.05 s | 44.42 s | 0.0206 |
+
+The helper confuses speakers a sixteenth as often on AMI and a twelfth as often
+on VoxConverse, and after the app's phantom filter (under 5 s of speech) it
+counts the speakers exactly in all 13 held-out AMI meetings; the one extra raw
+speaker, in ES2004b, is the filter's case. Its AMI DER is higher only through
+missed speech. Nemotron's turns are frames above 0.5 probability with nothing
+filled or padded, and AMI's word-level references count the gaps between words
+as speech.
+
+**Voices, as the transcript sees them.** Filling and padding the turns closes
+that gap in DER and makes the transcript worse, so the app keeps the raw turns.
+On the 13 held-out meetings, transcribed by the helper and each word given to
+a speaker the way `pipeline::assemble` does it (most overlap, else the nearest
+turn), scored on the 57465 words exactly one reference speaker overlaps, with
+hypothesis speakers mapped one-to-one to reference speakers:
+
+| Same-speaker gap filled | Padding | AMI holdout DER | VoxConverse DER | Words on the right speaker |
+| ---: | ---: | ---: | ---: | ---: |
+| none | none | 0.2387 | 0.0206 | **0.9924** |
+| 0.5 s | 0.1 s | 0.1283 | 0.0200 | 0.9918 |
+| 0.5 s | 0.2 s | 0.0932 | 0.0264 | 0.9876 |
+| 1.0 s | 0.1 s | 0.0841 | 0.0324 | 0.9893 |
+| 1.0 s | 0.2 s | 0.0806 | 0.0403 | 0.9824 |
+
+DER on AMI is therefore not the number to tune against for this app: a word
+between two turns already goes to the nearest one, and padding hands the edge
+words of a turn to whoever spoke next.
+
+**Memory.** See [Memory gate](#memory-gate).
+
 ## End to end: decode, realtime and peak RSS
 
 v3-int8, synthesised speech via `say`.
@@ -23,6 +86,21 @@ Peak memory on the 127 s file is flat at the 30 s-chunk level rather than the
 ~3.7 GB an unchunked 120 s run needed, which is the chunking working.
 
 ## Memory gate
+
+Measured 2026-11-25 with the models in `ambient-engine` (ADR 0020), two runs of
+`scripts/memory`: the same 1505.6 s of TS3003a on both tracks of a session,
+transcribed after Stop by one helper process per stage and track. Nothing is
+transcribed during capture any more, so there is no streaming replay.
+
+| Run | Transcribe peak (room, call) | Diarize peak (room, call) | App peak footprint |
+| ---: | ---: | ---: | ---: |
+| 1 | 301, 299 MiB | 409, 409 MiB | 4 MiB |
+| 2 | 300, 298 MiB | 409, 409 MiB | 3 MiB |
+
+The helper peaks are resident sets from `wait4`, and the stages run one after
+another, so 409 MiB is the most the models hold at once. `scripts/memory` now
+fails above 512 MiB, that peak plus a quarter. The figures below are the ONNX
+pipeline's, kept for the history.
 
 Measured 2026-10-08 on the M5 Max with `scripts/memory --budget 99999`, which
 runs `src/bin/memrun.rs` under `/usr/bin/time -l`: AMI TS3003a Mix-Headset, all
@@ -64,6 +142,8 @@ child on its own.
 
 ## Phase 0: provider comparison, CPU against CoreML
 
+*Historical: the `bench` binary was removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 Parakeet TDT 0.6b encoder, 60 s of audio, via
 `cargo run --release --bin bench -- <encoder.onnx> <coreml|cpu> [seconds]`.
 Input is a zeroed tensor of the correct shape — wall clock for a fixed-shape
@@ -98,6 +178,8 @@ chunked at 30 s it is ~60 chunks ≈ 30 s of compute at a flat ~2.2 GB.
 
 ## VAD chunking: speech, chunks, realtime and RSS
 
+*Historical: the VAD was removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 | File | Speech / total | Chunks | Realtime | Peak RSS |
 | --- | --- | ---: | ---: | ---: |
 | 127 s continuous | 127.5 / 127.5 s | 6 | 39x | 2255 MB |
@@ -108,6 +190,8 @@ inference per 32 ms frame. The same 127 s file yields 375 words with zero
 adjacent duplicates once cut on VAD boundaries rather than on local energy.
 
 ## Embedding front-end: confusion matrix
+
+*Historical: `embtest` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `bin/embtest.rs`, on two clips each of two `say` voices.
 
@@ -171,8 +255,8 @@ The three speakers are the first three directories of `test-clean` in sorted
 order, each one's first chapter — which audio this scores is a property of the
 corpus, not a list someone typed. A speaker's utterances are concatenated in id
 order with 700 ms of silence between them, so the fixture is one long track of
-the kind `ambient record` sees and the gaps give the VAD turn boundaries to
-find.
+the kind `ambient record` sees. The gaps were there to give the VAD turn
+boundaries to find, which was the ONNX pipeline's way of cutting a track.
 
 | Speaker | Utterances | Seconds |
 | --- | ---: | ---: |
@@ -225,6 +309,8 @@ too short to show what clustering does to a real meeting: see
 
 ## Word error rate on the fixture
 
+*Historical: `--model` and the decode path below were removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 `cargo run --release --bin wer -- [--manifest <path>] [--json <path>]
 [--model <dir>]`, on 2026-09-05. The harness runs what `ambient record` runs
 for a finished track — `session::model_paths`, `Vad::turns(&samples, 30)`,
@@ -266,6 +352,8 @@ truncation is scoring the audio the fixture contains rather than penalising
 the call for having ended.
 
 ## The two shipped models on the same fixture
+
+*Historical: `--model` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 Both Parakeet builds in `models/`, same fixture, same VAD turns, `--model` the
 only difference — on 2026-09-05, this machine. Three runs of each, interleaved
@@ -309,6 +397,8 @@ nobody has run this on to buy half a point of word error rate. Measure the port
 first; the table says which way it should then go.
 
 ## Diarization error rate on the fixture
+
+*Historical: `--threshold` and the diariser below were removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo run --release --bin der -- [--manifest <path>] [--threshold <f32>]
 [--collar <f64>] [--json <path>]`, on 2026-09-05. The harness runs what
@@ -355,6 +445,8 @@ them with `meeting` reading `total`.
 
 ## DER by threshold
 
+*Historical: `--threshold` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 `cargo run --release --bin der -- --threshold <t> --json <tmp>`, on 2026-09-05,
 on the same fixture and the same 0.25 s collar as the section above. Each
 meeting cell is that meeting's DER with the hypothesis speaker count beside it;
@@ -385,6 +477,8 @@ wrong for another at three meetings; that is the argument for a holdout, not
 for a new constant.
 
 ## DER by minimum embedding length
+
+*Historical: `src/diarize.rs` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `MIN_EMBED` in `src/diarize.rs` swapped between builds, `cargo run --release
 --bin der -- --json <tmp>` each time, on 2026-09-05, on the same fixture and
@@ -422,6 +516,8 @@ honest part of that row — 0.2058 to 0.1578, seven speakers to five, on a
 meeting with four real ones — and it is not enough on its own.
 
 ## DER on whole meetings
+
+*Historical: the clustering and `AMBIENT_DEBUG_DIAR` were removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo run --release --bin der -- --manifest
 ~/.cache/ambient/fixtures/der-full/manifest.json --json <tmp>`, on 2026-10-08,
@@ -526,6 +622,8 @@ gain is confusion, 114.00 s → 39.31 s on the meetings.
 
 ## Live transcription: cost per block
 
+*Historical: `asrbench` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06. `cargo build --release --bin
 asrbench`, then the built binary run directly (not under `cargo run`, so
 `/usr/bin/time -l`'s rusage is the binary's own, not cargo's) with no `--wav`,
@@ -617,6 +715,8 @@ workers running at once.
 
 ## Live transcription: drain overshoot beside ASR
 
+*Historical: measured beside the ONNX recogniser, on a 48 kHz file `asrbench` made; `drainbench` now runs the helper over a 16 kHz mono wav; these figures cannot be reproduced on current main.*
+
 M5 Max, 128 GB, macOS 26.6.2, on 2026-09-06, from the three `drainbench` runs
 already logged for this outcome: `cargo run --release --bin drainbench -- 60
 ~/.cache/ambient/bench/1089.48k.wav`, each exit 0. The worst run's max
@@ -695,6 +795,8 @@ needs its own number.
 
 ## Turn padding
 
+*Historical: `--pad` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 `cargo run --release --bin wer -- --pad <ms>`, on 2026-09-06. `--pad` overrides
 `Vad::pad_ms`, which reaches both places `vad::PAD_MS` is read: the margin
 `trim_quiet` re-applies after cutting a turn's quiet edges, and the hysteresis
@@ -726,6 +828,8 @@ margin; 100 ms is also the only pad value where insertions move at all, 3 at
 no shipped constant moved.
 
 ## Chunk length
+
+*Historical: `--chunk` was removed with the ONNX stack; these figures cannot be reproduced on current main.*
 
 `cargo build --release` then `/usr/bin/time -l ./target/release/wer --chunk
 <seconds> --json <path>`, on 2026-09-06. `--chunk` sets the `max_seconds`
@@ -773,6 +877,8 @@ shipped constant moved.
 
 ## Weight prepacking
 
+*Historical: `src/asr.rs` and its prepacking switch were removed with the ONNX stack; these figures cannot be reproduced on current main.*
+
 `cargo build --release` then `/usr/bin/time -l ./target/release/wer --json
 <path>` and the same with `--manifest
 ~/.cache/ambient/fixtures/calls/manifest.json`, on 2026-10-08, once on the
@@ -797,30 +903,9 @@ run on the same busy machine came in at 37.86 s (24.1×), so the decode cost
 of disabling prepacking is somewhere between ~7% (calls) and the clean row's
 spread, and still well above realtime either way.
 
-## Talk: release to text, and the worker's footprint
-
-M5 Max, 128 GB, on 2026-10-09: `ambient talk --wav q.wav --dry-run`, release
-build, the installed app's models, against a stand-in `fm-inbox.sh`. `q.wav`
-is a 2.8 s macOS `say` rendering of "What is the status of the ambient talk
-pull request?", transcribed word for word. "Release to text" runs from the
-audio being in hand to the transcript; the process is new for every turn, so
-it includes loading the VAD and Parakeet. Peak footprint and resident size are
-`/usr/bin/time -l`'s, for the whole worker process.
-
-| Run | Release to text | Of which model load | Peak footprint | Max RSS |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 640 ms | 513 ms | 906 MiB | 924 MiB |
-| 2 | 603 ms | 473 ms | 904 MiB | 921 MiB |
-| 3 | 714 ms | 586 ms | 904 MiB | 922 MiB |
-
-Loading the models is most of the wait; the VAD and decode of 2.3 s of speech
-take about 130 ms. A slip of the key (`say "uh"`, no speech found) exits in
-20 ms at 12 MiB of footprint, because the recogniser is never loaded. The
-voice helper is its own process and is not in these figures: with the v1-gravel
-Qwen3-TTS voice and `--no-play`, the reply's first audio came 84 ms after the
-request, once the helper had warmed while the reply was awaited.
-
 ## Idle memory after finalize: in process and in a child
+
+*Historical: the live transcriber and the finalize child were removed before the ONNX stack; these figures cannot be reproduced on current main.*
 
 M5 Max, 128 GB, macOS 26.6.2, on 2026-10-08, shipped model settings. A scratch
 replay harness streamed AMI `TS3003a` (1505.6 s, four speakers, resampled to

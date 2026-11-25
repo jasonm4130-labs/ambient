@@ -143,10 +143,12 @@ Reply, the session's full metadata after the change:
   "warnings": [],
   "tags": ["1:1"],
   "notes": "",
-  "pinned": true
+  "pinned": true,
+  "capture": "all"
 }
 ```
 
+`capture` is `all` or `mic`; `mic` means the recording has no `call` track.
 A session still recording has no `session.json` yet and answers `Failed`
 saying so; a session a transcriber currently holds the lock on answers
 `Failed` saying it is being transcribed.
@@ -223,7 +225,6 @@ Reply:
   "apps": [],
   "input_device": null,
   "diarize": true,
-  "threshold": 0.55,
   "sessions_dir": null,
   "devices": ["MacBook Pro Microphone"],
   "default_dir": "/Users/you/Documents/Ambient",
@@ -394,7 +395,7 @@ Reply:
 
 ## `doctor`
 
-The same ten checks `ambient doctor` prints, in `doctor::run`'s fixed order,
+The same nine checks `ambient doctor` prints, in `doctor::run`'s fixed order,
 for the window's Welcome page. Each check is `ok` or not; when it is not, the
 fix is the `detail` string.
 

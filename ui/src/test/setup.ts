@@ -2,20 +2,13 @@ import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 import "@testing-library/jest-dom/vitest";
 
-// `vite.config.ts`'s `test` block has no `globals: true`, so
-// `@testing-library/react`'s own auto-cleanup — which looks for a global
-// `afterEach` — never registers. Without this, a second `it()` in the same
-// file renders on top of the first's still-mounted DOM, and a query can
-// silently resolve to the earlier test's stale element instead of throwing on
-// an ambiguous match.
+// No `globals: true`, so Testing Library's auto-cleanup never registers;
+// without this, a test renders over the previous test's DOM.
 afterEach(() => {
   cleanup();
 });
 
-// jsdom has no `matchMedia`; the page's dark-class listener
-// (`prefers-color-scheme`) needs one to mount at all under the test
-// environment, so this stays a stub here rather than the listener moving out
-// of the page to dodge it.
+// jsdom has no `matchMedia`.
 if (typeof window.matchMedia !== "function") {
   window.matchMedia = (query: string): MediaQueryList =>
     ({

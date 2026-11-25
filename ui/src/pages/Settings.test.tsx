@@ -10,7 +10,6 @@ const baseConfig: SettingsConfig = {
   apps: [],
   input_device: null,
   diarize: true,
-  threshold: 0.5,
   sessions_dir: null,
   devices: ["MacBook Pro Microphone"],
   default_dir: "/Users/x/Documents/Ambient",
@@ -103,8 +102,6 @@ describe("Settings", () => {
     renderSettings(fake);
 
     await screen.findByRole("heading", { name: "Settings" });
-    // The app chip's remove button only renders once the config with an app
-    // in it has been rendered.
     await screen.findByRole("button", { name: "Stop capturing us.zoom.xos" });
 
     for (const button of screen.getAllByRole("button")) {

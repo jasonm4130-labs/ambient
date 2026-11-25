@@ -1,22 +1,9 @@
-//! `ambient mcp` — the sessions on this machine, read over MCP, and the live
-//! assistant's tools: watch the meeting being recorded, wait for what is
-//! said, and speak (see [`crate::assist`]).
+//! `ambient mcp`: a read-only MCP server over the sessions on this machine.
 //!
-//! A synchronous JSON-RPC 2.0 loop over newline-delimited stdio: one message
-//! per line in, one per line out, nothing else on stdout ever. No async
-//! runtime and no MCP SDK, because the protocol that matters here is a few
-//! methods wide and an SDK would be more code than the server. A
-//! `wait_for_transcript` call holds the loop until it answers, which is
-//! what a client calling one tool at a time expects.
-//!
-//! The loop never dies on input. Every way a line can be wrong — down to
-//! bytes that are not UTF-8 — becomes an error *response*, so a client that
-//! sends one bad line keeps its session. [`serve`] takes its reader, writer
-//! and sessions folder as arguments so the tests drive exactly what `main`
-//! drives, with buffers in place of pipes.
+//! JSON-RPC 2.0 over newline-delimited stdio; nothing else may reach stdout.
+//! Every bad line gets an error response, so one bad line never ends a session.
 
 use crate::api::{self, ApiError, Paths};
-use crate::assist::{self, Watch};
 use crate::config;
 use crate::roster;
 #[cfg(test)]
@@ -28,11 +15,8 @@ use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 
-/// The revision this server implements, and the only one it claims. A client
-/// offering any other gets this back rather than its own version, which is
-/// what the lifecycle spec asks of a server that does not speak what it was
-/// offered. Claiming a revision means implementing all of it, and one is what
-/// this loop has been written and tested against.
+/// The only revision claimed. A client offering another gets this one back,
+/// as the MCP lifecycle spec asks.
 const PROTOCOL: &str = "2025-11-25";
 
 const PARSE_ERROR: i64 = -32700;
@@ -40,32 +24,17 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
-/// Read requests from `reader` until EOF, writing one response line each to
-/// `writer`. Returns `Ok(())` at EOF; only a broken pipe or unreadable stdin
-/// is an error, since everything else is answered on the wire.
-pub fn serve<R: BufRead, W: Write>(reader: R, writer: W, root: &Path) -> Result<()> {
-    serve_with(reader, writer, root, assist::real_voice(Vec::new()))
-}
-
-/// [`serve`], with the assistant's voice built by `voice`: `ambient mcp
-/// --no-play` passes the helper its flags, and tests pass a recorder.
-pub fn serve_with<R: BufRead, W: Write>(
-    mut reader: R,
-    mut writer: W,
-    root: &Path,
-    voice: assist::MakeSpeaker,
-) -> Result<()> {
+/// Answer requests until EOF. Only an I/O failure is an error; everything
+/// else is answered on the wire.
+pub fn serve<R: BufRead, W: Write>(mut reader: R, mut writer: W, root: &Path) -> Result<()> {
     let mut server = Server {
         root: root.to_path_buf(),
-        watch: Watch::new(paths(root), voice),
     };
     let mut buffer = Vec::new();
     loop {
         buffer.clear();
-        // Bytes rather than `lines()`, which turns a line that is not UTF-8
-        // into an `Err` and so takes the whole stream down with it. Lossy
-        // decoding leaves such a line as a parse error the client is told
-        // about, and the requests after it are still answered.
+        // Not `lines()`: a non-UTF-8 line would end the stream. Lossy decoding
+        // turns it into a parse error instead.
         if reader.read_until(b'\n', &mut buffer)? == 0 {
             return Ok(());
         }
@@ -75,8 +44,7 @@ pub fn serve_with<R: BufRead, W: Write>(
         }
         if let Some(response) = server.handle(&line) {
             writeln!(writer, "{response}")?;
-            // Flushed per message: the client is blocked on this line, and a
-            // buffered answer to a request nobody follows up is a hang.
+            // The client blocks on this line; a buffered answer is a hang.
             writer.flush()?;
         }
     }
@@ -90,16 +58,12 @@ fn paths(root: &Path) -> Paths {
     }
 }
 
-/// What one `ambient mcp` process holds: the sessions folder, and the
-/// meeting the assistant is watching, if any.
 struct Server {
     root: std::path::PathBuf,
-    watch: Watch,
 }
 
 impl Server {
-    /// One request line to its response, or `None` for a notification — which has
-    /// no `id` and which the spec forbids answering, even to complain.
+    /// `None` for a notification, which the spec forbids answering.
     fn handle(&mut self, line: &str) -> Option<Value> {
         let request: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -121,8 +85,6 @@ impl Server {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
             "tools/call" => self.call(params),
-            "prompts/list" => Ok(json!({ "prompts": [watch_prompt_entry()] })),
-            "prompts/get" => get_prompt(params),
             other => {
                 let message = format!("no such method {other:?}");
                 return Some(failure(id, METHOD_NOT_FOUND, &message));
@@ -134,9 +96,6 @@ impl Server {
         })
     }
 
-    /// `tools/call`. Arguments are validated before anything on disk is touched,
-    /// then routed through [`api::call`] — the one dispatcher `ambient mcp` and
-    /// the window both call — or, for the assistant's tools, to [`Watch`].
     fn call(&mut self, params: Option<&Value>) -> Result<Value, Refusal> {
         let params = params
             .and_then(Value::as_object)
@@ -145,19 +104,14 @@ impl Server {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid_params("tools/call needs a string `name`"))?;
-        // Absent `arguments` reads as `{}` — the tools that take none are
-        // called without it by real clients — but a non-object is a client bug.
+        // Real clients omit `arguments` for tools that take none.
         if params.get("arguments").is_some_and(|a| !a.is_object()) {
             return Err(invalid_params("`arguments` must be an object"));
         }
         let empty = json!({});
         let arguments = params.get("arguments").unwrap_or(&empty);
         if !MCP_TOOLS.contains(&name) {
-            return match self.watch.call(name, arguments) {
-                Some(Ok(v)) => Ok(content(&v, false)),
-                Some(Err(m)) => Ok(content(&Value::String(m), true)),
-                None => Err(invalid_params(format!("no such tool {name:?}"))),
-            };
+            return Err(invalid_params(format!("no such tool {name:?}")));
         }
         match api::call(name, arguments, &paths(&self.root)) {
             Ok(v) => Ok(content(&v, false)),
@@ -167,45 +121,8 @@ impl Server {
     }
 }
 
-/// The one prompt: what to tell an agent to make it the live assistant.
-/// Claude Code offers it as `/mcp__ambient__watch`.
-fn watch_prompt_entry() -> Value {
-    json!({
-        "name": "watch",
-        "title": "Watch this meeting",
-        "description": "Join the meeting Ambient is recording as a voice assistant, and chime in when it helps.",
-        "arguments": [{
-            "name": "focus",
-            "description": "Anything to listen out for, or how to behave (optional).",
-            "required": false,
-        }],
-    })
-}
-
-fn get_prompt(params: Option<&Value>) -> Result<Value, Refusal> {
-    let params = params
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_params("prompts/get needs an object `params`"))?;
-    if params.get("name").and_then(Value::as_str) != Some("watch") {
-        return Err(invalid_params("no such prompt; the one prompt is `watch`"));
-    }
-    let focus = params
-        .get("arguments")
-        .and_then(|a| a.get("focus"))
-        .and_then(Value::as_str);
-    let name = config::Config::load_from(&config::path()).assistant.name;
-    Ok(json!({
-        "description": "Watch this meeting",
-        "messages": [{
-            "role": "user",
-            "content": {"type": "text", "text": assist::watch_prompt(&name, focus)},
-        }],
-    }))
-}
-
-/// A protocol-level refusal: the request was malformed, so no tool ran. A tool
-/// that ran and failed is a *result* with `isError` instead, which is what
-/// lets a model read the reason rather than see a transport error.
+/// A malformed request, so no tool ran. A tool that ran and failed is an
+/// `isError` result instead, so a model can read the reason.
 struct Refusal {
     code: i64,
     message: String,
@@ -225,21 +142,17 @@ fn failure(id: Value, code: i64, message: &str) -> Value {
 fn initialize() -> Value {
     json!({
         "protocolVersion": PROTOCOL,
-        "capabilities": {"tools": {"listChanged": false}, "prompts": {"listChanged": false}},
+        "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "ambient", "version": env!("CARGO_PKG_VERSION")},
     })
 }
 
-/// The three session tools `tools/list` reports, selected out of [`api::methods`] by
-/// name rather than rendered wholesale: `tools_list_describes_the_three_tools`
-/// asserts this list by whole-array equality, so a later unit's new
-/// `api::methods()` entry must not silently appear here. `cargo test mcp::`
-/// staying green after later units add methods is the proof this held.
+/// The [`api::methods`] exposed over MCP; nothing else is.
 const MCP_TOOLS: [&str; 3] = ["sessions", "transcript", "status"];
 
 fn tools() -> Value {
     let all = api::methods();
-    let mut ordered: Vec<Value> = MCP_TOOLS
+    let ordered: Vec<Value> = MCP_TOOLS
         .iter()
         .map(|name| {
             let m = all.iter().find(|m| m.name == *name).unwrap_or_else(|| {
@@ -252,12 +165,9 @@ fn tools() -> Value {
             })
         })
         .collect();
-    ordered.extend(Watch::tools());
     Value::Array(ordered)
 }
 
-/// A tool result. The value is serialised compactly into one text block, which
-/// is how a JSON answer reaches a model through MCP's content array.
 fn content(value: &Value, is_error: bool) -> Value {
     let text = match value {
         Value::String(s) => s.clone(),
@@ -271,9 +181,6 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    /// Feed request lines through `serve` and parse what came back, one value
-    /// per output line. Every test below is this one exchange: they drive the
-    /// same entry point `main` does, so nothing about the loop is mocked.
     fn exchange(root: &Path, requests: &[&str]) -> Vec<Value> {
         let input = requests.join("\n") + "\n";
         let mut out: Vec<u8> = Vec::new();
@@ -285,8 +192,7 @@ mod tests {
             .collect()
     }
 
-    /// A scratch sessions folder of its own per test, since these run in one
-    /// process and a shared name would have them treading on each other.
+    /// One folder per test: tests share a process.
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("ambient-mcp-{name}-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
@@ -310,8 +216,6 @@ mod tests {
         assert_eq!(result["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
     }
 
-    /// The lifecycle spec's answer to a revision we do not speak: name the
-    /// latest we do and let the client decide, rather than fail the handshake.
     #[test]
     fn an_unsupported_protocol_version_gets_the_latest_we_speak() {
         let root = scratch("proto");
@@ -324,7 +228,6 @@ mod tests {
         assert_eq!(got[0]["result"]["protocolVersion"], "2025-11-25");
     }
 
-    /// A notification has no `id`, and answering one is a protocol violation.
     #[test]
     fn notifications_are_not_answered() {
         let root = scratch("notify");
@@ -344,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_describes_the_session_tools_then_the_assistant_tools() {
+    fn tools_list_describes_the_session_tools() {
         let root = scratch("list");
         let got = exchange(
             &root,
@@ -352,18 +255,7 @@ mod tests {
         );
         let tools = got[0]["result"]["tools"].as_array().unwrap().clone();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(
-            names,
-            [
-                "sessions",
-                "transcript",
-                "status",
-                "watch_meeting",
-                "wait_for_transcript",
-                "speak",
-                "stop_watching"
-            ]
-        );
+        assert_eq!(names, ["sessions", "transcript", "status"]);
         for t in &tools {
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
         }
@@ -375,53 +267,24 @@ mod tests {
     }
 
     #[test]
-    fn the_watch_prompt_is_listed_and_fetched_and_no_other() {
-        let root = scratch("prompts");
+    fn the_assistant_tools_and_prompt_are_gone() {
+        let root = scratch("gone");
         let got = exchange(
             &root,
             &[
                 r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
                 r#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#,
-                r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"watch","arguments":{"focus":"Budget numbers."}}}"#,
-                r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"other"}}"#,
+                r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"watch_meeting","arguments":{}}}"#,
             ],
         );
-        assert!(got[0]["result"]["capabilities"]["prompts"].is_object());
-        let prompts = got[1]["result"]["prompts"].as_array().unwrap();
-        assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0]["name"], "watch");
-        let message = &got[2]["result"]["messages"][0];
-        assert_eq!(message["role"], "user");
-        let text = message["content"]["text"].as_str().unwrap();
-        assert!(text.contains("wait_for_transcript"), "{text}");
-        assert!(text.ends_with("The user adds: Budget numbers."), "{text}");
-        assert_eq!(got[3]["error"]["code"], INVALID_PARAMS);
+        assert!(got[0]["result"]["capabilities"]["prompts"].is_null());
+        assert_eq!(got[1]["error"]["code"], METHOD_NOT_FOUND);
+        assert_eq!(got[2]["error"]["code"], INVALID_PARAMS);
     }
 
-    #[test]
-    fn an_assistant_tool_that_cannot_run_is_a_tool_error_the_model_reads() {
-        let root = scratch("waitfirst");
-        let got = exchange(
-            &root,
-            &[
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait_for_transcript","arguments":{"timeout_s":1}}}"#,
-            ],
-        );
-        let (text, is_error) = payload(&got[0]);
-        assert!(is_error);
-        assert!(text.as_str().unwrap().contains("watch_meeting"), "{text}");
-    }
-
-    /// `status` counts the directories that are sessions, and only those: a
-    /// stray folder is not one, and no field is answered from behind a symlink
-    /// out of the root.
-    ///
-    /// The two links here are shaped to be caught by each of the fields that
-    /// does not do its own walking: `outside` is what
-    /// `session::captured_awaiting_transcript` counts, `outside-live` is what
-    /// `session::live_session_in` would name — and it sorts after the real
-    /// live session, so a filter applied to that function's answer rather than
-    /// to the set it picks from would report no live session at all.
+    /// `outside` is what `session::captured_awaiting_transcript` would count;
+    /// `outside-live` is what `session::live_session_in` would name, and it
+    /// sorts after the real live session so filtering that answer would hide it.
     #[test]
     fn status_counts_the_session_directories_and_names_the_live_one() {
         let root = scratch("status");
@@ -463,8 +326,6 @@ mod tests {
         );
     }
 
-    /// A call the server cannot even attempt is a protocol error, not a tool
-    /// that ran and failed — the request itself was malformed.
     #[test]
     fn a_malformed_tool_call_is_invalid_params() {
         let root = scratch("call-args");
@@ -481,9 +342,6 @@ mod tests {
         }
     }
 
-    /// Every way a line can be wrong, and then a `ping`: the loop answers what
-    /// it can and reads on, because a client that sent one bad line still has
-    /// a session to finish.
     #[test]
     fn bad_lines_are_reported_and_the_loop_reads_on() {
         let root = scratch("errors");
@@ -505,9 +363,6 @@ mod tests {
         assert_eq!(got[4]["result"], json!({}));
     }
 
-    /// A line of bytes that is not UTF-8 is a bad request like any other. It
-    /// arrives from a pipe, not from a well-behaved client, and taking the
-    /// rest of the stream down with it would drop requests that were fine.
     #[test]
     fn a_line_that_is_not_utf8_does_not_end_the_session() {
         let root = scratch("bytes");
@@ -529,7 +384,6 @@ mod tests {
         assert_eq!(got[1]["result"], json!({}));
     }
 
-    /// Metadata as a closed capture writes it.
     fn meta(id: &str) -> String {
         format!(
             r#"{{"id":"{id}","name":"stand-up","started_at":"2026-09-05T12:00:00+01:00",
@@ -545,8 +399,6 @@ mod tests {
         )
     }
 
-    /// A finished session: metadata, the raw lines in the order they were
-    /// appended, and a transcript.
     fn transcribed(root: &Path, id: &str, lines: &[(&str, u64)]) -> PathBuf {
         let dir = root.join(id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -564,9 +416,7 @@ mod tests {
         exchange(root, &[&request]).remove(0)
     }
 
-    /// What a tool answered, parsed back out of its text block, and whether it
-    /// reported failure. A failed tool's text is a message, not JSON, so it
-    /// comes back as a string.
+    /// A failed tool's text is a message, not JSON, so it comes back a string.
     fn payload(response: &Value) -> (Value, bool) {
         let text = response["result"]["content"][0]["text"]
             .as_str()
@@ -575,9 +425,6 @@ mod tests {
         (value, response["result"]["isError"].as_bool().unwrap())
     }
 
-    /// The sessions folder is the boundary. A link in it is not a session
-    /// whatever it points at, and a session whose `raw.jsonl` points out of
-    /// the folder is listed as broken rather than followed.
     #[test]
     fn sessions_lists_the_root_and_never_what_a_link_points_at() {
         let root = scratch("sessions");
@@ -610,9 +457,6 @@ mod tests {
         );
     }
 
-    /// `since` counts lines already seen and `next` is what to send back, so a
-    /// caller polling a session in flight sees each line exactly once — and a
-    /// cursor past the end is caught up rather than an error.
     #[test]
     fn transcript_returns_the_lines_after_the_cursor() {
         let root = scratch("cursor");
@@ -641,9 +485,8 @@ mod tests {
         }
     }
 
-    /// `raw.jsonl` is written room track first and then call track, and the
-    /// two clocks are independent — so the cursor counts appended lines. A
-    /// cursor on `start_ms` would skip the call line at 0 for ever.
+    /// Room is written before call on independent clocks; a `start_ms` cursor
+    /// would skip the call line at 0 for ever.
     #[test]
     fn the_cursor_counts_appended_lines_and_not_the_clock() {
         let root = scratch("race");
@@ -659,8 +502,6 @@ mod tests {
         assert_eq!(lines[0]["start_ms"], 0);
     }
 
-    /// An argument of the wrong JSON type is the client's bug, not a session
-    /// that could not be read: it is refused before the disk is touched.
     #[test]
     fn arguments_of_the_wrong_type_are_invalid_params() {
         let root = scratch("types");
@@ -676,9 +517,6 @@ mod tests {
         }
     }
 
-    /// `search` answers `api::call` but is not one of the three tools
-    /// `tools/list` advertises, so `tools/call` must refuse it rather than
-    /// routing it through anyway.
     #[test]
     fn an_unlisted_method_is_not_a_tool() {
         let root = scratch("unlisted");
@@ -687,9 +525,6 @@ mod tests {
         assert_eq!(got["error"]["message"], "no such tool \"search\"", "{got}");
     }
 
-    /// An id that is not one path segment inside the root never reaches the
-    /// filesystem, and one that names nothing says so in words a model can
-    /// act on.
     #[test]
     fn an_id_that_is_not_a_session_in_the_root_is_a_tool_error() {
         let root = scratch("ids");
@@ -705,8 +540,6 @@ mod tests {
         assert!(got.as_str().unwrap().contains("no session nope"), "{got}");
     }
 
-    /// The session directory is real, but the file inside it is a doorway out
-    /// of the root. Refused by name, so the reason is readable.
     #[test]
     fn a_raw_jsonl_that_is_a_symlink_is_refused() {
         let root = scratch("leak");
@@ -722,9 +555,6 @@ mod tests {
         assert!(got.as_str().unwrap().contains("refusing symlink"), "{got}");
     }
 
-    /// The four things that can be happening to a session, and in each of them
-    /// a caller gets an answer rather than an error — a session with no
-    /// `raw.jsonl` yet has no lines, which is not a failure.
     #[test]
     fn state_says_what_is_happening_and_a_session_with_no_lines_still_answers() {
         let root = scratch("state");

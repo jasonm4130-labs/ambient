@@ -3,9 +3,7 @@ import { Input } from "@/components/ui/input";
 import { useBridge } from "@/lib/bridge-context";
 import type { SessionSummary } from "./SessionList";
 
-/// The wire shape of one `search` result (`session::search`, restated by
-/// `api::search`): `index` is the absolute append-order index into that
-/// session's transcript, not an offset within the group it renders under.
+/// `index` is absolute in the session's transcript, not an offset within its group.
 interface Hit {
   session: string;
   index: number;
@@ -28,8 +26,6 @@ function mmss(ms: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-/// Groups hits by session, preserving the order `search` returned them in —
-/// the same "never reorder" rule `Transcript`'s `groupLines` follows.
 function groupHits(hits: Hit[]): [string, Hit[]][] {
   const bySession = new Map<string, Hit[]>();
   for (const hit of hits) {
@@ -40,11 +36,6 @@ function groupHits(hits: Hit[]): [string, Hit[]][] {
   return Array.from(bySession.entries());
 }
 
-/// A ⌘K command palette over the `search` API. Mounted only while open (its
-/// caller renders it conditionally), so there is no `open` prop to reconcile
-/// against — unmounting resets every bit of local state for free. Runs
-/// `search {query, limit: 50}` 150 ms after the query goes quiet; `Enter`
-/// opens the first hit, `Esc` closes.
 export function SearchPalette({ sessions, onOpen, onClose }: SearchPaletteProps) {
   const bridge = useBridge();
   const [query, setQuery] = useState("");

@@ -1,116 +1,78 @@
 //! Does transcribing beside a live capture starve the capture's drain loop?
 //!
-//! During back-to-back meetings the transcription queue runs ASR on CPU while
-//! a new capture is being drained every 200 ms (ADR-0015). Audio is lost only
-//! if the drain thread falls behind the tap's ring — 30 s on the mic, 60 s on
-//! the call — so the number that matters is the *overshoot* of the drain
-//! period while ASR runs, not the CPU it uses.
+//! Audio is lost only if the 200 ms drain falls behind the tap's ring (30 s
+//! mic, 60 s call), so this measures the drain period's overshoot on a
+//! default-QoS thread while a background-QoS thread runs the helper's stages
+//! over a 16 kHz mono wav. No tap is needed.
 //!
-//! This runs the same 200 ms sleep loop `capture_into` runs, on a default-QoS
-//! thread, and measures each period's overshoot with ASR running on a
-//! background-QoS thread exactly as `queue::Queue` spawns it. No tap is
-//! needed: the drain loop is what we are measuring, and it does not touch the
-//! tap while the ring is being written.
-//!
-//!   cargo run --release --bin drainbench -- [seconds] [wav]
+//!   cargo run --release --bin drainbench -- [seconds] [16k-mono.wav]
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::bail;
 
-use ambient::{asr, resample, session, vad};
+use ambient::{
+    engine::{SpeakersFile, Stage, TranscriptFile},
+    pipeline::Engine,
+};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let seconds: u64 = args.next().unwrap_or_else(|| "30".into()).parse()?;
-    let wav = args
-        .next()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            session::models_root()
-                .unwrap_or_default()
-                .join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8")
-                .join("test_wavs")
-                .join("en.wav")
-        });
-    let models = session::models_root()?;
-    let asr_dir = models.join("sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8");
-    let vad_path = models.join("silero_vad.onnx");
-
-    let (raw, rate) = resample::read_wav_any(&wav)?;
-    let samples = resample::to_16k(&raw, rate)?;
+    let wav = match args.next() {
+        Some(w) => std::path::PathBuf::from(w),
+        None => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            std::path::PathBuf::from(home).join(".cache/ambient/fixtures/memory/TS3003a.16k.wav")
+        }
+    };
+    if !wav.is_file() {
+        bail!(
+            "no {} — pass a 16 kHz mono wav, or run scripts/memory once",
+            wav.display()
+        );
+    }
+    let engine = Engine::locate()?;
+    let scratch = std::env::temp_dir().join(format!("ambient-drainbench-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch)?;
     println!(
-        "asr input: {} ({:.1}s), transcribed in a loop for {seconds}s",
-        wav.display(),
-        samples.len() as f64 / 16_000.0
+        "model input: {}, transcribed and diarized in a loop for {seconds}s",
+        wav.display()
     );
 
-    // The drain loop alone first, so the ASR numbers have something to be
-    // compared with on this machine.
     let idle = measure(seconds.min(5), &AtomicBool::new(false));
-    println!("\nidle (no ASR):      {}", idle);
+    println!("\nidle (no models):   {}", idle);
 
     let stop = Arc::new(AtomicBool::new(false));
     let passes = Arc::new(AtomicUsize::new(0));
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let worker = {
         let stop = stop.clone();
         let passes = passes.clone();
-        let asr_dir = asr_dir.to_string_lossy().into_owned();
-        let vad_path = vad_path.to_string_lossy().into_owned();
+        let scratch = scratch.clone();
         std::thread::spawn(move || -> anyhow::Result<()> {
-            // Exactly what `queue::Queue::spawn` sets.
-            #[cfg(target_os = "macos")]
-            unsafe {
-                libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
-            }
-            let mut vad = match vad::Vad::load(&vad_path) {
-                Ok(vad) => vad,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e.to_string()));
-                    return Ok(());
-                }
-            };
-            let mut rec = match asr::Recognizer::load(&asr_dir) {
-                Ok(rec) => rec,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e.to_string()));
-                    return Ok(());
-                }
-            };
-            let _ = ready_tx.send(Ok(()));
-            let chunks = vad.turns(&samples, 30)?;
+            ambient::queue::background_qos();
             while !stop.load(Ordering::Relaxed) {
-                let _ = rec.transcribe_segments(&samples, &chunks)?;
+                let _: TranscriptFile =
+                    engine.once(Stage::Transcribe, &wav, &scratch.join("words.json"))?;
+                let _: SpeakersFile =
+                    engine.once(Stage::Diarize, &wav, &scratch.join("speakers.json"))?;
                 passes.fetch_add(1, Ordering::Relaxed);
             }
             Ok(())
         })
     };
-    match ready_rx.recv_timeout(Duration::from_secs(120)) {
-        Ok(Ok(())) => {}
-        Ok(Err(msg)) => bail!(msg),
-        Err(RecvTimeoutError::Timeout) => bail!("worker not ready after 120 s"),
-        Err(RecvTimeoutError::Disconnected) => {
-            bail!("worker exited before signalling readiness")
-        }
-    }
     let before = passes.load(Ordering::Relaxed);
     let under_asr = measure(seconds, &stop);
     let after = passes.load(Ordering::Relaxed);
     stop.store(true, Ordering::Relaxed);
-    worker.join().expect("asr thread panicked")?;
-    println!("under ASR:          {under_asr}");
-    println!("asr passes:         {}", after - before);
+    worker.join().expect("model thread panicked")?;
+    std::fs::remove_dir_all(&scratch).ok();
+    println!("under the models:   {under_asr}");
+    println!("passes completed:   {}", after - before);
 
-    if after - before == 0 {
-        bail!("no decode completed during the measured window");
-    }
-
-    // The verdict, against the smaller of the two rings.
+    // Against the smaller ring.
     let budget = Duration::from_secs(30);
     let verdict = if under_asr.max < budget / 100 {
         "ok — worst overshoot is under 1% of the 30 s ring"
@@ -123,7 +85,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Overshoot statistics for a 200 ms sleep loop run for `seconds`.
 struct Overshoot {
     periods: usize,
     max: Duration,

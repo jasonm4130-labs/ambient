@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# Reject builder home paths while allowing the exact generic upstream CI path
-# embedded in the precompiled ONNX Runtime archive. Rust remapping cannot alter
-# that archive. An optional prefix supports focused tests without changing HOME.
+# Reject builder home paths. The optional prefix lets tests avoid changing HOME.
+#
+# --helper: FluidAudio links a precompiled Rust archive whose panic locations
+# name upstream CI's cargo registry. The helper's build uses no cargo, so there
+# those paths are upstream's; in `ambient` they would be ours, and stay refused.
 set -euo pipefail
-binary="${1:?usage: scripts/check-build-paths <binary> [home-prefix]}"
+helper=0
+if [ "${1:-}" = --helper ]; then
+  helper=1
+  shift
+fi
+binary="${1:?usage: scripts/check-build-paths [--helper] <binary> [home-prefix]}"
 home_prefix="${2:-${HOME:-}}"
 test -f "$binary"
 if [ -z "$home_prefix" ] || [ "$home_prefix" = / ]; then
   exit 0
 fi
-if ! LC_ALL=C strings -a "$binary" | LC_ALL=C awk -v home="$home_prefix/" '
+if ! LC_ALL=C strings -a "$binary" | LC_ALL=C awk -v home="$home_prefix/" -v helper="$helper" '
   {
-    gsub("/Users/runner/work/ort-artifacts/ort-artifacts/", "/upstream/ort-artifacts/")
+    if (helper) gsub("/Users/runner/.cargo/registry/src/", "/upstream/cargo-registry/")
     if (index($0, home)) leak = 1
   }
   END { exit leak ? 1 : 0 }

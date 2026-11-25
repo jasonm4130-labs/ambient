@@ -6,17 +6,7 @@ export interface SwitchProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement
   onCheckedChange: (checked: boolean) => void;
 }
 
-// A `<button role="switch">`, not a Radix switch: a real element with a real
-// role, so a test can query it and `uicheck` can click it by `data-testid` in
-// a real WKWebView. Today's `<div class="switch">` had no accessible name at
-// all — every caller here must pass one (`aria-label` or `aria-labelledby`).
-export function Switch({
-  checked,
-  onCheckedChange,
-  className,
-  disabled,
-  ...props
-}: SwitchProps) {
+export function Switch({ checked, onCheckedChange, className, disabled, ...props }: SwitchProps) {
   return (
     <button
       type="button"

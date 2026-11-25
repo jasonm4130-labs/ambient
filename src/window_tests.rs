@@ -1,7 +1,7 @@
-//! Pre-host-swap projection regressions, compiled only by the test runner.
+//! Session-row projection and its tests, compiled only for the test runner.
 use crate::session::{self, MeterPhase, SessionMeta};
 use crate::state::{Live, PhaseKind};
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
+use jiff::{civil::DateTime, fmt::strtime, tz::TimeZone, SignedDuration, Zoned};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -10,22 +10,12 @@ use std::time::SystemTime;
 struct Detail {
     title: String,
     subtitle: String,
-    /// Audio was captured and no transcript was ever written, nothing is
-    /// writing to the scratch wav now, and the run never reached the end.
-    /// Out of scope to *recover* — the design says so explicitly — but not to
-    /// say so.
     interrupted: bool,
-    /// The audio is written and the transcript is not: the session is on the
-    /// menu bar app's transcription queue, or was when the app last ran.
     queued: bool,
-    /// The run reached its end: `transcript.md` is the last thing the
-    /// transcriber writes, so its presence separates a session still being
-    /// worked on from one that finished and simply heard nothing.
     completed: bool,
     warnings: Vec<String>,
     has_transcript: bool,
-    /// What the cache is keyed on, and what tells the pane its rendered
-    /// transcript has gone stale.
+    /// Cache key; when it moves, the rendered transcript is stale.
     stamp: SystemTime,
 }
 
@@ -34,20 +24,14 @@ struct Detail {
 struct LiveShot {
     id: String,
     dir: PathBuf,
-    /// The call this recording belongs to, when the watcher started it.
     app: Option<String>,
     elapsed_s: u64,
-    /// Per-interval peaks, 0–1. Deliberately not the cumulative peaks
-    /// `silent_tap_advice` reads: those never fall, so a meter fed from them
-    /// would climb once and stick, and read healthy over a dead microphone.
+    /// Per-interval, not the cumulative peaks `silent_tap_advice` reads: those
+    /// never fall, so a meter fed from them would read healthy over a dead mic.
     room: f64,
     call: f64,
     audio_arriving: bool,
-    /// What the *worker* is doing. The Rust phase governs which transitions
-    /// are legal; this governs what the user is told.
     meter: MeterPhase,
-    /// Whether Stop is a legal move — the Rust phase's business, not the
-    /// meter's, and exactly the rule the menu's Stop item uses.
     stoppable: bool,
 }
 
@@ -75,8 +59,6 @@ impl LiveShot {
         format!("{:02}:{:02}", self.elapsed_s / 60, self.elapsed_s % 60)
     }
 
-    /// What the worker is doing, in the words the sidebar row and the Stop
-    /// button both use.
     fn verb(&self) -> &'static str {
         match self.meter {
             MeterPhase::Capturing => "Recording",
@@ -87,8 +69,6 @@ impl LiveShot {
         }
     }
 
-    /// The sidebar row's two lines. Pure, so the wording is testable without
-    /// a window.
     fn row_lines(&self) -> (String, String) {
         let title = match self.meter {
             MeterPhase::Capturing => format!("● Recording — {}", self.clock()),
@@ -101,13 +81,10 @@ impl LiveShot {
         (title, parts.join(" · "))
     }
 
-    /// "Capturing Zoom → 2026-08-30T1412": what is being recorded and where
-    /// it is going. The app is the bundle id the watcher armed on, which is
-    /// the only name the app actually knows.
+    /// The app is the bundle id the watcher armed on, the only name it knows.
     fn capturing_line(&self) -> String {
-        // Past tense once the tap has stopped: the worker is still working,
-        // but nothing is being captured any more, and a line still saying
-        // "Capturing" would be the display lying about the microphone.
+        // Past tense once the tap stops: the worker is busy, but nothing is
+        // being captured any more.
         let verb = if self.meter == MeterPhase::Capturing {
             "Capturing"
         } else {
@@ -127,8 +104,7 @@ fn stamp_of(dir: &Path) -> SystemTime {
         dir.join("raw.jsonl"),
         dir.join("edits.jsonl"),
         dir.join("session.json"),
-        // Rewritten as a queued session moves from captured to transcribing
-        // to done, which is what the row's subtitle follows.
+        // Rewritten at each queue step, which the row's subtitle follows.
         dir.join(session::STATUS_FILE),
     ] {
         if let Ok(t) = std::fs::metadata(&p).and_then(|m| m.modified()) {
@@ -146,28 +122,29 @@ fn meta_of(dir: &Path) -> Option<SessionMeta> {
         .and_then(|t| serde_json::from_str(&t).ok())
 }
 
-/// When the session started: the stored timestamp when there is one, else the
-/// directory name, which is a `%Y-%m-%dT%H%M` stamp by construction.
-fn started_at(id: &str, meta: Option<&SessionMeta>) -> Option<DateTime<Local>> {
+/// Falls back to the directory name, a `%Y-%m-%dT%H%M` stamp by construction.
+fn started_at(id: &str, meta: Option<&SessionMeta>) -> Option<Zoned> {
     if let Some(t) = meta
-        .and_then(|m| DateTime::parse_from_rfc3339(&m.started_at).ok())
-        .map(|t| t.with_timezone(&Local))
+        .and_then(|m| crate::clock::parse_rfc3339(&m.started_at))
+        .map(|t| t.to_zoned(TimeZone::system()))
     {
         return Some(t);
     }
     let head = id.get(..15)?;
-    NaiveDateTime::parse_from_str(head, "%Y-%m-%dT%H%M")
+    strtime::parse("%Y-%m-%dT%H%M", head)
         .ok()
-        .and_then(|n| Local.from_local_datetime(&n).single())
+        .and_then(|b| b.to_datetime().ok())
+        .and_then(|n: DateTime| n.to_zoned(TimeZone::system()).ok())
 }
 
-fn relative(t: DateTime<Local>) -> String {
-    let days = (Local::now().date_naive() - t.date_naive()).num_days();
+fn relative(t: Zoned) -> String {
+    let fmt = |f: &str| strtime::format(f, &t).unwrap();
+    let days = (Zoned::now().date() - t.date()).get_days();
     match days {
-        0 => format!("Today {}", t.format("%H:%M")),
-        1 => format!("Yesterday {}", t.format("%H:%M")),
-        2..=6 => t.format("%a %H:%M").to_string(),
-        _ => t.format("%-d %b %Y").to_string(),
+        0 => format!("Today {}", fmt("%H:%M")),
+        1 => format!("Yesterday {}", fmt("%H:%M")),
+        2..=6 => fmt("%a %H:%M"),
+        _ => fmt("%-d %b %Y"),
     }
 }
 
@@ -182,7 +159,6 @@ fn audio_present(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Read one session well enough to draw it.
 fn describe(dir: &Path) -> Detail {
     let stamp = stamp_of(dir);
     let id = dir
@@ -201,25 +177,17 @@ fn describe(dir: &Path) -> Detail {
     }
     let unnamed = session::unnamed_labels(dir).map(|v| v.len()).unwrap_or(0);
 
-    // Four things have to be true at once, and the first one is subtle.
-    // `raw.jsonl` is created the instant transcription begins and filled
-    // incrementally, so its *absence* is what marks a process killed
-    // mid-recording. Testing for transcript *lines* instead would mark every
-    // healthy session Interrupted for the whole of its own ASR pass — minutes,
-    // on the happy path. `is_growing` separates a recording still in flight
-    // from a killed one that left its scratch wav behind for ever; the missing
-    // `session.json` separates *that* from a capture that ran to its end,
-    // whose audio is safe and whose transcript is either queued or written.
+    // `is_growing` separates a live recording from a killed one's leftover
+    // wav; a missing `session.json` separates that from a finished capture.
+    // The transcription lock, not `raw.jsonl`, says a job is running.
     let captured = meta.is_some();
-    // `transcript.md` is the last thing the transcriber writes, and the same
-    // test `sweep_audio` uses for "finished".
+    // The same "finished" test `sweep_audio` uses.
     let completed = dir.join("transcript.md").is_file();
-    let interrupted = !dir.join("raw.jsonl").exists()
-        && !captured
+    let interrupted = !captured
         && audio_present(dir)
-        && !session::is_growing(&dir.join("audio").join("room.native.wav"));
-    // Captured and not yet claimed by a transcriber: waiting on the queue.
-    let queued = captured && !dir.join("raw.jsonl").exists() && !completed;
+        && !session::is_growing(&dir.join("audio").join("room.native.wav"))
+        && session::live_transcriber(dir).is_none();
+    let queued = captured && !completed && session::live_transcriber(dir).is_none();
 
     let mut parts: Vec<String> = Vec::new();
     if let Some(t) = started_at(&id, meta.as_ref()) {
@@ -268,8 +236,6 @@ fn scratch(tag: &str) -> PathBuf {
     p
 }
 
-/// The row's second line is the whole of the sidebar's information, and
-/// every part of it is derived rather than stored.
 #[test]
 fn a_transcribed_session_says_when_how_long_and_who() {
     let root = scratch("described");
@@ -297,21 +263,19 @@ fn a_transcribed_session_says_when_how_long_and_who() {
     assert!(!d.interrupted);
     assert!(d.subtitle.contains("01:05"), "duration: {}", d.subtitle);
     assert!(d.subtitle.contains("1 speaker"), "speakers: {}", d.subtitle);
-    // `room-1` still has diarization's shape, so it is a label waiting for
-    // a name — the badge the whole naming step hangs off.
+    // `room-1` is still a diarisation label, so it is waiting for a name.
     assert!(d.subtitle.contains("1 to name"), "unnamed: {}", d.subtitle);
     assert_eq!(d.warnings, vec!["the room track is silent".to_string()]);
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Audio, no transcript, nothing writing: a process killed mid-recording.
 #[test]
 fn audio_without_a_transcript_reads_as_interrupted() {
     let root = scratch("interrupted");
     let dir = root.join("2026-08-30T1500");
     std::fs::create_dir_all(dir.join("audio")).unwrap();
     std::fs::write(dir.join("audio").join("room.native.wav"), b"RIFF").unwrap();
-    // Backdate it past the ten-second window `is_growing` allows.
+    // Backdated past the ten-second window `is_growing` allows.
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
     filetime_set(&dir.join("audio").join("room.native.wav"), old);
 
@@ -321,25 +285,16 @@ fn audio_without_a_transcript_reads_as_interrupted() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Mid-transcription, which is the state every healthy session passes
-/// through for the minutes ASR and diarization take: audio, a `raw.jsonl`
-/// created the instant the transcriber claimed the session, no growing
-/// wav and not one transcript line. Keying `interrupted` off transcript
-/// lines rather than off `raw.jsonl` marked all of it Interrupted — in
-/// the very pane this step exists to make honest. Sessions from before
-/// capture and transcription were split have no `session.json` at this
-/// point either, which is the shape drawn here.
+/// Sessions from before capture and transcription were split have no
+/// `session.json` mid-transcription, which is the shape drawn here.
 #[test]
 fn a_session_still_transcribing_is_not_interrupted() {
     let root = scratch("transcribing");
     let dir = root.join("2026-08-30T1600");
     std::fs::create_dir_all(dir.join("audio")).unwrap();
-    // The finished tracks survive; the native scratch wavs are already gone.
     std::fs::write(dir.join("audio").join("room.wav"), b"RIFF").unwrap();
     std::fs::write(dir.join("audio").join("call.wav"), b"RIFF").unwrap();
-    // Created the instant transcription begins, and empty until the first
-    // segment.
-    std::fs::write(dir.join("raw.jsonl"), b"").unwrap();
+    let _lock = session::claim_transcription(&dir).unwrap();
 
     let d = describe(&dir);
     assert!(
@@ -353,10 +308,8 @@ fn a_session_still_transcribing_is_not_interrupted() {
 
 const META: &str = "{\"id\":\"2026-08-30T2000\",\"name\":null,\"started_at\":\"2026-08-30T20:00:00+10:00\",\"ended_at\":\"2026-08-30T20:00:20+10:00\",\"duration_s\":20.0,\"device_hz\":48000,\"channels\":1,\"mic_channels\":1,\"apps\":[],\"model\":\"m\"}";
 
-/// A run that reached its end wrote `transcript.md`. It heard nothing, and
-/// that is a different fact from a capture that was killed — reporting it
-/// as a loss would send someone looking for audio that is exactly where
-/// they left it.
+/// Hearing nothing is not a loss: reporting it as one sends someone looking
+/// for audio that is exactly where they left it.
 #[test]
 fn a_finished_recording_that_heard_nothing_is_not_interrupted() {
     let root = scratch("silent");
@@ -379,10 +332,6 @@ fn a_finished_recording_that_heard_nothing_is_not_interrupted() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// The state the capture/transcription split created: audio and
-/// `session.json` written, no `raw.jsonl` because no transcriber has
-/// claimed it yet. Neither a loss nor a silent recording — it is waiting
-/// on the queue, and must say so.
 #[test]
 fn a_captured_session_awaiting_its_transcript_says_so() {
     let root = scratch("queued");
@@ -404,8 +353,6 @@ fn a_captured_session_awaiting_its_transcript_says_so() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// An empty directory is not a corpse — nothing was captured — so it must
-/// not be labelled as one.
 #[test]
 fn an_empty_directory_is_not_interrupted() {
     let root = scratch("empty");
@@ -431,7 +378,6 @@ fn a_named_session_is_titled_by_its_name() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Old `session.json` files have no `warnings` key, and must still load.
 #[test]
 fn a_session_written_before_warnings_existed_still_parses() {
     let root = scratch("nowarnings");
@@ -446,8 +392,8 @@ fn a_session_written_before_warnings_existed_still_parses() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// The cache key has to notice an append to `edits.jsonl`, because naming
-/// a speaker is an append and does not touch the directory's own mtime.
+/// Naming a speaker appends to `edits.jsonl` without touching the directory's
+/// own mtime.
 #[test]
 fn the_stamp_moves_when_edits_are_appended() {
     let root = scratch("stamp");
@@ -477,8 +423,6 @@ fn shot(elapsed_s: u64, meter: MeterPhase, arriving: bool) -> LiveShot {
     }
 }
 
-/// The pinned row says what is being recorded, where it is going, and how
-/// long it has been going for.
 #[test]
 fn the_live_row_reads_as_a_recording_in_progress() {
     let (title, subtitle) = shot(252, MeterPhase::Capturing, true).row_lines();
@@ -486,18 +430,12 @@ fn the_live_row_reads_as_a_recording_in_progress() {
     assert_eq!(subtitle, "Capturing us.zoom.xos → 2026-08-30T1412");
 }
 
-/// The one failure this app cannot afford to be quiet about: a denied tap
-/// returns correctly-shaped zeros rather than an error, so "nothing is
-/// arriving" is the only thing that separates it from a quiet room.
 #[test]
 fn a_silent_capture_says_so_in_the_row() {
     let (_, subtitle) = shot(9, MeterPhase::Capturing, false).row_lines();
     assert!(subtitle.ends_with("no audio arriving"), "{subtitle}");
 }
 
-/// Once the worker moves on, the clock stops being the news — and a row
-/// still saying "Recording" over a capture that has finished would be the
-/// display lying about the worker, which is what the meter exists to stop.
 #[test]
 fn the_row_follows_the_worker_not_the_phase() {
     let (title, _) = shot(252, MeterPhase::Transcribing, true).row_lines();
@@ -506,9 +444,6 @@ fn the_row_follows_the_worker_not_the_phase() {
     assert_eq!(title, "● Separating voices…");
 }
 
-/// The whole point of step 4's per-interval peaks: the live view reads
-/// those, not the cumulative ones `silent_tap_advice` guards the capture
-/// with, and not the filesystem.
 #[test]
 fn the_live_view_reads_the_shared_meter_and_nothing_else() {
     let root = crate::state::test_support::scratch("window-live");
@@ -519,7 +454,6 @@ fn the_live_view_reads_the_shared_meter_and_nothing_else() {
     );
     let live = phase.live().expect("a Recording owns a Live");
 
-    // Exactly what the worker thread writes once a second.
     live.meter.elapsed_ms.store(65_000, Ordering::Relaxed);
     live.meter.room_peak_milli.store(310, Ordering::Relaxed);
     live.meter.call_peak_milli.store(870, Ordering::Relaxed);
@@ -538,17 +472,14 @@ fn the_live_view_reads_the_shared_meter_and_nothing_else() {
         live.dir.path().file_name().unwrap().to_string_lossy()
     );
 
-    // A mic that goes quiet falls back within a second, because the worker
-    // resets the interval peak every time it writes one. Reading the
-    // cumulative peaks here would hold 0.31 for the rest of the capture.
+    // The worker resets the interval peak on every write, so a quiet mic falls
+    // back within a second.
     live.meter.room_peak_milli.store(0, Ordering::Relaxed);
     assert_eq!(LiveShot::of(live, phase.kind()).room, 0.0);
 
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Stop is the phase's business, the label is the meter's. A phase that
-/// has left `Recording` must not offer a Stop that would do nothing.
 #[test]
 fn stop_is_offered_only_while_the_phase_is_recording() {
     let root = crate::state::test_support::scratch("window-stop");
@@ -562,14 +493,19 @@ fn stop_is_offered_only_while_the_phase_is_recording() {
 
 #[test]
 fn relative_dates_read_like_dates() {
-    let now = Local::now();
-    assert!(relative(now).starts_with("Today "));
-    assert!(relative(now - chrono::Duration::days(1)).starts_with("Yesterday "));
-    assert!(!relative(now - chrono::Duration::days(400)).contains("Today"));
+    let now = Zoned::now();
+    assert!(relative(now.clone()).starts_with("Today "));
+    assert!(
+        relative(now.checked_sub(SignedDuration::from_hours(24)).unwrap())
+            .starts_with("Yesterday ")
+    );
+    assert!(!relative(
+        now.checked_sub(SignedDuration::from_hours(24 * 400))
+            .unwrap()
+    )
+    .contains("Today"));
 }
 
-/// `libc::utimes` rather than a dev-dependency: one call, and the tests
-/// above need nothing else from it.
 fn filetime_set(p: &Path, t: SystemTime) {
     let secs = t
         .duration_since(SystemTime::UNIX_EPOCH)
