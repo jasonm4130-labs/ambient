@@ -1,11 +1,4 @@
-//! Phase 0 probe: prove the two risky assumptions before building on them.
-//! Kept because it is also the fastest way to confirm a new machine is viable.
-//!
-//!   1. The Core Audio process-tap API is reachable from Rust with no C shim.
-//!   2. ONNX Runtime's CoreML execution provider is available from a prebuilt
-//!      binary, and can be asked for the Neural Engine specifically.
-//!
-//! Neither is a substitute for measuring the real model — see `docs/phase-0.md`.
+//! Core Audio process-tap probe: the fastest check that a machine can be tapped.
 
 use anyhow::{bail, Result};
 use std::ffi::c_void;
@@ -27,7 +20,6 @@ fn addr(selector: u32) -> AudioObjectPropertyAddress {
     }
 }
 
-/// Read a property whose payload is a flat array of `T`.
 unsafe fn get_array<T: Copy + Default>(object: AudioObjectID, selector: u32) -> Result<Vec<T>> {
     let mut a = addr(selector);
     let mut size: u32 = 0;
@@ -63,7 +55,6 @@ unsafe fn get_array<T: Copy + Default>(object: AudioObjectID, selector: u32) -> 
     Ok(buf)
 }
 
-/// Read a scalar property.
 unsafe fn get_scalar<T: Copy + Default>(object: AudioObjectID, selector: u32) -> Result<T> {
     let mut a = addr(selector);
     let mut size = std::mem::size_of::<T>() as u32;
@@ -104,43 +95,16 @@ unsafe fn get_bundle_id(object: AudioObjectID) -> Option<String> {
     Some(s.to_string())
 }
 
-pub fn probe_ort() {
-    use ort::ep::coreml::ComputeUnits;
-    use ort::ep::{CoreML, ExecutionProvider};
-
-    println!("\n── inference ──────────────────────────────────────────");
-    ort::init().commit();
-    let ane = CoreML::default().with_compute_units(ComputeUnits::CPUAndNeuralEngine);
-    match ane.is_available() {
-        Ok(true) => println!("CoreML EP        available (CPUAndNeuralEngine requestable)"),
-        Ok(false) => println!("CoreML EP        NOT available — inference would fall back to CPU"),
-        Err(e) => println!("CoreML EP        probe failed: {e}"),
-    }
-    println!("note             availability is not placement; a graph can still");
-    println!("                 partition onto CPU. Measure with the real model.");
-}
-
-/// How many processes are rendering output right now.
-///
-/// Used to tell two identical-looking failures apart: a tap that is silent
-/// because nothing was playing, and a tap that is silent because it was denied.
-/// The second is the dangerous one — Core Audio reports success, delivers
-/// correctly-shaped buffers, and fills them with zeros.
-/// Bundle IDs of the processes currently producing audio.
-///
-/// `processes_rendering_output` counts them for the capture warning; this names
-/// them, which is what lets the menu bar notice that a watched call app has
-/// started talking. Processes without a bundle ID (daemons, the system itself)
-/// are dropped rather than reported as anonymous.
-pub fn bundles_rendering_output() -> Vec<String> {
-    let processes: Vec<AudioObjectID> = match unsafe {
-        get_array(
+/// The Core Audio process objects rendering output now; empty if the list
+/// cannot be read.
+fn rendering_output() -> Vec<AudioObjectID> {
+    let Ok(processes) = (unsafe {
+        get_array::<AudioObjectID>(
             kAudioObjectSystemObject as AudioObjectID,
             kAudioHardwarePropertyProcessObjectList,
         )
-    } {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
+    }) else {
+        return Vec::new();
     };
     processes
         .into_iter()
@@ -149,28 +113,20 @@ pub fn bundles_rendering_output() -> Vec<String> {
                 unsafe { get_scalar(p, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) };
             on != 0
         })
+        .collect()
+}
+
+pub fn bundles_rendering_output() -> Vec<String> {
+    rendering_output()
+        .into_iter()
         .filter_map(|p| unsafe { get_bundle_id(p) })
         .collect()
 }
 
+/// A denied tap looks like an idle one: Core Audio reports success and fills
+/// the buffers with zeros. This count tells the two apart.
 pub fn processes_rendering_output() -> usize {
-    let processes: Vec<AudioObjectID> = match unsafe {
-        get_array(
-            kAudioObjectSystemObject as AudioObjectID,
-            kAudioHardwarePropertyProcessObjectList,
-        )
-    } {
-        Ok(p) => p,
-        Err(_) => return 0,
-    };
-    processes
-        .into_iter()
-        .filter(|&p| {
-            let on: u32 =
-                unsafe { get_scalar(p, kAudioProcessPropertyIsRunningOutput).unwrap_or(0) };
-            on != 0
-        })
-        .count()
+    rendering_output().len()
 }
 
 pub fn run() -> Result<()> {
@@ -207,6 +163,5 @@ pub fn run() -> Result<()> {
 
     println!("\n{tappable} process(es) currently rendering output — these are tappable.");
 
-    probe_ort();
     Ok(())
 }

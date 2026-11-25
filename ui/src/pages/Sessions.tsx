@@ -16,12 +16,6 @@ interface SessionsProps {
   onRetryHealth?: () => void;
 }
 
-/// The sidebar-plus-content screen: sessions on the left, the selected
-/// session's transcript and naming strip on the right, Settings as the last
-/// sidebar row. `sessions` is re-requested on mount, after naming an unnamed
-/// speaker, and on a `phase` edge (below) — never on every `phase` event,
-/// which fires twice a second. Selection is the one piece of page-local
-/// state: it is "what is on screen", not anything the bridge holds.
 export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
   const bridge = useBridge();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -51,8 +45,6 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
     }
   }, [loadSessions]);
 
-  // The idle card's mic and call-watch lines. A failed read leaves them off
-  // rather than blocking Record, which needs none of it.
   const loadConfig = useLatest(
     useCallback(() => bridge.call<CaptureConfig | undefined>("config.get"), [bridge]),
   );
@@ -76,8 +68,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
       }),
     [bridge, refresh, refreshConfig],
   );
-  // Rust sends no event when an input is plugged in or pulled out, so the mic
-  // line re-reads `config.get` whenever the window comes back into view.
+  // Rust sends no device-change event, so re-read `config.get` on becoming visible.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") refreshConfig();
@@ -90,11 +81,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
     };
   }, [refreshConfig]);
 
-  // The phase payload is the state Rust handed over, and the event fires on
-  // a timer rather than on a change — reloading `sessions` on every one of
-  // them would be two folder walks a second for a payload that already
-  // carries everything the strip draws. Reload only on an edge: `kind`
-  // changed, `live.id` changed, or `queue` went set→unset.
+  // `phase` fires on a timer, twice a second: reload `sessions` only on an edge.
   const lastEdge = useRef<{ kind: string; liveId: string | null; hadQueue: boolean } | null>(null);
   useEffect(
     () =>
@@ -108,10 +95,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
         };
         const prev = lastEdge.current;
         lastEdge.current = edge;
-        // A recording that has just started (or is already running when the
-        // window first hears about it) is what the person wants to watch, so
-        // it takes the selection once — on the edge, never on every event, so
-        // choosing another session mid-recording sticks.
+        // Select a new live session once, on the edge, so picking another mid-recording sticks.
         if (edge.liveId !== null && prev?.liveId !== edge.liveId) {
           setSelected(edge.liveId);
           setHighlightIndex(undefined);
@@ -129,7 +113,6 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
     [bridge, refresh, refreshConfig],
   );
 
-  // ⌘K opens the search palette from anywhere on the page.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === "k") {
@@ -152,9 +135,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
     setHighlightIndex(undefined);
   }, []);
 
-  // A deleted session must leave `selected` before the next `sessions`
-  // refresh, or `Transcript` immediately re-requests a session that no
-  // longer exists.
+  // Clear `selected` before the refresh, or `Transcript` re-requests a deleted session.
   const onDeleted = useCallback(() => {
     setSelected(null);
     void refresh();
@@ -162,8 +143,7 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
 
   const selectedSummary = sessions.find((s) => s.id === selected) ?? null;
   const liveId = phase?.live?.id ?? null;
-  // The live session is selected on the phase edge, which can land before the
-  // `sessions` refresh that lists it; until then it is still live.
+  // The phase edge can select the live session before `sessions` lists it.
   const selectedIsLive =
     selectedSummary === null
       ? selected !== null && selected === liveId
@@ -276,10 +256,10 @@ export function Sessions({ onSettings, health, onRetryHealth }: SessionsProps) {
               <Transcript
                 key={`transcript-${selected}`}
                 unavailable={
-                  selectedSummary !== null && !selectedSummary.transcribed
-                    ? "Separate voices needs a finished transcript."
+                  selectedSummary?.transcribing === true
+                    ? "This session is being transcribed."
                     : selectedSummary?.audio_available === false
-                      ? "The audio is no longer available to separate voices."
+                      ? "The audio is no longer available to transcribe again."
                       : undefined
                 }
                 session={selected}

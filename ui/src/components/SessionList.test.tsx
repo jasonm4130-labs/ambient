@@ -17,9 +17,6 @@ const base: SessionSummary = {
   pinned: false,
 };
 
-// Three fixtures chosen to exercise `sessionState`'s precedence: one that is
-// `live` *and* `transcribed` still reads `live`, one is `broken` (an error
-// outranks `done`), and one is a plain `done`.
 const fixtures: SessionSummary[] = [
   { ...base, id: "a", name: "Standup", live: true, transcribed: true },
   { ...base, id: "b", name: "1:1", error: "could not read session.json" },

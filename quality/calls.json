@@ -1,34 +1,34 @@
 [
   {
     "speaker": "4320211",
-    "reference_words": 755,
-    "substitutions": 37,
-    "insertions": 32,
+    "reference_words": 756,
+    "substitutions": 23,
+    "insertions": 11,
     "deletions": 4,
-    "wer": 0.09668874172185431
+    "wer": 0.05026455026455026
   },
   {
     "speaker": "4330115",
     "reference_words": 773,
-    "substitutions": 54,
-    "insertions": 25,
-    "deletions": 5,
-    "wer": 0.10866752910737387
+    "substitutions": 30,
+    "insertions": 10,
+    "deletions": 6,
+    "wer": 0.059508408796895215
   },
   {
     "speaker": "4341191",
     "reference_words": 762,
-    "substitutions": 43,
-    "insertions": 26,
-    "deletions": 3,
-    "wer": 0.09448818897637795
+    "substitutions": 25,
+    "insertions": 11,
+    "deletions": 4,
+    "wer": 0.05249343832020997
   },
   {
     "speaker": "total",
-    "reference_words": 2290,
-    "substitutions": 134,
-    "insertions": 83,
-    "deletions": 12,
-    "wer": 0.1
+    "reference_words": 2291,
+    "substitutions": 78,
+    "insertions": 32,
+    "deletions": 14,
+    "wer": 0.054124836316019206
   }
 ]

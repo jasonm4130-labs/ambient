@@ -16,7 +16,9 @@ const line = (text: string) => ({
 });
 
 function sinceCalls(fake: FakeBridge) {
-  return fake.calls.filter((c) => c.method === "transcript" && c.params !== undefined && "since" in c.params);
+  return fake.calls.filter(
+    (c) => c.method === "transcript" && c.params !== undefined && "since" in c.params,
+  );
 }
 
 function setupUser() {
@@ -56,7 +58,9 @@ describe("LiveTranscript", () => {
     });
     expect(screen.getAllByText("during recording")).toHaveLength(1);
     expect(screen.getAllByText("final tail")).toHaveLength(1);
-    expect(sinceCalls(fake).map((c) => (c.params as { since: number }).since)).toEqual([0, 1, 1, 2]);
+    expect(sinceCalls(fake).map((c) => (c.params as { since: number }).since)).toEqual([
+      0, 1, 1, 2,
+    ]);
     expect(onDone).toHaveBeenCalledTimes(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4000);
@@ -70,8 +74,10 @@ describe("LiveTranscript", () => {
     let call = 0;
     fake.answer("transcript", () => {
       call += 1;
-      if (call === 1) return { session: "s1", state: "transcribing", next: 1, lines: [line("one")] };
-      if (call === 2) return { session: "s1", state: "transcribing", next: 2, lines: [line("two")] };
+      if (call === 1)
+        return { session: "s1", state: "transcribing", next: 1, lines: [line("one")] };
+      if (call === 2)
+        return { session: "s1", state: "transcribing", next: 2, lines: [line("two")] };
       return { session: "s1", state: "done", next: 2, lines: [] };
     });
     const onDone = vi.fn();
@@ -82,10 +88,8 @@ describe("LiveTranscript", () => {
       </BridgeProvider>,
     );
 
-    // `advanceTimersByTimeAsync(0)` flushes the microtasks of the poll
-    // already in flight from mount (its call is pushed synchronously, but
-    // the `.then` that arms the next `setTimeout` only runs on a microtask
-    // tick) without advancing the fake clock.
+    // Flushes the in-flight poll's microtasks (which arm the next timer)
+    // without advancing the fake clock.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
@@ -143,14 +147,15 @@ describe("LiveTranscript", () => {
   it("resets the cursor when the session prop changes", async () => {
     vi.useFakeTimers();
     const fake = new FakeBridge();
-    // Resolve order, not call order: A's `since:0` call resolves first, then
-    // B's `since:0` call resolves (A's `since:5` call is held and released
-    // last), so the thunk is indexed by resolution, not by which call fired.
+    // Indexed by resolution order, not call order: A's `since:0`, then B's
+    // `since:0`; A's held `since:5` resolves last.
     let resolved = 0;
     fake.answer("transcript", () => {
       resolved += 1;
-      if (resolved === 1) return { session: "A", state: "transcribing", next: 5, lines: [line("a1")] };
-      if (resolved === 2) return { session: "B", state: "transcribing", next: 1, lines: [line("b1")] };
+      if (resolved === 1)
+        return { session: "A", state: "transcribing", next: 5, lines: [line("a1")] };
+      if (resolved === 2)
+        return { session: "B", state: "transcribing", next: 1, lines: [line("b1")] };
       return { session: "A", state: "done", next: 5, lines: [line("poison")] };
     });
     const { rerender } = render(
@@ -164,9 +169,7 @@ describe("LiveTranscript", () => {
     });
     expect(sinceCalls(fake)).toHaveLength(1);
 
-    // Hold A's *second* call (`since: 5`) rather than its first: `hold`
-    // gates the next call to the method, registered here so it catches the
-    // poll the 2 s timer is about to fire, not the mount call already made.
+    // `hold` gates the *next* call, so this catches the 2 s poll, not the mount call.
     const releaseA2 = fake.hold("transcript");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2000);
@@ -185,9 +188,6 @@ describe("LiveTranscript", () => {
     expect(sinceCalls(fake)).toHaveLength(3);
     expect(sinceCalls(fake).at(-1)?.params).toEqual({ session: "B", since: 0 });
 
-    // Releasing A's held call resolves it into a component that already
-    // unmounted (the `session` prop moved to B), so the effect's `cancelled`
-    // guard drops the reply — no new call, and no "poison" text.
     releaseA2();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -227,14 +227,15 @@ describe("Sessions live swap", () => {
     fake.answer("speakers.unnamed", []);
     fake.answer("config.get", { roster: [] });
 
-    // Calls 1-3 are `LiveTranscript`'s polls (carry `since`); call 4+ is
-    // `Transcript`'s own mount call ({session, verbatim}, no `since`), fired
-    // once the swap happens after `onDone` → `refresh`.
+    // Calls 1-3 are `LiveTranscript`'s polls; call 4+ is `Transcript`'s mount
+    // call after the `onDone` swap.
     let transcriptCall = 0;
     fake.answer("transcript", (() => {
       transcriptCall += 1;
-      if (transcriptCall === 1) return { session: "s1", state: "transcribing", next: 1, lines: [line("one")] };
-      if (transcriptCall === 2) return { session: "s1", state: "transcribing", next: 2, lines: [line("two")] };
+      if (transcriptCall === 1)
+        return { session: "s1", state: "transcribing", next: 1, lines: [line("one")] };
+      if (transcriptCall === 2)
+        return { session: "s1", state: "transcribing", next: 2, lines: [line("two")] };
       if (transcriptCall === 3) return { session: "s1", state: "done", next: 2, lines: [] };
       return { session: "s1", state: "done", next: 2, lines: [line("one"), line("two")] };
     }) as unknown as () => unknown);

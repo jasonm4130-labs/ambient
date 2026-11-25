@@ -7,8 +7,9 @@
     access unless this entitlement is present. The Info.plist usage strings are
     what TCC shows in the prompt; this is what makes the prompt reachable at all.
 
-    Deliberately minimal. ONNX Runtime is statically linked into the binary
-    (`otool -L` shows no onnx dylib), so none of the usual escape hatches —
+    Deliberately minimal. Neither binary loads a third-party dylib: the models
+    run in `ambient-engine` on Core ML, a system framework, and its other
+    dependencies are linked statically. So none of the usual escape hatches —
     disable-library-validation, allow-unsigned-executable-memory, allow-jit —
     are needed. Anything added here is a hole in the runtime protections, so add
     one only after a real run has failed without it.

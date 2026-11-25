@@ -45,11 +45,8 @@ function renderPalette(fake: FakeBridge, onOpen = vi.fn(), onClose = vi.fn()) {
 }
 
 function setupUser() {
-  // `shouldAdvanceTime` is required alongside fake timers here: without it
-  // `userEvent`'s own internal waits (used even by a plain click) never
-  // resolve, because they schedule a timer this test's own
-  // `advanceTimersByTime` calls cannot reach until after the `await` that is
-  // waiting on them — a deadlock, not a slow test.
+  // `shouldAdvanceTime` is required: without it userEvent's internal waits
+  // schedule timers `advanceTimersByTime` cannot reach, and the test deadlocks.
   vi.useFakeTimers({ shouldAdvanceTime: true });
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
@@ -60,15 +57,16 @@ describe("SearchPalette", () => {
   });
 
   it("calls search with the debounced query exactly once", async () => {
-    // A synchronous `fireEvent.change` rather than `user.type`: typing six
-    // keystrokes under `shouldAdvanceTime`'s real-time-coupled clock risks
-    // the 150 ms debounce firing mid-keystroke on a loaded machine.
+    // `fireEvent.change`, not `user.type`: on a loaded machine the 150 ms
+    // debounce can fire mid-keystroke under `shouldAdvanceTime`.
     vi.useFakeTimers();
     const fake = new FakeBridge();
     fake.answer("search", []);
     renderPalette(fake);
 
-    fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), { target: { value: "budget" } });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search" }), {
+      target: { value: "budget" },
+    });
     expect(fake.calls.filter((c) => c.method === "search")).toHaveLength(0);
 
     vi.advanceTimersByTime(150);

@@ -59,7 +59,7 @@ designed.
 everything audible: a TV, a radio, and in an office the conversation at the
 next desk — people who are not in your meeting and have not agreed to anything.
 The tap has no such problem. This is a further argument for building calls
-first, and for the mic track to be VAD-gated and treated as the sensitive one.
+first, and for the mic track to be treated as the sensitive one.
 
 Verified end to end: tapped system audio, resampled to 16 kHz, transcribed as
 "Right, the process tab is capturing system audio with nothing joining the

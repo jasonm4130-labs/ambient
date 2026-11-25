@@ -1,102 +1,70 @@
 ---
-title: "Diarization"
+title: "Speaker separation"
 sidebar:
   order: 25
 ---
 
-# Diarization
+# Speaker separation
 
-Diarization answers "who spoke when" on a session that already has a
-transcript. It is a separate verb, it runs two more models, and its front-end
-is the part that fails silently.
+Speaker separation answers "who spoke when" within one track. It runs as the
+second stage of the same job as [transcription](asr.md), after every track has
+been transcribed, and only when the `diarize` setting is on. With it off, a
+transcript has no speaker labels, and the track is the only attribution: on a
+one-to-one call, room is you and call is them.
 
-`ambient diarize <session-dir> [--threshold <f>]` assigns speakers to a
-recording that already exists. Two models, in sequence:
+## The model
 
-| stage | model | what it decides |
-|---|---|---|
-| segment | pyannote-segmentation-3.0 | how many people are talking in each 10 s window, and which parts belong to each |
-| embed | WeSpeaker resnet34 (VoxCeleb) | a 256-d vector per (window, speaker) |
-| cluster | agglomerative, cosine, average linkage | which of those are the same person |
-| fold | nearest cluster by mean embedding | whether a cluster holding under 12 s of speech is a drifted voice |
+`ambient-engine diarize` runs Nemotron 3 Diarization with FluidAudio's
+`fast32` preset over one 16 kHz mono track. It reads the file from disk in
+100 ms pieces and feeds them through the model's streaming path, so the
+speaker model's memory does not grow with the length of the meeting. It writes
+a list of turns, each a speaker index with a start and an end, and nothing
+else. The model decides how many people there are; there is no threshold to
+set.
 
-Segmentation's speaker indices are local to a window and mean nothing across
-windows, so nothing tries to stitch windows together by permutation — the
-global clustering is what recovers a consistent identity. Clustering alone
-over-clusters a real meeting — a voice drifting through 25 minutes clears the
-threshold in short excursions, 36 "speakers" for 4 people — so a cluster
-holding less than 12 s of speech is folded into the nearest cluster that holds
-more, provided their mean embeddings are within cosine distance 0.8. A small
-cluster further than that from all of them is kept as a brief speaker of its
-own (see [DER on whole meetings](measurements.md#der-on-whole-meetings)). Each raw record then
-takes the speaker holding the most of it, labelled `room-1`, `call-2`: speaker
-1 in the room and speaker 1 on the call are different people, and nothing
-downstream should be able to assume otherwise.
+The helper's turns are used as they are. Filling short gaps between one
+speaker's turns and padding their edges lowers DER on AMI and makes the
+transcript worse, because padding hands the edge words of a turn to whoever
+spoke next. The figures are in
+[measurements](measurements.md#the-core-ml-helper-adr-0020).
 
-It is a separate verb rather than part of `record` for three reasons. It
-roughly doubles processing time for something not always wanted; `--threshold`
-needs tuning against real room audio; and the two graphs are never resident
-alongside Parakeet, which matters on the 16 GB target. Re-running appends
-`revert` records for the previous run's labels before writing new ones, so a
-bad threshold costs an appended revert rather than a lost recording.
+## The phantom-speaker filter
 
-## The front-end is the part that fails silently
+Nemotron sometimes splits one voice into a second speaker who is active only
+briefly. Before any word is attributed, `pipeline::assemble` adds up each
+speaker's turn time over the whole track and drops every speaker holding less
+than 5 s (`pipeline::PHANTOM_SECONDS`). If nobody reaches 5 s, which happens on
+a short recording, the speaker with the most speech stays. On issue #168's
+benchmark this took exact speaker counts from 15/16 to 16/16 on AMI and from
+50/57 to 57/57 on PriMock57, without moving word attribution.
 
-WeSpeaker wants Kaldi fbank: HTK mel, 80 bins, Povey window, snip-edges,
-pre-emphasis, int16-scale samples. `src/features.rs` is Slaney, 128 bins,
-centre-padded and per-feature normalised, because that is what NeMo wants.
-Almost nothing is shareable, so `src/fbank.rs` is a second front-end rather
-than a configurable one.
+## Words to speakers
 
-A near-miss filterbank does not error here. It yields embeddings that still
-cluster, only worse — so the damage arrives as confidently mislabelled
-speakers, which is exactly the output a reader cannot audit. `bin/embtest.rs`
-tests it directly, on two clips each of two `say` voices:
+The helper's words and turns come from two separate passes, so the Rust side
+joins them in `pipeline::assemble`:
 
-```
-           A1     A2     B1     B2
-    A1  1.000  0.880  0.192  0.138
-    A2  0.880  1.000  0.145  0.132
-    B1  0.192  0.145  1.000  0.823
-    B2  0.138  0.132  0.823  1.000
+- Each word goes to the kept speaker whose turns overlap it most. A word that
+  overlaps no kept turn goes to the speaker whose turn is nearest. The words a
+  dropped speaker held therefore go to a neighbour.
+- A new line starts at a change of speaker, at a pause of a second or more, at
+  a sentence end once the line is 20 s long, and at 40 s regardless. Pauses
+  matter because on a call each track is mostly one voice, and breaking only at
+  speaker changes would make the whole track one line.
+- Speakers are numbered from 1 within each track in order of first appearance
+  and labelled `room-1`, `call-2` and so on. Speaker 1 in the room and speaker 1
+  on the call are different people, and nothing downstream may assume
+  otherwise.
 
-same voice 0.851   cross voice 0.152   separation 0.700
-```
+The labels are written as `speaker` edits by `diarize` in `edits.jsonl`, the
+same kind of edit `ambient name` appends. A name a person types wins the fold,
+and `ambient rerun` carries it to the new speaker that overlaps it most (see
+[re-running](asr.md#re-running)).
 
-A wrong front-end collapses that matrix toward uniform. `bin/diartest.rs` is
-the companion tool for tuning `--threshold` against a bare wav;
-`AMBIENT_DEBUG_DIAR=1` adds the per-window powerset class histogram, which is
-how the class layout was confirmed rather than assumed — every known silent gap
-decodes to class 0.
+## When it fails
 
-## Measured
+A failed diarize stage fails the job, and the retry resumes from the
+transcribe checkpoint. On the last allowed attempt the words are written
+without labels instead, with a warning; see [retries](asr.md#retries).
 
-A 38 s four-turn conversation between two `say` voices, played through the
-speakers and captured by both tracks at once:
-
-```
-[00:00] call call-1  Right, let's start with the Transcoda backlog...
-[00:11] call call-2  That's good news. The chunking fix went in on Tuesday...
-[00:20] call call-1  Did anyone confirm whether customers were actually affected...
-[00:29] call call-2  Still guessing, honestly, I will pull the request logs...
-```
-
-Both tracks alternate correctly across all four turns, and `raw.jsonl` hashes
-identically before and after. The room track — a microphone listening to the
-laptop's own speakers — over-clusters at the default threshold (three groups
-rather than two, five at `--threshold 0.3`), though the surplus groups are
-short fragments that never win a whole line. The tap does not have that
-problem, which is the same argument as the tap-versus-microphone one.
-
-Peak RSS on a 10.2-minute track: **249 MB**, 5.9 s wall — the sliding window
-does not accumulate.
-
-## Swept audio
-
-`diarize` refuses to run on a session whose audio the retention policy has
-already swept. The refusal is a guard, not a convenience: a re-run appends
-reverts for the previous run's labels *before* it discovers there is nothing to
-read, so without it every speaker nobody had named by hand would be silently
-unlabelled. See [what is kept](../using/what-is-kept.md) for the retention policy itself.
-
-See [ADR-0006](../adr/0006-separate-frontends.md) and [ADR-0007](../adr/0007-diarize-separate-verb.md).
+`ambient name` on a session transcribed without labels lists none and says to
+run `ambient rerun` with diarize on.

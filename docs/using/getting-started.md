@@ -31,16 +31,17 @@ is missing or a track is silent, use [troubleshooting](troubleshooting.md).
 ## Make a test recording
 
 1. Choose **Start Recording** from the menu bar, or **Record** (⌘R) at the top of
-   the window's sidebar.
+   the window's sidebar. To record the microphone alone, with no system audio and no
+   Call track, choose **Record microphone only** in the menu bar instead.
 2. Speak a short sentence and play a short piece of audio on the Mac.
 3. Check that the Room and Call levels respond.
 4. Choose **Stop** and wait for transcription to finish.
 5. Select the session in the window and check the transcript.
 
-You can open the session during recording to read completed speech turns. Text
-arrives in blocks, with additional delay for model loading or ongoing speech.
-After Stop, Ambient finishes the remaining text and speaker labels. The menu
-shows queued work, so a new recording can start while the previous one finishes.
+Nothing is transcribed while recording. After Stop, Ambient transcribes each
+track and labels the speakers; the transcript appears when that finishes. The
+menu shows queued work, so a new recording can start while the previous one is
+transcribed.
 
 Use **Reveal in Finder** to inspect the session files. The `audio/` directory
 contains separate room and call tracks. Verify both if the transcript is missing
@@ -53,8 +54,9 @@ transcript text. Rename a session, add notes, pin it or apply tags above the
 selected transcript.
 
 **Tidied** shows the recognition output with naming edits applied; **Verbatim**
-shows the original recognition output. Use **Separate voices** to group speakers
-when audio is still available, then assign names. **Copy Markdown** and **Export**
+shows the original recognition output. Voices are separated as part of
+transcription; assign names to the labels it gives. **Transcribe again** re-runs
+a session from its audio while the audio is kept, and keeps the names you typed. **Copy Markdown** and **Export**
 let you take the transcript elsewhere.
 
 Speaker labels and words can be wrong. Review them before sharing the transcript.
@@ -65,7 +67,7 @@ Speaker labels and words can be wrong. Review them before sharing the transcript
 
 You need macOS 14.4 or later, the Xcode Command Line Tools and Rust installed
 through `rustup`. `rust-toolchain.toml` selects the compiler. The models occupy
-about 670 MB; allow additional space for the download archive and build artifacts.
+about 0.8 GB; allow additional space for the download and build artifacts.
 
 ```sh
 git clone https://github.com/jasonm4130-labs/ambient.git
@@ -96,8 +98,7 @@ Commands that read files or inspect the machine can run in a terminal:
 
 ```sh
 cargo run --release --bin ambient -- sessions
-cargo run --release --bin ambient -- transcribe \
-  models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8 audio.wav
+cargo run --release --bin ambient -- doctor
 ```
 
 For a release installed in Applications, use its executable directly for those

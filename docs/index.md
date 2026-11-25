@@ -39,7 +39,7 @@ Mac. The [measurements](developing/measurements.md) name the hardware and fixtur
 they are not a performance promise for every Mac. Hosted CI checks the code and
 bundle assembly, not microphone permissions or live capture.
 
-The repository has releases through v0.0.3. See
+The repository has releases through v0.1.0. See
 [Releases](https://github.com/jasonm4130-labs/ambient/releases) for available
 builds. The release process signs, notarizes and staples the app; a fresh-machine
 installation and capture check remains part of release acceptance.

@@ -1,19 +1,12 @@
-//! The people you record with, so a name is typed once rather than once per
-//! recording.
-//!
-//! This is a list of names and nothing else. It deliberately stores no
-//! voiceprints: an embedding kept to recognise someone later is biometric data
-//! under Article 9, which is a different compliance regime from a text file of
-//! names. The roster removes the retyping, not the choosing — assignment stays
-//! a human decision, made through `session::name_speaker`.
+//! Names of the people you record with. Deliberately no voiceprints: a stored
+//! embedding is biometric data under GDPR Article 9.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-/// Beside the config, for the same reason: the sessions folder is itself a
-/// setting, so nothing that must be readable before settings load can live in
-/// it.
+/// Beside the config, not in the sessions folder: that folder is itself a
+/// setting, so it cannot hold anything read before settings load.
 pub fn path() -> PathBuf {
     if let Ok(p) = std::env::var("AMBIENT_ROSTER") {
         return PathBuf::from(p);
@@ -21,8 +14,7 @@ pub fn path() -> PathBuf {
     crate::config::path().with_file_name("roster.json")
 }
 
-/// Never fails, for the same reason the config does not: a malformed list of
-/// names must not be able to stop a recording.
+/// Never fails: a malformed roster must not be able to stop a recording.
 pub fn load() -> Vec<String> {
     load_from(&path())
 }
@@ -60,9 +52,7 @@ pub fn save_to(p: &Path, names: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Adding a name already present is a no-op rather than an error: the caller is
-/// usually a person typing, and refusing them a name they already have would be
-/// pedantry. Returns whether the list changed.
+/// Returns whether the list changed; a duplicate is a no-op.
 pub fn add(names: &mut Vec<String>, who: &str) -> bool {
     let who = who.trim();
     if who.is_empty() || names.iter().any(|n| n.eq_ignore_ascii_case(who)) {
@@ -73,9 +63,6 @@ pub fn add(names: &mut Vec<String>, who: &str) -> bool {
     true
 }
 
-/// Removing someone from the roster does not unname them in past recordings —
-/// those names live in each session's `edits.jsonl` and stay put. This only
-/// stops offering them next time.
 pub fn remove(names: &mut Vec<String>, who: &str) -> bool {
     let before = names.len();
     names.retain(|n| !n.eq_ignore_ascii_case(who.trim()));

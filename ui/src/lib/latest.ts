@@ -1,10 +1,6 @@
 import { useCallback, useRef } from "react";
 
-/// Wraps a bridge call with a generation counter: each call bumps it, and a
-/// reply is applied only if the generation it was issued under is still the
-/// current one. Two calls issued A then B whose replies arrive B then A leave
-/// B's result in place — A's reply, arriving late, is dropped rather than
-/// clobbering what B already rendered.
+/// Drops a reply whose call was superseded, so a late reply never clobbers a newer one.
 export function useLatest<Args extends unknown[], T>(
   call: (...args: Args) => Promise<T>,
 ): (...args: Args) => Promise<T | undefined> {
@@ -15,7 +11,7 @@ export function useLatest<Args extends unknown[], T>(
       generation.current += 1;
       const issued = generation.current;
       return call(...args).then(
-        (result): T | undefined => generation.current === issued ? result : undefined,
+        (result): T | undefined => (generation.current === issued ? result : undefined),
         (error: unknown): undefined => {
           if (generation.current === issued) throw error;
           return undefined;

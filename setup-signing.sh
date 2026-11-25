@@ -1,23 +1,13 @@
 #!/usr/bin/env bash
 # One-time: get a stable code-signing identity in place, then re-grant the tap.
 #
-# Why this exists: `codesign --sign -` (ad-hoc) makes the app's designated
-# requirement its own cdhash. Every rebuild changes that hash, so the TCC grant
-# for system-audio capture silently stops matching — the permission row still
-# says "allowed" while the tap hands back nothing but zeros, with no error and
-# no prompt. Signing with a certificate makes the requirement
-# `identifier "uk.ambient.cli" and certificate leaf = H"..."`, which survives
-# rebuilds.
+# An ad-hoc signature's designated requirement is its cdhash, so every rebuild
+# silently orphans the system-audio TCC grant: the row still says "allowed"
+# while the tap returns zeros. A certificate identity survives rebuilds.
 #
-# Two identities are possible and they are not interchangeable:
-#
-#   Developer ID Application — an Apple-issued certificate. The only one that
-#     works on a machine that DOWNLOADED the app, because it is the only one
-#     Gatekeeper accepts once the build is notarized. Use ./release.sh for that.
-#
-#   Ambient Dev — a local self-signed certificate. Fixes the rebuild problem on
-#     THIS machine only; a build signed with it is rejected on any other. This
-#     is the fallback so a contributor with no Apple account can still work.
+#   Developer ID Application   Apple-issued; the only one Gatekeeper accepts on
+#                              a machine that downloaded the app (./release.sh).
+#   Ambient Dev                local self-signed; works on THIS machine only.
 #
 # Import an Apple-issued certificate with:
 #   ./setup-signing.sh --developer-id ~/Downloads/developerID_application.cer
@@ -29,7 +19,6 @@ KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# --- Developer ID import ----------------------------------------------------
 if [ "${1:-}" = "--developer-id" ]; then
   CER="${2:-}"
   [ -n "$CER" ] && [ -f "$CER" ] || {
@@ -47,7 +36,6 @@ if [ "${1:-}" = "--developer-id" ]; then
   openssl x509 -inform DER -in "$CER" -out "$WORK/cert.pem" 2>/dev/null \
     || cp "$CER" "$WORK/cert.pem"
 
-  # Refuse a mismatched pair rather than importing an identity that cannot sign.
   a=$(openssl x509 -in "$WORK/cert.pem" -noout -pubkey | openssl sha256)
   b=$(openssl pkey -in "$KEY" -pubout | openssl sha256)
   [ "$a" = "$b" ] || {
@@ -56,9 +44,8 @@ if [ "${1:-}" = "--developer-id" ]; then
     exit 1
   }
 
-  # -legacy: OpenSSL 3 defaults to a PKCS#12 MAC macOS cannot verify, and
-  # `security import` then fails with "MAC verification failed (wrong
-  # password?)" — which is a lie, the password is fine.
+  # -legacy: OpenSSL 3's default PKCS#12 MAC fails macOS's `security import`
+  # with a misleading "MAC verification failed (wrong password?)".
   openssl pkcs12 -export -legacy -inkey "$KEY" -in "$WORK/cert.pem" \
     -out "$WORK/id.p12" -passout pass:ambient -name "developerID" 2>/dev/null \
     || /usr/bin/openssl pkcs12 -export -inkey "$KEY" -in "$WORK/cert.pem" \
@@ -66,12 +53,10 @@ if [ "${1:-}" = "--developer-id" ]; then
 
   security import "$WORK/id.p12" -k "$KEYCHAIN" -P ambient -T /usr/bin/codesign -A
 
-  # The leaf alone is not enough. Without Apple's Developer ID intermediate in a
-  # searchable keychain, codesign fails with "unable to build chain to
-  # self-signed root" and errSecInternalComponent, while `security verify-cert`
-  # reports the certificate as fine — the two build the chain differently, and
-  # only codesign's opinion matters. Observed on a clean machine; the identity
-  # does not even appear under `find-identity -v` until this is present.
+  # codesign needs Apple's Developer ID intermediate in a searchable keychain, or
+  # it fails with "unable to build chain to self-signed root" while
+  # `security verify-cert` says the leaf is fine; the identity is also missing
+  # from `find-identity -v` until then.
   ISSUER_OU=$(openssl x509 -inform DER -in "$CER" -noout -issuer 2>/dev/null | grep -o 'OU *= *G[0-9]' | grep -o 'G[0-9]')
   CA_URL="https://www.apple.com/certificateauthority/DeveloperID${ISSUER_OU:-G2}CA.cer"
   if ! security find-certificate -c "Developer ID Certification Authority" >/dev/null 2>&1; then
@@ -103,7 +88,6 @@ if [ "${1:-}" = "--developer-id" ]; then
   exit 0
 fi
 
-# --- Local self-signed fallback ---------------------------------------------
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
   echo "a Developer ID Application identity is already present — nothing to do."
   echo "make-app.sh prefers it automatically."

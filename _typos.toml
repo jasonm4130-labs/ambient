@@ -9,6 +9,8 @@ extend-exclude = [
   # hand-written but sits beside the bundle it drives.
   "docs-site/public/mermaid.min.js",
   "docs-site/public/mermaid-init.js",
+  # Licence texts vendored verbatim from FluidAudio; their spelling is theirs.
+  "licenses/FluidAudio-ThirdParty.txt",
 ]
 
 [default.extend-words]
