@@ -1,6 +1,5 @@
 pub mod api;
 pub mod asr;
-pub mod assist;
 pub mod bench;
 pub mod capture;
 pub mod clock;
@@ -22,7 +21,6 @@ pub mod roster;
 pub mod session;
 pub mod settings;
 pub mod state;
-pub mod talk;
 pub mod vad;
 pub mod wer;
 pub mod window;
