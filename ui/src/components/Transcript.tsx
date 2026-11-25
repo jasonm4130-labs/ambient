@@ -158,7 +158,7 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
         if (event.session !== session) return;
         setSeparating(false);
         if (event.state === "failed") {
-          setError(event.error ?? "separating voices failed");
+          setError(event.error ?? "transcription failed");
         } else {
           loadTranscript(session, verbatim)
             .then((next) => {
@@ -240,7 +240,7 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
             title={unavailable}
             onClick={separateVoices}
           >
-            {separating ? "Separating voices…" : "Separate voices"}
+            {separating ? "Transcribing…" : reply?.state === "done" ? "Transcribe again" : "Retry"}
           </Button>
         </div>
       </div>
@@ -263,7 +263,9 @@ export function Transcript({ session, revision, highlightIndex, unavailable }: T
       )}
       {reply !== undefined && groups.length === 0 ? (
         <p className="text-muted-foreground text-sm" data-testid="transcript-empty">
-          No transcript yet — this session is {reply.state}.
+          {reply.state === "failed"
+            ? "Transcription failed. Retry runs it again from the last finished step."
+            : `No transcript yet — this session is ${reply.state}.`}
         </p>
       ) : (
         <div className="flex max-w-[68ch] flex-col gap-4" data-testid="transcript-lines">

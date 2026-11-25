@@ -22,7 +22,7 @@ function renderTranscript(fake: FakeBridge, session: string) {
   );
 }
 
-describe("Transcript — Separate voices", () => {
+describe("Transcript — Transcribe again and Retry", () => {
   it("calls diarize.start with the session, and a diarize done event reloads the transcript", async () => {
     const fake = new FakeBridge();
     fake.answer("transcript", transcriptReply("before"));
@@ -30,7 +30,7 @@ describe("Transcript — Separate voices", () => {
     renderTranscript(fake, "x");
     await screen.findByText("before one");
 
-    await userEvent.click(screen.getByRole("button", { name: "Separate voices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Transcribe again" }));
 
     await waitFor(() => {
       const call = fake.calls.find((c) => c.method === "diarize.start");
@@ -50,7 +50,7 @@ describe("Transcript — Separate voices", () => {
     renderTranscript(fake, "x");
     await screen.findByText("before one");
 
-    await userEvent.click(screen.getByRole("button", { name: "Separate voices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Transcribe again" }));
     await waitFor(() => {
       expect(fake.calls.some((c) => c.method === "diarize.start")).toBe(true);
     });
@@ -67,7 +67,7 @@ describe("Transcript — Separate voices", () => {
     renderTranscript(fake, "x");
     await screen.findByText("before one");
 
-    await userEvent.click(screen.getByRole("button", { name: "Separate voices" }));
+    await userEvent.click(screen.getByRole("button", { name: "Transcribe again" }));
     await waitFor(() => {
       expect(fake.calls.some((c) => c.method === "diarize.start")).toBe(true);
     });
@@ -78,5 +78,18 @@ describe("Transcript — Separate voices", () => {
     // Still separating: the event named a session other than the one on
     // screen, so it must not have cleared this button's in-flight state.
     expect(screen.getByTestId("separate-voices")).toBeDisabled();
+  });
+
+  it("a failed session offers Retry and says what it will do", async () => {
+    const fake = new FakeBridge();
+    fake.answer("transcript", { session: "x", state: "failed", next: 0, lines: [] });
+    fake.answer("diarize.start", { started: true });
+    renderTranscript(fake, "x");
+    await screen.findByText(/Transcription failed/);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "diarize.start")).toBe(true);
+    });
+    expect(screen.getByTestId("separate-voices")).toHaveTextContent("Transcribing…");
   });
 });

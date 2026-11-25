@@ -87,7 +87,7 @@ sed -i '' "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
 
 # Models, when asked for. A release bundle carries them so a downloaded .app
 # works with no repo anywhere on the machine; a dev build does not, because the
-# copy is ~672 MB. Must happen BEFORE signing — the signature covers Resources.
+# copy is ~0.8 GB. Must happen BEFORE signing — the signature covers Resources.
 #
 # The `-d models` guard is load-bearing for CI: the rust job runs this script on
 # a runner that has no models/ (it is gitignored and never fetched), so an
@@ -97,33 +97,19 @@ if [ "${AMBIENT_BUNDLE_MODELS:-0}" = "1" ]; then
     echo "AMBIENT_BUNDLE_MODELS=1 but no models/ directory — run ./fetch-models.sh" >&2
     exit 1
   }
-  # Explicitly enumerated, NOT a copy of models/. Only ~671 MB of that directory
-  # is ever loaded, but it accumulates: a second ASR model, and any archive
-  # fetched by hand rather than by fetch-models.sh (which does delete its own,
-  # at fetch-models.sh:23 and :37). It measured 3.3 GB on the machine this was
-  # written on. Copying the lot would multiply the download for no benefit.
-  #
-  # The ASR model must match session.rs's default, which is the int8 build.
-  ASR_MODEL="${AMBIENT_ASR_MODEL:-sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8}"
+  # The checksum list is the bundle's inventory: exactly the files the two
+  # models load (ADR 0020), and nothing else that has accumulated in models/
+  # (other Core ML presets, the ONNX set for the old benchmarks).
   echo "copying models into the bundle ..."
-  mkdir -p "$APP/Contents/Resources/models"
-  case "$ASR_MODEL" in
-    sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8) ;;
-    *) echo "release notices cover only the default ASR model; update them before bundling $ASR_MODEL" >&2; exit 1 ;;
-  esac
-  # Copy only runtime files. Upstream test audio is neither needed by the app
-  # nor covered by our model attribution, and must not enter a release ZIP.
-  for m in "$ASR_MODEL/encoder.int8.onnx" "$ASR_MODEL/decoder.int8.onnx" \
-           "$ASR_MODEL/joiner.int8.onnx" "$ASR_MODEL/tokens.txt" \
-           pyannote-segmentation-3.0/model.onnx \
-           wespeaker_en_voxceleb_resnet34_LM.onnx silero_vad.onnx; do
-    [ -e "models/$m" ] || { echo "  missing models/$m — run ./fetch-models.sh" >&2; exit 1; }
-    mkdir -p "$APP/Contents/Resources/models/$(dirname "$m")"
+  while read -r _ m; do
+    [ -e "$m" ] || { echo "  missing $m — run ./fetch-models.sh" >&2; exit 1; }
+    mkdir -p "$APP/Contents/Resources/$(dirname "$m")"
     # ditto rather than cp -R: correct metadata for a bundle about to be signed.
-    ditto "models/$m" "$APP/Contents/Resources/models/$m"
-  done
+    ditto "$m" "$APP/Contents/Resources/$m"
+  done < <(grep -v '^#' licenses/model-sha256.txt)
   echo "  bundled $(du -sh "$APP/Contents/Resources/models" | cut -f1)"
-  (cd "$APP/Contents/Resources" && shasum -a 256 -c licenses/model-sha256.txt)
+  (cd "$APP/Contents/Resources" && shasum -a 256 -c --quiet licenses/model-sha256.txt) &&
+    echo "  model checksums: verified"
 fi
 
 # Signing identity is load-bearing, not cosmetic. An ad-hoc signature's

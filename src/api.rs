@@ -124,12 +124,13 @@ pub fn call(method: &str, params: &Value, paths: &Paths) -> Result<Value, ApiErr
     }
 }
 
-/// The ten checks `ambient doctor` prints, as JSON, for the window's Welcome
+/// The nine checks `ambient doctor` prints, as JSON, for the window's Welcome
 /// page. The paths come from `Paths` rather than `config::path()` /
 /// `session::home()`, so a test points them at temp files.
 fn doctor_checks(paths: &Paths) -> Value {
     json!(crate::doctor::run(
         session::models_root(),
+        crate::engine::locate(),
         &paths.config_file,
         &paths.root(),
     ))
@@ -546,6 +547,12 @@ fn state(dir: &Path) -> &'static str {
         "transcribing"
     } else if dir.join("transcript.md").is_file() {
         "done"
+    } else if std::fs::read_to_string(dir.join(session::STATUS_FILE))
+        .is_ok_and(|s| s.starts_with("failed"))
+    {
+        // The job failed and is waiting on the queue or, past the retry
+        // cap, on someone pressing Retry.
+        "failed"
     } else {
         "pending"
     }
@@ -638,7 +645,7 @@ fn doctor_answers_the_checks_doctor_run_reports() {
 
     let got = call("doctor", &json!({}), &paths).unwrap();
     let checks = got.as_array().expect("doctor answers an array");
-    assert_eq!(checks.len(), 10);
+    assert_eq!(checks.len(), 9);
 
     for c in checks {
         let obj = c.as_object().expect("each check is an object");
@@ -651,7 +658,12 @@ fn doctor_answers_the_checks_doctor_run_reports() {
     }
 
     let got_names: Vec<&str> = checks.iter().map(|c| c["name"].as_str().unwrap()).collect();
-    let expected = crate::doctor::run(session::models_root(), &paths.config_file, &paths.root());
+    let expected = crate::doctor::run(
+        session::models_root(),
+        crate::engine::locate(),
+        &paths.config_file,
+        &paths.root(),
+    );
     let expected_names: Vec<&str> = expected.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(got_names, expected_names);
 

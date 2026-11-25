@@ -33,9 +33,10 @@ The committed icon is reused by default. Set `AMBIENT_REBUILD_ICON=1` only when
 regenerating it from the SVG with Inkscape.
 
 The bundle includes `LICENSE`, `THIRD_PARTY_NOTICES.md` and `licenses/` in
-`Contents/Resources/`. Its model payload contains only the seven default runtime
-files. Upstream test WAVs are omitted. An alternative ASR model needs its own
-provenance and notices before the packaging script accepts it.
+`Contents/Resources/`. Its model payload is the two models `ambient-engine`
+loads, Parakeet Ultra and Nemotron 3 Diarization `fast32`, and nothing else from
+`models/`. A different model needs its own provenance and notices before the
+packaging script accepts it.
 
 Check model integrity against the recorded inventory:
 

@@ -481,8 +481,9 @@ impl Bridge {
         self.eval(&reply_js(id, Ok(json!({"sent": sent}))));
     }
 
-    /// Run one diarization worker at a time. The session lock excludes CLI
-    /// transcription and naming while the worker writes speaker assignments.
+    /// Run one transcription worker from the window at a time: a re-run of a
+    /// finished session, or a retry of a failed one. The session lock
+    /// excludes the queue, the CLI and naming while it writes.
     fn diarize_start(&self, session: Option<&str>) -> Result<Value, ApiError> {
         let session =
             session.ok_or_else(|| ApiError::InvalidParams("`session` must be a string".into()))?;
@@ -495,15 +496,19 @@ impl Bridge {
             return Err(ApiError::Failed(format!("already separating {current}")));
         }
         let dir = self.paths().root().join(session);
-        let threshold = Config::load().threshold;
         let (tx, rx) = std::sync::mpsc::channel();
         let worker_dir = dir.clone();
         std::thread::spawn(move || {
-            let result = (|| {
-                let _lock = session::claim_transcription(&worker_dir)?;
-                session::diarize_session(&worker_dir, threshold)
-            })();
-            tx.send(result).ok();
+            // A finished session is transcribed again from its audio; one
+            // whose job failed is retried, which also clears its failure
+            // count so the app queues it again at launch if this one dies.
+            let result = if worker_dir.join("transcript.md").is_file() {
+                session::rerun_session(&worker_dir, None)
+            } else {
+                crate::pipeline::reset_attempts(&worker_dir);
+                session::transcribe_session(&worker_dir, None)
+            };
+            tx.send(result.map(|_| 0)).ok();
         });
         *self.ivars().diarizing.borrow_mut() = Some((session.to_string(), rx));
         Ok(json!({"started": true}))

@@ -400,7 +400,6 @@ impl Delegate {
                 None,
                 &[],
                 None,
-                None,
                 capture,
                 Some(worker_meter),
             ))
@@ -723,32 +722,17 @@ pub fn run() -> anyhow::Result<()> {
     let status_item =
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
 
-    // One decoder lane across this process and the finalize children it
-    // starts, so the live pass and the queue's transcriber stay one worker.
-    crate::live::share_decoder(std::env::temp_dir().join("ambient-decoder.lock"));
-
     let delegate = Delegate::alloc(mtm).set_ivars(Ivars {
         status_item: status_item.clone(),
         phase: PhaseCell::new(Phase::idle()),
         banner: RefCell::new(None),
         quitting: Cell::new(false),
-        // One worker thread for the life of the app, each job a child
-        // process of this same executable, so what finalizing allocates goes
-        // back to the system when the job ends rather than staying resident
-        // in a menu bar app that runs all day. The default model, as the
-        // CLI's `record` uses; there is no flag to pass here.
-        queue: RefCell::new(Queue::spawn(|dir, meter| match std::env::current_exe() {
-            Ok(exe) => crate::finalize::run(crate::finalize::command(&exe, dir), dir, meter),
-            Err(e) => {
-                append_log(
-                    &log_path(),
-                    &format!(
-                        "warning: cannot locate own executable ({e}); finalizing in-process, \
-                         which keeps its memory resident after the job"
-                    ),
-                );
-                crate::session::transcribe_session(dir, None, Some(meter.clone()))
-            }
+        // One worker thread for the life of the app. The models run in the
+        // `ambient-engine` helper, one process per stage, so what they
+        // allocate goes back to the system when each stage ends rather than
+        // staying resident in a menu bar app that runs all day.
+        queue: RefCell::new(Queue::spawn(|dir, meter| {
+            crate::session::transcribe_session(dir, Some(meter.clone()))
         })),
         pending_failure: RefCell::new(None),
         // Launched from Finder there is nowhere for stderr to go, so keep our

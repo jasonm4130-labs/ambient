@@ -396,7 +396,7 @@ Reply:
 
 ## `doctor`
 
-The same ten checks `ambient doctor` prints, in `doctor::run`'s fixed order,
+The same nine checks `ambient doctor` prints, in `doctor::run`'s fixed order,
 for the window's Welcome page. Each check is `ok` or not; when it is not, the
 fix is the `detail` string.
 

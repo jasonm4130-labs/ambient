@@ -9,6 +9,30 @@ import Foundation
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
+/// Ties a model job to the app that started it, and keeps it out of a live
+/// capture's way.
+///
+/// The app holds our stdin open and never writes to it. End of file means the
+/// app has gone, so the job goes with it rather than running on unowned; the
+/// app re-queues the session at its next launch and resumes from the last
+/// finished stage. Only a pipe means that: run by hand, stdin is a terminal or
+/// /dev/null, and /dev/null is at end of file from the start. `fetch` never
+/// arms it, so a script with a closed stdin can still download.
+///
+/// Background priority is set here, for the whole process, rather than
+/// inherited: the app's queue thread runs at background QoS, but a spawned
+/// process does not take its parent thread's class.
+func runAsBackgroundJob() {
+    setpriority(PRIO_DARWIN_PROCESS, 0, PRIO_DARWIN_BG)
+    var st = stat()
+    if fstat(STDIN_FILENO, &st) == 0, (st.st_mode & S_IFMT) == S_IFIFO {
+        Thread.detachNewThread {
+            while FileHandle.standardInput.availableData.count > 0 {}
+            exit(2)
+        }
+    }
+}
+
 /// Folder names inside `--models`, as FluidAudio lays them out.
 let asrFolder = "parakeet-ultra"
 let diarFolder = "nemotron-3-diarization"
@@ -128,6 +152,7 @@ do {
     case "fetch":
         try await fetch(models)
     case "transcribe", "diarize":
+        runAsBackgroundJob()
         let audio = URL(fileURLWithPath: try args.require("audio"))
         let out = URL(fileURLWithPath: try args.require("out"))
         let key = try args.require("key")

@@ -54,8 +54,9 @@ transcript text. Rename a session, add notes, pin it or apply tags above the
 selected transcript.
 
 **Tidied** shows the recognition output with naming edits applied; **Verbatim**
-shows the original recognition output. Use **Separate voices** to group speakers
-when audio is still available, then assign names. **Copy Markdown** and **Export**
+shows the original recognition output. Voices are separated as part of
+transcription; assign names to the labels it gives. **Transcribe again** re-runs
+a session from its audio while the audio is kept, and keeps the names you typed. **Copy Markdown** and **Export**
 let you take the transcript elsewhere.
 
 Speaker labels and words can be wrong. Review them before sharing the transcript.

@@ -7,6 +7,34 @@ texts are included under `licenses/`.
 
 ## Model artifacts
 
+The app runs the first two models below, through `ambient-engine` (ADR 0020).
+The ONNX models after them are fetched only by `./fetch-models.sh --onnx`, for
+the older benchmarks, and are not bundled.
+
+### Parakeet Ultra (Core ML)
+
+- Bundle path: `models/parakeet-ultra/`
+- Source artifact: [FluidInference/parakeet-ultra-coreml](https://huggingface.co/FluidInference/parakeet-ultra-coreml), fetched by `ambient-engine fetch`.
+- Upstream models: [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra), a post-training of [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
+- License: [CC BY 4.0](licenses/CC-BY-4.0.txt)
+- Attribution: Moondream, “Parakeet Ultra”, based on NVIDIA Corporation's “Parakeet TDT 0.6B v3”; Core ML conversion by Fluid Inference. Licensed under CC BY 4.0.
+
+The encoder is int8 per-channel and the decoder and joint are fp16, as Fluid
+Inference published them; Ambient does not change the files. Their digests are
+in [licenses/model-sha256.txt](licenses/model-sha256.txt).
+
+### Nemotron 3 Diarization (Core ML)
+
+- Bundle path: `models/nemotron-3-diarization/` (the `fast32` preset only)
+- Source artifact: [FluidInference/nemotron-3-diarization-coreml](https://huggingface.co/FluidInference/nemotron-3-diarization-coreml), fetched by `ambient-engine fetch`.
+- Upstream model: [nvidia/Nemotron-3-Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization)
+- License: [OpenMDW License Agreement 1.1](licenses/OpenMDW-1.1.txt)
+- Attribution: NVIDIA Corporation, “Nemotron 3 Diarization”; Core ML conversion by Fluid Inference. Licensed under OpenMDW-1.1.
+
+OpenMDW-1.1 requires a copy of the agreement with any distribution of the model
+materials, which is `licenses/OpenMDW-1.1.txt` in the bundle. Digests are in
+[licenses/model-sha256.txt](licenses/model-sha256.txt).
+
 ### NVIDIA Parakeet TDT 0.6B v3
 
 - Bundle path: `models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/`
@@ -19,7 +47,7 @@ The release artifact is a sherpa-onnx converted, int8-quantized ONNX model.
 Ambient's fetch script extracts it without changing its model files. The
 source release URL is recorded; the conversion revision is not recorded.
 The measured files and their digests are in
-[licenses/model-sha256.txt](licenses/model-sha256.txt).
+[licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt).
 
 ### pyannote segmentation 3.0
 
@@ -33,7 +61,7 @@ directory name. The model page gates downloads behind user acceptance of its
 access conditions; its published LICENSE grants the MIT rights to use, copy,
 modify, merge, publish, distribute, sublicense, and sell the licensed model.
 The measured converted file digest is in
-[licenses/model-sha256.txt](licenses/model-sha256.txt). The conversion
+[licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt). The conversion
 revision is not recorded in this repository.
 
 ### WeSpeaker ResNet34-LM
@@ -48,7 +76,7 @@ The upstream model card says the model was trained on VoxCeleb2 Dev. That is
 dataset provenance, not a replacement for the model's CC BY 4.0 grant; any
 separate dataset rights remain with the dataset's licensors. The downloaded
 file is the sherpa-onnx ONNX asset and its measured digest is in
-[licenses/model-sha256.txt](licenses/model-sha256.txt).
+[licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt).
 
 ### Silero VAD v4.0
 
@@ -57,7 +85,7 @@ file is the sherpa-onnx ONNX asset and its measured digest is in
 - License: MIT; the exact upstream text is [licenses/Silero-VAD-MIT.txt](licenses/Silero-VAD-MIT.txt), copyright © 2020-present Silero Team.
 
 Ambient downloads this ONNX artifact without modifying it. Its measured digest
-is in [licenses/model-sha256.txt](licenses/model-sha256.txt).
+is in [licenses/onnx-model-sha256.txt](licenses/onnx-model-sha256.txt).
 
 ## Test audio in model archives
 

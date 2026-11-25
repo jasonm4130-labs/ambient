@@ -6,17 +6,18 @@ const USAGE: &str = "\
 ambient — local-first ambient capture
 
 USAGE
-  ambient record [--name <s>] [--app <bundle-id>]... [--model <dir>]
-                 [--seconds <n>] [--mic-only]
-                                       record with live transcription;
+  ambient record [--name <s>] [--app <bundle-id>]... [--seconds <n>]
+                 [--mic-only]          record, then transcribe after Stop;
                                        --mic-only skips the system audio
   ambient stop [<session-dir>]         stop the recording in progress
   ambient sessions [--json]            list the sessions on disk
   ambient search <query> [--json]      find words across every session
   ambient show <session-dir> [--verbatim] [--json]
                                        print a recorded session
-  ambient diarize <session-dir> [--threshold <f>]
-                                       assign speakers to a recorded session
+  ambient retry <session-dir>          transcribe a session whose job failed
+  ambient rerun <session-dir>          transcribe again from the audio; the
+                                       old transcript moves to previous/ and
+                                       typed names carry over
   ambient name <session-dir> <label> <name>
                                        name a speaker, e.g. call-1 Priya
   ambient undo <session-dir> [--seq <n>]
@@ -30,7 +31,7 @@ USAGE
   ambient mcp                          serve the session library, read-only,
                                        over MCP on stdio
   ambient roster [add|rm <name>]       the people you record with
-  ambient doctor [--json]              say which of ten things is missing
+  ambient doctor [--json]              say which of nine things is missing
   ambient probe                        check this machine is viable
   ambient transcribe <model-dir> <a.wav>   transcribe a 16 kHz wav
   ambient tap <out.wav> <secs> [bundle-id...]   record both tracks, no bot
@@ -44,7 +45,6 @@ Sessions are written to ~/Documents/Ambient (override with AMBIENT_HOME).
 #[derive(Debug, Default, PartialEq)]
 struct RecordArgs {
     name: Option<String>,
-    model: Option<String>,
     seconds: Option<u64>,
     apps: Vec<String>,
     /// `--mic-only`: capture the microphone alone for this recording,
@@ -57,7 +57,6 @@ fn parse_record_args(mut args: impl Iterator<Item = String>) -> Result<RecordArg
     while let Some(a) = args.next() {
         match a.as_str() {
             "--name" => r.name = args.next(),
-            "--model" => r.model = args.next(),
             "--seconds" => {
                 r.seconds = Some(
                     args.next()
@@ -92,7 +91,6 @@ fn main() -> Result<()> {
             let dir = ambient::session::record(
                 r.name.as_deref(),
                 &r.apps,
-                r.model.as_deref(),
                 r.seconds,
                 r.mic_only.then_some(ambient::config::CaptureMode::Mic),
             )?;
@@ -369,37 +367,18 @@ fn main() -> Result<()> {
             let json = flags.iter().any(|a| a == "--json");
             ambient::session::show(std::path::Path::new(&dir), verbatim, json)
         }
-        // Not in USAGE: the menu bar app's queue runs this in a child process
-        // so the memory finalizing takes goes back to the system when it
-        // exits, and its stdout is a protocol for that parent, not a person.
-        Some(ambient::finalize::SUBCOMMAND) => {
+        Some(verb @ ("retry" | "rerun")) => {
             let dir = args.next().unwrap_or_default();
             if dir.is_empty() || args.next().is_some() {
                 bail!("{USAGE}");
             }
-            ambient::finalize::serve(std::path::Path::new(&dir))
-        }
-        Some("diarize") => {
-            let dir = args.next().unwrap_or_default();
-            if dir.is_empty() {
-                bail!("{USAGE}");
-            }
-            let mut threshold = ambient::diarize::DEFAULT_THRESHOLD;
-            while let Some(a) = args.next() {
-                match a.as_str() {
-                    "--threshold" => {
-                        threshold = args
-                            .next()
-                            .ok_or_else(|| anyhow::anyhow!("--threshold needs a value"))?
-                            .parse()?
-                    }
-                    other => bail!("unexpected argument {other:?}\n\n{USAGE}"),
-                }
-            }
             let path = std::path::Path::new(&dir);
-            let _lock = ambient::session::claim_transcription(path)?;
-            let n = ambient::session::diarize_session(path, threshold)?;
-            eprintln!("  {n} edit(s) appended");
+            if verb == "retry" {
+                ambient::pipeline::reset_attempts(path);
+                ambient::session::transcribe_session(path, None)?;
+            } else {
+                ambient::session::rerun_session(path, None)?;
+            }
             ambient::session::show(path, false, false)
         }
         // The whole of it is on stdin and stdout: nothing else may print to
@@ -423,6 +402,7 @@ fn main() -> Result<()> {
             }
             let checks = ambient::doctor::run(
                 ambient::session::models_root(),
+                ambient::engine::locate(),
                 &ambient::config::path(),
                 &ambient::session::home(),
             );

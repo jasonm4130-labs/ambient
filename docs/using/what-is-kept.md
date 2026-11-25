@@ -112,12 +112,11 @@ has a consequence worth stating plainly — a recording that *failed* also has n
 `transcript.md`, so its audio is kept indefinitely rather than ageing out. Those
 directories are the ones to check by hand if you care about the retention
 window holding. And
-`ambient diarize` **refuses** on a session whose audio has been swept, because
-a re-run reverts the previous labels before it discovers there is nothing to
-read — which would silently unlabel every speaker nobody had named by hand. The
-window says the same thing before you can ask: on a swept session *Separate
-voices* is disabled and carries the reason under it, rather than offering a
-button that would only refuse.
+`ambient rerun` **refuses** on a session whose audio has been swept, and leaves
+its transcript as it was: there is nothing to transcribe again from. The window
+says the same thing before you can ask: on a swept session *Transcribe again*
+is disabled and carries the reason under it, rather than offering a button that
+would only refuse.
 
 ## Who's who
 
@@ -133,6 +132,6 @@ a person across sessions. You choose which name belongs to a speaker; check the
 result before sharing the transcript.
 
 Naming from the window writes the same edit `ambient name` does, so it is
-recorded as the user's and survives a re-diarize.
+recorded as the user's and carries over when a session is transcribed again.
 
 See [ADR-0009](../adr/0009-armed-consent-state.md), [ADR-0010](../adr/0010-names-not-voiceprints.md) and [ADR-0011](../adr/0011-audio-retention-sweep.md).
